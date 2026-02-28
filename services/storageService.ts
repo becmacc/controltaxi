@@ -42,6 +42,10 @@ export interface RestoreResult {
   };
 }
 
+interface RestoreOptions {
+  mode?: 'merge' | 'replace';
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null;
 };
@@ -207,8 +211,9 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
   };
 };
 
-export const restoreFullSystemData = (data: unknown): RestoreResult => {
+export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): RestoreResult => {
   const inspection = inspectFullSystemBackup(data);
+  const mode = options?.mode === 'replace' ? 'replace' : 'merge';
   const applied = {
     trips: false,
     deletedTrips: false,
@@ -247,28 +252,38 @@ export const restoreFullSystemData = (data: unknown): RestoreResult => {
   };
 
   if (Array.isArray(backup.trips)) {
-    const mergedTrips = mergeByKey(getTrips(), backup.trips, trip => trip.id);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify(mergedTrips));
+    const nextTrips = mode === 'replace'
+      ? backup.trips
+      : mergeByKey(getTrips(), backup.trips, trip => trip.id);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify(nextTrips));
     applied.trips = true;
   }
   if (Array.isArray(backup.deletedTrips)) {
-    const mergedDeletedTrips = mergeByKey(getDeletedTrips(), backup.deletedTrips, record => record.archiveId);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify(mergedDeletedTrips));
+    const nextDeletedTrips = mode === 'replace'
+      ? backup.deletedTrips
+      : mergeByKey(getDeletedTrips(), backup.deletedTrips, record => record.archiveId);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify(nextDeletedTrips));
     applied.deletedTrips = true;
   }
   if (Array.isArray(backup.drivers)) {
-    const mergedDrivers = mergeByKey(getDrivers(), backup.drivers, driver => driver.id);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify(mergedDrivers));
+    const nextDrivers = mode === 'replace'
+      ? backup.drivers
+      : mergeByKey(getDrivers(), backup.drivers, driver => driver.id);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify(nextDrivers));
     applied.drivers = true;
   }
   if (Array.isArray(backup.customers)) {
-    const mergedCustomers = mergeCustomerCollections(getCustomers(), backup.customers).customers;
-    localStorage.setItem(LOCAL_STORAGE_KEYS.CUSTOMERS, JSON.stringify(mergedCustomers));
+    const nextCustomers = mode === 'replace'
+      ? backup.customers
+      : mergeCustomerCollections(getCustomers(), backup.customers).customers;
+    localStorage.setItem(LOCAL_STORAGE_KEYS.CUSTOMERS, JSON.stringify(nextCustomers));
     applied.customers = true;
   }
   if (Array.isArray(backup.alerts)) {
-    const mergedAlerts = mergeByKey(getAlerts(), backup.alerts, alert => alert.id);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.ALERTS, JSON.stringify(mergedAlerts));
+    const nextAlerts = mode === 'replace'
+      ? backup.alerts
+      : mergeByKey(getAlerts(), backup.alerts, alert => alert.id);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.ALERTS, JSON.stringify(nextAlerts));
     applied.alerts = true;
   }
 
@@ -299,6 +314,7 @@ export const restoreFullSystemData = (data: unknown): RestoreResult => {
 export const clearOperationalData = () => {
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.CUSTOMERS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.ALERTS, JSON.stringify([]));
 };
 

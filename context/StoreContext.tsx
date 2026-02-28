@@ -162,7 +162,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             }
 
             isApplyingRemoteRef.current = true;
-            const restoreResult = Storage.restoreFullSystemData(payload);
+            const restoreResult = Storage.restoreFullSystemData(payload, { mode: 'replace' });
             if (!restoreResult.ok) {
               console.warn('[cloud-sync] restore rejected', restoreResult.error || 'unknown restore error');
               isApplyingRemoteRef.current = false;

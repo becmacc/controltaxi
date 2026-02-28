@@ -562,7 +562,7 @@ export const CRMPage: React.FC = () => {
       {
         id: 'CLEAR',
         title: 'Clear Operations',
-        subtitle: 'Erase trips and alerts',
+        subtitle: 'Erase trips, alerts, and contacts',
         tone: 'DANGER',
       },
     ];
@@ -715,7 +715,7 @@ export const CRMPage: React.FC = () => {
   const handleVaultClear = async () => {
     if (!vaultClearArmed) {
       setVaultClearArmed(true);
-      setVaultStatusMessage('Click Clear Ops Data again to confirm, or press Cancel Clear.');
+      setVaultStatusMessage('Click Clear Ops + Contacts again to confirm, or press Cancel Clear.');
       return;
     }
 
@@ -737,13 +737,13 @@ export const CRMPage: React.FC = () => {
       setVaultClearArmed(false);
       setPendingVaultImport(null);
       if (syncAudit.ok) {
-        setVaultStatusMessage('Operational data cleared successfully.');
+        setVaultStatusMessage('Operational data and contacts cleared successfully.');
       } else {
-        setVaultStatusMessage(`Operational data cleared locally. Cloud sync not verified: ${syncAudit.reason || 'unknown reason'}`);
+        setVaultStatusMessage(`Operational data and contacts cleared locally. Cloud sync not verified: ${syncAudit.reason || 'unknown reason'}`);
       }
     } catch {
       setVaultClearArmed(false);
-      setVaultStatusMessage('Failed to clear operational data.');
+      setVaultStatusMessage('Failed to clear operational data and contacts.');
     } finally {
       setVaultBusyAction(null);
     }
