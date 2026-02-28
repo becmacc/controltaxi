@@ -235,19 +235,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
 
       const remoteSignatureResult = await fetchCloudSyncSignature();
-      if (remoteSignatureResult.ok && remoteSignatureResult.signature) {
-        const knownRemoteSignature = lastSyncedSignatureRef.current;
-        if (knownRemoteSignature && remoteSignatureResult.signature !== knownRemoteSignature) {
-          console.warn('[cloud-sync] publish skipped (stale local state detected)');
-          return;
-        }
+      if (!remoteSignatureResult.ok || !remoteSignatureResult.signature) {
+        console.warn('[cloud-sync] publish skipped (remote signature unavailable)');
+        return;
+      }
 
-        if (!knownRemoteSignature) {
-          lastSyncedSignatureRef.current = remoteSignatureResult.signature;
-          if (remoteSignatureResult.signature !== signature) {
-            console.warn('[cloud-sync] publish skipped (awaiting remote apply)');
-            return;
-          }
+      const knownRemoteSignature = lastSyncedSignatureRef.current;
+      if (knownRemoteSignature && remoteSignatureResult.signature !== knownRemoteSignature) {
+        console.warn('[cloud-sync] publish skipped (stale local state detected)');
+        return;
+      }
+
+      if (!knownRemoteSignature) {
+        lastSyncedSignatureRef.current = remoteSignatureResult.signature;
+        if (remoteSignatureResult.signature !== signature) {
+          console.warn('[cloud-sync] publish skipped (awaiting remote apply)');
+          return;
         }
       }
 
