@@ -562,7 +562,7 @@ export const CRMPage: React.FC = () => {
       {
         id: 'CLEAR',
         title: 'Clear Operations',
-        subtitle: 'Erase trips, alerts, and contacts',
+        subtitle: 'Erase trips, fleet, alerts, and contacts',
         tone: 'DANGER',
       },
     ];
@@ -715,7 +715,7 @@ export const CRMPage: React.FC = () => {
   const handleVaultClear = async () => {
     if (!vaultClearArmed) {
       setVaultClearArmed(true);
-      setVaultStatusMessage('Click Clear Ops + Contacts again to confirm, or press Cancel Clear.');
+      setVaultStatusMessage('Click Clear Ops + Fleet + Contacts again to confirm, or press Cancel Clear.');
       return;
     }
 
@@ -739,15 +739,15 @@ export const CRMPage: React.FC = () => {
       setVaultClearArmed(false);
       setPendingVaultImport(null);
       if (!forcePublish.ok) {
-        setVaultStatusMessage(`Operational data and contacts cleared locally. Immediate cloud publish failed: ${forcePublish.reason || 'unknown reason'}`);
+        setVaultStatusMessage(`Operational data, fleet, and contacts cleared locally. Immediate cloud publish failed: ${forcePublish.reason || 'unknown reason'}`);
       } else if (syncAudit.ok) {
-        setVaultStatusMessage('Operational data and contacts cleared successfully.');
+        setVaultStatusMessage('Operational data, fleet, and contacts cleared successfully.');
       } else {
-        setVaultStatusMessage(`Operational data and contacts cleared locally. Cloud sync not verified: ${syncAudit.reason || 'unknown reason'}`);
+        setVaultStatusMessage(`Operational data, fleet, and contacts cleared locally. Cloud sync not verified: ${syncAudit.reason || 'unknown reason'}`);
       }
     } catch {
       setVaultClearArmed(false);
-      setVaultStatusMessage('Failed to clear operational data and contacts.');
+      setVaultStatusMessage('Failed to clear operational data, fleet, and contacts.');
     } finally {
       setVaultBusyAction(null);
     }

@@ -314,6 +314,7 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
 export const clearOperationalData = () => {
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.CUSTOMERS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.ALERTS, JSON.stringify([]));
 };
