@@ -7,6 +7,7 @@ import { buildCustomerFromTrip, customerPhoneKey, mergeCustomerCollections } fro
 import {
   CloudSyncSession,
   createSyncSignature,
+  fetchCloudSyncSignature,
   getOrCreateCloudSyncClientId,
   startCloudSync,
 } from '../services/cloudSyncService';
@@ -231,6 +232,23 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const activeSession = cloudSyncSessionRef.current;
       if (!activeSession || !activeSession.isEnabled) {
         return;
+      }
+
+      const remoteSignatureResult = await fetchCloudSyncSignature();
+      if (remoteSignatureResult.ok && remoteSignatureResult.signature) {
+        const knownRemoteSignature = lastSyncedSignatureRef.current;
+        if (knownRemoteSignature && remoteSignatureResult.signature !== knownRemoteSignature) {
+          console.warn('[cloud-sync] publish skipped (stale local state detected)');
+          return;
+        }
+
+        if (!knownRemoteSignature) {
+          lastSyncedSignatureRef.current = remoteSignatureResult.signature;
+          if (remoteSignatureResult.signature !== signature) {
+            console.warn('[cloud-sync] publish skipped (awaiting remote apply)');
+            return;
+          }
+        }
       }
 
       const ok = await activeSession.publish(payload, signature);
