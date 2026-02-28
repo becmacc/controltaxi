@@ -41,6 +41,7 @@ interface StoreContextType {
 
   updateSettings: (newSettings: Settings) => void;
   refreshData: () => void;
+  forceCloudSyncPublish: () => Promise<{ ok: boolean; reason?: string }>;
 }
 
 declare global {
@@ -576,11 +577,29 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setSettings(newSettings);
   };
 
+  const forceCloudSyncPublish = async (): Promise<{ ok: boolean; reason?: string }> => {
+    const session = cloudSyncSessionRef.current;
+    if (!session || !session.isEnabled) {
+      return { ok: false, reason: 'Cloud sync is not enabled on this device.' };
+    }
+
+    const payload = Storage.getFullSystemData({ includeSettings: true });
+    const signature = createSyncSignature(payload);
+    const ok = await session.publish(payload, signature);
+
+    if (!ok) {
+      return { ok: false, reason: 'Cloud publish failed.' };
+    }
+
+    lastSyncedSignatureRef.current = signature;
+    return { ok: true };
+  };
+
   return (
     <StoreContext.Provider value={{ 
       trips, deletedTrips, drivers, customers, settings, alerts, theme, toggleTheme,
       addTrip, updateTripField, updateFullTrip, deleteCancelledTrip, restoreDeletedTrip, dismissAlert, snoozeAlert, resolveAlert,
-      addCustomers, addDriver, editDriver, removeDriver, updateSettings, refreshData 
+      addCustomers, addDriver, editDriver, removeDriver, updateSettings, refreshData, forceCloudSyncPublish 
     }}>
       {children}
     </StoreContext.Provider>

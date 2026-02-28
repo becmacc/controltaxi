@@ -193,7 +193,7 @@ const getLoyaltyTierTone = (tier?: 'VIP' | 'VVIP' | 'REGULAR' | 'NEW') => {
 };
 
 export const CRMPage: React.FC = () => {
-  const { trips, drivers, customers, alerts, settings, editDriver, addDriver, addCustomers, refreshData } = useStore();
+  const { trips, drivers, customers, alerts, settings, editDriver, addDriver, addCustomers, refreshData, forceCloudSyncPublish } = useStore();
   const [activeView, setActiveView] = useState<ViewMode>('CUSTOMERS');
   const [metricsWindow, setMetricsWindow] = useState<'TODAY' | '7D' | '30D' | 'ALL'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
@@ -725,6 +725,8 @@ export const CRMPage: React.FC = () => {
       Storage.clearOperationalData();
       refreshData();
 
+      const forcePublish = await forceCloudSyncPublish();
+
       const postClearAudit = await runVaultSyncAudit();
       if (postClearAudit.ok) {
         setVaultSyncStatus('VERIFIED');
@@ -736,7 +738,9 @@ export const CRMPage: React.FC = () => {
 
       setVaultClearArmed(false);
       setPendingVaultImport(null);
-      if (syncAudit.ok) {
+      if (!forcePublish.ok) {
+        setVaultStatusMessage(`Operational data and contacts cleared locally. Immediate cloud publish failed: ${forcePublish.reason || 'unknown reason'}`);
+      } else if (syncAudit.ok) {
         setVaultStatusMessage('Operational data and contacts cleared successfully.');
       } else {
         setVaultStatusMessage(`Operational data and contacts cleared locally. Cloud sync not verified: ${syncAudit.reason || 'unknown reason'}`);
