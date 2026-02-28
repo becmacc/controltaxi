@@ -282,6 +282,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       const remoteSignatureResult = await fetchCloudSyncSignature();
       if (!remoteSignatureResult.ok || !remoteSignatureResult.signature) {
+        if (remoteSignatureResult.code === 'no-remote-payload') {
+          const bootstrapOk = await activeSession.publish(payload, signature);
+          if (bootstrapOk) {
+            lastSyncedSignatureRef.current = signature;
+            console.info('[cloud-sync] bootstrap publish ok');
+          } else {
+            console.warn('[cloud-sync] bootstrap publish failed');
+          }
+          return;
+        }
+
         console.warn('[cloud-sync] publish skipped (remote signature unavailable)');
         return;
       }

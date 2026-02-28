@@ -21,6 +21,7 @@ export interface CloudSyncSignatureFetchResult {
   ok: boolean;
   signature?: string;
   syncEpoch?: number;
+  code?: 'not-configured' | 'auth-disabled' | 'no-remote-payload' | 'permission-denied' | 'fetch-failed';
   reason?: string;
 }
 
@@ -91,7 +92,7 @@ export const createSyncSignature = (payload: unknown): string => {
 
 export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetchResult> => {
   if (!isCloudSyncConfigured()) {
-    return { ok: false, reason: 'Cloud sync is not configured for this app.' };
+    return { ok: false, code: 'not-configured', reason: 'Cloud sync is not configured for this app.' };
   }
 
   try {
@@ -104,7 +105,7 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
       } catch (error) {
         const authError = error as Partial<AuthError>;
         if (authError?.code === 'auth/configuration-not-found') {
-          return { ok: false, reason: 'Anonymous Auth is disabled in Firebase Authentication.' };
+          return { ok: false, code: 'auth-disabled', reason: 'Anonymous Auth is disabled in Firebase Authentication.' };
         }
         throw error;
       }
@@ -118,6 +119,7 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
     if (!data?.payload) {
       return {
         ok: false,
+        code: 'no-remote-payload',
         reason: 'No remote sync payload found yet. Open the app on the other device and wait for cloud sync.',
       };
     }
@@ -141,10 +143,10 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
   } catch (error) {
     const path = `${CLOUD_COLLECTION}/${CLOUD_DOC_ID}`;
     if (isPermissionDeniedError(error)) {
-      return { ok: false, reason: buildPermissionHint(path) };
+      return { ok: false, code: 'permission-denied', reason: buildPermissionHint(path) };
     }
 
-    return { ok: false, reason: `Failed to fetch cloud signature: ${getErrorMessage(error)}` };
+    return { ok: false, code: 'fetch-failed', reason: `Failed to fetch cloud signature: ${getErrorMessage(error)}` };
   }
 };
 
