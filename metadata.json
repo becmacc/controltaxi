@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Control",
+  "description": "Internal fare calculator and mission tracking system.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

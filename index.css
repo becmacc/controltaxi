@@ -1,0 +1,220 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .animate-in {
+    animation-duration: 200ms;
+    animation-timing-function: ease-out;
+    animation-fill-mode: both;
+  }
+
+  .fade-in {
+    animation-name: fadeIn;
+  }
+
+  .zoom-in-95 {
+    animation-name: zoomIn95;
+  }
+
+  .slide-in-from-top-2 {
+    animation-name: slideInFromTop2;
+  }
+
+  .slide-in-from-right {
+    animation-name: slideInFromRight;
+  }
+
+  .slide-in-from-right-8 {
+    animation-name: slideInFromRight8;
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes zoomIn95 {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes slideInFromTop2 {
+  from {
+    opacity: 0;
+    transform: translateY(-0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInFromRight {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInFromRight8 {
+  from {
+    opacity: 0;
+    transform: translateX(2rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (orientation: landscape) and (max-height: 540px) {
+  .app-header {
+    height: 2.9rem;
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+  }
+
+  .app-main {
+    padding-bottom: 3.35rem !important;
+  }
+
+  .app-sidebar {
+    display: none !important;
+  }
+
+  .app-bottom-nav {
+    display: flex !important;
+  }
+
+  .app-bottom-nav {
+    height: 3.1rem;
+  }
+
+  .app-bottom-link {
+    padding-top: 0.3rem;
+    padding-bottom: 0.3rem;
+  }
+
+  .app-bottom-link svg {
+    margin-bottom: 0;
+  }
+
+  .app-bottom-label {
+    display: none;
+  }
+
+  .trip-summary-bar {
+    top: 0 !important;
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 0.5rem !important;
+  }
+
+  .app-page-shell {
+    padding: 0.5rem !important;
+  }
+
+  .driver-toolbar {
+    position: static !important;
+    margin-bottom: 0.75rem !important;
+    padding-top: 0.25rem !important;
+    padding-bottom: 0.5rem !important;
+  }
+
+  .gmb-shell {
+    row-gap: 1rem !important;
+    padding-bottom: 0.75rem !important;
+  }
+
+  .crm-shell {
+    min-height: 0;
+  }
+
+  .crm-toolbar {
+    min-height: 0 !important;
+    padding: 0.35rem 0.75rem !important;
+    gap: 0.5rem !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+
+  .crm-tabs {
+    gap: 0.85rem !important;
+  }
+
+  .crm-tab-button {
+    height: 2rem !important;
+  }
+
+  .crm-controls {
+    gap: 0.5rem !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+  }
+
+  .crm-search {
+    min-width: 9.5rem;
+    flex: 1 1 9.5rem;
+  }
+
+  .crm-search input {
+    height: 2rem !important;
+    border-radius: 0.625rem !important;
+  }
+
+  .crm-desktop-customer-actions {
+    display: none !important;
+  }
+
+  .crm-mobile-customer-actions {
+    display: block !important;
+    padding: 0.4rem 0.75rem !important;
+  }
+}
+
+@media (max-width: 1024px), (pointer: coarse) {
+  input[type="text"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="email"],
+  input[type="url"],
+  input[type="password"],
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 540px) and (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
