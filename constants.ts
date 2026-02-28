@@ -18,7 +18,8 @@ export const LOCAL_STORAGE_KEYS = {
   DRIVERS: 'control_taxi_drivers',
   CUSTOMERS: 'control_taxi_customers',
   ALERTS: 'control_taxi_alerts',
-  SYNC_EPOCH: 'control_taxi_sync_epoch'
+  SYNC_EPOCH: 'control_taxi_sync_epoch',
+  SYNC_RESET_TOKEN: 'control_taxi_sync_reset_token'
 };
 
 export const SPECIAL_REQUIREMENTS = [

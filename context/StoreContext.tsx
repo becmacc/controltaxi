@@ -163,6 +163,32 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               ? Math.max(0, Math.floor(metadata.syncEpoch))
               : payloadSyncEpoch;
             const localSyncEpoch = Storage.getSyncEpoch();
+            const payloadResetToken = typeof payloadRecord.resetToken === 'string'
+              ? String(payloadRecord.resetToken).trim()
+              : '';
+            const remoteResetToken = typeof metadata.resetToken === 'string'
+              ? metadata.resetToken.trim()
+              : payloadResetToken;
+            const localResetToken = Storage.getSyncResetToken();
+
+            if (remoteResetToken && remoteResetToken !== localResetToken) {
+              console.warn('[cloud-sync] remote reset token detected; applying authoritative clear');
+              Storage.clearOperationalDataAtEpoch(Math.max(remoteSyncEpoch, localSyncEpoch), remoteResetToken);
+              refreshData();
+
+              const healedPayload = Storage.getFullSystemData({ includeSettings: true });
+              const healedSignature = createSyncSignature(healedPayload);
+              const activeSession = cloudSyncSessionRef.current;
+              if (activeSession && activeSession.isEnabled) {
+                void activeSession.publish(healedPayload, healedSignature).then(ok => {
+                  if (ok) {
+                    lastSyncedSignatureRef.current = healedSignature;
+                    console.info('[cloud-sync] acknowledged remote reset token');
+                  }
+                });
+              }
+              return;
+            }
 
             if (remoteSyncEpoch > payloadSyncEpoch) {
               console.warn('[cloud-sync] remote sync epoch is ahead of payload epoch; enforcing clear-state recovery');
@@ -303,6 +329,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const remoteSyncEpoch = typeof remoteSignatureResult.syncEpoch === 'number'
         ? Math.max(0, Math.floor(remoteSignatureResult.syncEpoch))
         : 0;
+      const localResetToken = typeof (payload as { resetToken?: unknown }).resetToken === 'string'
+        ? String((payload as { resetToken?: string }).resetToken || '').trim()
+        : '';
+      const remoteResetToken = typeof remoteSignatureResult.resetToken === 'string'
+        ? remoteSignatureResult.resetToken.trim()
+        : '';
+
+      if (remoteResetToken && remoteResetToken !== localResetToken) {
+        console.warn('[cloud-sync] publish skipped (remote reset token not acknowledged locally)');
+        return;
+      }
 
       const knownRemoteSignature = lastSyncedSignatureRef.current;
       if (knownRemoteSignature && remoteSignatureResult.signature !== knownRemoteSignature) {

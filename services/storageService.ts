@@ -7,6 +7,7 @@ interface FullSystemBackup {
   version?: string;
   timestamp?: string;
   syncEpoch?: number;
+  resetToken?: string;
   trips?: Trip[];
   deletedTrips?: DeletedTripRecord[];
   drivers?: Driver[];
@@ -116,11 +117,32 @@ export const bumpSyncEpoch = (): number => {
   return next;
 };
 
+export const getSyncResetToken = (): string => {
+  return String(localStorage.getItem(LOCAL_STORAGE_KEYS.SYNC_RESET_TOKEN) || '').trim();
+};
+
+export const setSyncResetTokenValue = (token: string): void => {
+  const normalized = String(token || '').trim();
+  if (!normalized) {
+    localStorage.removeItem(LOCAL_STORAGE_KEYS.SYNC_RESET_TOKEN);
+    return;
+  }
+  localStorage.setItem(LOCAL_STORAGE_KEYS.SYNC_RESET_TOKEN, normalized);
+};
+
+export const rotateSyncResetToken = (): string => {
+  const token = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  setSyncResetTokenValue(token);
+  return token;
+};
+
 // --- SYSTEM WIDE ---
 export const getFullSystemData = (options?: { includeSettings?: boolean }) => {
   const includeSettings = options?.includeSettings === true;
+  const resetToken = getSyncResetToken();
   return {
     syncEpoch: getSyncEpoch(),
+    ...(resetToken ? { resetToken } : {}),
     trips: getTrips(),
     deletedTrips: getDeletedTrips(),
     drivers: getDrivers(),
@@ -157,6 +179,15 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Sync epoch section is invalid.',
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      hasSettings: false,
+    };
+  }
+
+  if ('resetToken' in backup && typeof backup.resetToken !== 'string') {
+    return {
+      isValid: false,
+      error: 'Reset token section is invalid.',
       counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
       hasSettings: false,
     };
@@ -261,6 +292,7 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
 
   const backup = data as FullSystemBackup;
   const incomingSyncEpoch = normalizeSyncEpoch(backup.syncEpoch);
+  const incomingResetToken = typeof backup.resetToken === 'string' ? backup.resetToken.trim() : '';
 
   const mergeByKey = <T>(
     existing: T[],
@@ -349,11 +381,16 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
     }
   }
 
+  if (incomingResetToken) {
+    setSyncResetTokenValue(incomingResetToken);
+  }
+
   return { ok: true, inspection, applied };
 };
 
 export const clearOperationalData = () => {
   bumpSyncEpoch();
+  rotateSyncResetToken();
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify([]));
@@ -361,8 +398,11 @@ export const clearOperationalData = () => {
   localStorage.setItem(LOCAL_STORAGE_KEYS.ALERTS, JSON.stringify([]));
 };
 
-export const clearOperationalDataAtEpoch = (syncEpoch: number) => {
+export const clearOperationalDataAtEpoch = (syncEpoch: number, resetToken?: string) => {
   setSyncEpochValue(syncEpoch);
+  if (typeof resetToken === 'string' && resetToken.trim()) {
+    setSyncResetTokenValue(resetToken);
+  }
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify([]));

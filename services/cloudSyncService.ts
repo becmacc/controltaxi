@@ -6,7 +6,7 @@ type SyncStatus = 'disabled' | 'connecting' | 'ready' | 'error';
 
 interface StartCloudSyncOptions {
   clientId: string;
-  onRemoteData: (payload: unknown, metadata: { updatedBy?: string; signature?: string; syncEpoch?: number; channel?: string }) => void;
+  onRemoteData: (payload: unknown, metadata: { updatedBy?: string; signature?: string; syncEpoch?: number; resetToken?: string; channel?: string }) => void;
   onStatusChange?: (status: SyncStatus, message?: string) => void;
 }
 
@@ -21,6 +21,7 @@ export interface CloudSyncSignatureFetchResult {
   ok: boolean;
   signature?: string;
   syncEpoch?: number;
+  resetToken?: string;
   code?: 'not-configured' | 'auth-disabled' | 'no-remote-payload' | 'permission-denied' | 'fetch-failed';
   reason?: string;
 }
@@ -78,10 +79,12 @@ export const createSyncSignature = (payload: unknown): string => {
   const syncEpoch = typeof record.syncEpoch === 'number' && Number.isFinite(record.syncEpoch)
     ? Math.max(0, Math.floor(record.syncEpoch))
     : 0;
+  const resetToken = typeof record.resetToken === 'string' ? record.resetToken.trim() : '';
 
   return JSON.stringify({
     version: typeof record.version === 'string' ? record.version : '0',
     syncEpoch,
+    resetToken,
     trips: Array.isArray(record.trips) ? record.trips : [],
     drivers: Array.isArray(record.drivers) ? record.drivers : [],
     customers: Array.isArray(record.customers) ? record.customers : [],
@@ -139,7 +142,13 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
       : null;
     const syncEpoch = topLevelSyncEpoch ?? payloadSyncEpoch ?? 0;
 
-    return { ok: true, signature, syncEpoch };
+    const topLevelResetToken = typeof data.resetToken === 'string' ? data.resetToken.trim() : '';
+    const payloadResetToken = payloadRecord && typeof payloadRecord.resetToken === 'string'
+      ? String(payloadRecord.resetToken).trim()
+      : '';
+    const resetToken = topLevelResetToken || payloadResetToken || undefined;
+
+    return { ok: true, signature, syncEpoch, resetToken };
   } catch (error) {
     const path = `${CLOUD_COLLECTION}/${CLOUD_DOC_ID}`;
     if (isPermissionDeniedError(error)) {
@@ -238,6 +247,11 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
           ? Math.max(0, Math.floor(payloadRecord.syncEpoch))
           : null;
         const syncEpoch = topLevelSyncEpoch ?? payloadSyncEpoch ?? 0;
+        const topLevelResetToken = typeof data?.resetToken === 'string' ? data.resetToken.trim() : '';
+        const payloadResetToken = payloadRecord && typeof payloadRecord.resetToken === 'string'
+          ? String(payloadRecord.resetToken).trim()
+          : '';
+        const resetToken = topLevelResetToken || payloadResetToken || undefined;
 
         if (!data?.payload) {
           return;
@@ -252,6 +266,7 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
           updatedBy: typeof data.updatedBy === 'string' ? data.updatedBy : undefined,
           signature: signature || undefined,
           syncEpoch,
+          resetToken,
           channel,
         });
       } catch (error) {
@@ -305,6 +320,9 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
               syncEpoch: typeof (payload as { syncEpoch?: unknown }).syncEpoch === 'number'
                 ? Math.max(0, Math.floor((payload as { syncEpoch?: number }).syncEpoch || 0))
                 : 0,
+              resetToken: typeof (payload as { resetToken?: unknown }).resetToken === 'string'
+                ? String((payload as { resetToken?: string }).resetToken || '').trim()
+                : '',
               updatedBy: options.clientId,
               updatedAt: serverTimestamp(),
               updatedAtMs: nowMs,
