@@ -171,9 +171,31 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               : payloadResetToken;
             const localResetToken = Storage.getSyncResetToken();
 
-            if (remoteResetToken && remoteResetToken !== localResetToken) {
-              console.warn('[cloud-sync] remote reset token detected; applying authoritative clear');
-              Storage.clearOperationalDataAtEpoch(Math.max(remoteSyncEpoch, localSyncEpoch), remoteResetToken);
+            const remoteHasOperationalData =
+              (Array.isArray(payloadRecord.trips) && payloadRecord.trips.length > 0) ||
+              (Array.isArray(payloadRecord.deletedTrips) && payloadRecord.deletedTrips.length > 0) ||
+              (Array.isArray(payloadRecord.drivers) && payloadRecord.drivers.length > 0) ||
+              (Array.isArray(payloadRecord.customers) && payloadRecord.customers.length > 0) ||
+              (Array.isArray(payloadRecord.alerts) && payloadRecord.alerts.length > 0);
+
+            if (remoteResetToken !== localResetToken) {
+              const canAdoptRemoteReset = Boolean(remoteResetToken) && remoteSyncEpoch > localSyncEpoch;
+              const targetResetToken = canAdoptRemoteReset
+                ? remoteResetToken
+                : (localResetToken || remoteResetToken);
+
+              if (!targetResetToken) {
+                console.warn('[cloud-sync] reset token mismatch without recoverable token; ignoring payload');
+                return;
+              }
+
+              if (!canAdoptRemoteReset && remoteHasOperationalData) {
+                console.warn('[cloud-sync] blocked stale payload that conflicts with local reset token');
+              } else {
+                console.warn('[cloud-sync] reset token mismatch; applying authoritative clear');
+              }
+
+              Storage.clearOperationalDataAtEpoch(Math.max(remoteSyncEpoch, localSyncEpoch), targetResetToken);
               refreshData();
 
               const healedPayload = Storage.getFullSystemData({ includeSettings: true });
