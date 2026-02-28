@@ -20,6 +20,7 @@ export interface CloudSyncSession {
 export interface CloudSyncSignatureFetchResult {
   ok: boolean;
   signature?: string;
+  syncEpoch?: number;
   reason?: string;
 }
 
@@ -73,9 +74,13 @@ export const getOrCreateCloudSyncClientId = () => {
 export const createSyncSignature = (payload: unknown): string => {
   if (!payload || typeof payload !== 'object') return '{}';
   const record = payload as Record<string, unknown>;
+  const syncEpoch = typeof record.syncEpoch === 'number' && Number.isFinite(record.syncEpoch)
+    ? Math.max(0, Math.floor(record.syncEpoch))
+    : 0;
 
   return JSON.stringify({
     version: typeof record.version === 'string' ? record.version : '0',
+    syncEpoch,
     trips: Array.isArray(record.trips) ? record.trips : [],
     drivers: Array.isArray(record.drivers) ? record.drivers : [],
     customers: Array.isArray(record.customers) ? record.customers : [],
@@ -121,7 +126,14 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
       ? data.signature
       : createSyncSignature(data.payload);
 
-    return { ok: true, signature };
+    const payloadRecord = data.payload && typeof data.payload === 'object'
+      ? data.payload as Record<string, unknown>
+      : null;
+    const syncEpoch = payloadRecord && typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
+      ? Math.max(0, Math.floor(payloadRecord.syncEpoch))
+      : 0;
+
+    return { ok: true, signature, syncEpoch };
   } catch (error) {
     const path = `${CLOUD_COLLECTION}/${CLOUD_DOC_ID}`;
     if (isPermissionDeniedError(error)) {

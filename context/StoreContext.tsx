@@ -155,6 +155,28 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               return;
             }
 
+            const payloadRecord = payload as Record<string, unknown>;
+            const remoteSyncEpoch = typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
+              ? Math.max(0, Math.floor(payloadRecord.syncEpoch))
+              : 0;
+            const localSyncEpoch = Storage.getSyncEpoch();
+
+            if (remoteSyncEpoch < localSyncEpoch) {
+              console.warn('[cloud-sync] ignored stale remote payload (older sync epoch)');
+              const localPayload = Storage.getFullSystemData({ includeSettings: true });
+              const localSignature = createSyncSignature(localPayload);
+              const activeSession = cloudSyncSessionRef.current;
+              if (activeSession && activeSession.isEnabled) {
+                void activeSession.publish(localPayload, localSignature).then(ok => {
+                  if (ok) {
+                    lastSyncedSignatureRef.current = localSignature;
+                    console.info('[cloud-sync] self-healed stale remote payload');
+                  }
+                });
+              }
+              return;
+            }
+
             const remoteSignature = metadata.signature || createSyncSignature(payload);
             const localSignature = createSyncSignature(Storage.getFullSystemData({ includeSettings: true }));
 
@@ -240,18 +262,38 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
+      const localSyncEpoch = typeof (payload as { syncEpoch?: unknown }).syncEpoch === 'number'
+        ? Math.max(0, Math.floor((payload as { syncEpoch?: number }).syncEpoch || 0))
+        : 0;
+      const remoteSyncEpoch = typeof remoteSignatureResult.syncEpoch === 'number'
+        ? Math.max(0, Math.floor(remoteSignatureResult.syncEpoch))
+        : 0;
+
       const knownRemoteSignature = lastSyncedSignatureRef.current;
       if (knownRemoteSignature && remoteSignatureResult.signature !== knownRemoteSignature) {
-        console.warn('[cloud-sync] publish skipped (stale local state detected)');
-        return;
+        if (remoteSyncEpoch < localSyncEpoch) {
+          console.info('[cloud-sync] remote epoch behind local, publishing authoritative local state');
+        } else {
+          console.warn('[cloud-sync] publish skipped (stale local state detected)');
+          return;
+        }
       }
 
       if (!knownRemoteSignature) {
         lastSyncedSignatureRef.current = remoteSignatureResult.signature;
         if (remoteSignatureResult.signature !== signature) {
-          console.warn('[cloud-sync] publish skipped (awaiting remote apply)');
-          return;
+          if (remoteSyncEpoch < localSyncEpoch) {
+            console.info('[cloud-sync] remote epoch behind local, publishing authoritative local state');
+          } else {
+            console.warn('[cloud-sync] publish skipped (awaiting remote apply)');
+            return;
+          }
         }
+      }
+
+      if (remoteSyncEpoch > localSyncEpoch) {
+        console.warn('[cloud-sync] publish skipped (stale local state detected)');
+        return;
       }
 
       const ok = await activeSession.publish(payload, signature);

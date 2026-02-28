@@ -6,6 +6,7 @@ import { mergeCustomerCollections } from './customerProfile';
 interface FullSystemBackup {
   version?: string;
   timestamp?: string;
+  syncEpoch?: number;
   trips?: Trip[];
   deletedTrips?: DeletedTripRecord[];
   drivers?: Driver[];
@@ -94,10 +95,32 @@ const migrateLegacyTemplates = (rawTemplates: unknown): { templates: Settings['t
   return { templates: nextTemplates, changed };
 };
 
+const normalizeSyncEpoch = (value: unknown): number | null => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.floor(value));
+};
+
+export const getSyncEpoch = (): number => {
+  const raw = localStorage.getItem(LOCAL_STORAGE_KEYS.SYNC_EPOCH);
+  const parsed = normalizeSyncEpoch(raw === null ? null : Number(raw));
+  return parsed ?? 0;
+};
+
+const setSyncEpoch = (value: number): void => {
+  localStorage.setItem(LOCAL_STORAGE_KEYS.SYNC_EPOCH, String(Math.max(0, Math.floor(value))));
+};
+
+export const bumpSyncEpoch = (): number => {
+  const next = getSyncEpoch() + 1;
+  setSyncEpoch(next);
+  return next;
+};
+
 // --- SYSTEM WIDE ---
 export const getFullSystemData = (options?: { includeSettings?: boolean }) => {
   const includeSettings = options?.includeSettings === true;
   return {
+    syncEpoch: getSyncEpoch(),
     trips: getTrips(),
     deletedTrips: getDeletedTrips(),
     drivers: getDrivers(),
@@ -125,6 +148,15 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Backup version is missing or invalid.',
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      hasSettings: false,
+    };
+  }
+
+  if ('syncEpoch' in backup && normalizeSyncEpoch(backup.syncEpoch) === null) {
+    return {
+      isValid: false,
+      error: 'Sync epoch section is invalid.',
       counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
       hasSettings: false,
     };
@@ -228,6 +260,7 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
   }
 
   const backup = data as FullSystemBackup;
+  const incomingSyncEpoch = normalizeSyncEpoch(backup.syncEpoch);
 
   const mergeByKey = <T>(
     existing: T[],
@@ -308,10 +341,19 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
     applied.settings = true;
   }
 
+  if (incomingSyncEpoch !== null) {
+    if (mode === 'replace') {
+      setSyncEpoch(incomingSyncEpoch);
+    } else {
+      setSyncEpoch(Math.max(getSyncEpoch(), incomingSyncEpoch));
+    }
+  }
+
   return { ok: true, inspection, applied };
 };
 
 export const clearOperationalData = () => {
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify([]));
