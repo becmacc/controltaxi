@@ -6,7 +6,7 @@ type SyncStatus = 'disabled' | 'connecting' | 'ready' | 'error';
 
 interface StartCloudSyncOptions {
   clientId: string;
-  onRemoteData: (payload: unknown, metadata: { updatedBy?: string; signature?: string; channel?: string }) => void;
+  onRemoteData: (payload: unknown, metadata: { updatedBy?: string; signature?: string; syncEpoch?: number; channel?: string }) => void;
   onStatusChange?: (status: SyncStatus, message?: string) => void;
 }
 
@@ -129,9 +129,13 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
     const payloadRecord = data.payload && typeof data.payload === 'object'
       ? data.payload as Record<string, unknown>
       : null;
-    const syncEpoch = payloadRecord && typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
+    const topLevelSyncEpoch = typeof data.syncEpoch === 'number' && Number.isFinite(data.syncEpoch)
+      ? Math.max(0, Math.floor(data.syncEpoch))
+      : null;
+    const payloadSyncEpoch = payloadRecord && typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
       ? Math.max(0, Math.floor(payloadRecord.syncEpoch))
-      : 0;
+      : null;
+    const syncEpoch = topLevelSyncEpoch ?? payloadSyncEpoch ?? 0;
 
     return { ok: true, signature, syncEpoch };
   } catch (error) {
@@ -222,6 +226,16 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
         const snapshot = await getDoc(legacyRef);
         const data = snapshot.data();
         const signature = typeof data?.signature === 'string' ? data.signature : null;
+        const payloadRecord = data?.payload && typeof data.payload === 'object'
+          ? data.payload as Record<string, unknown>
+          : null;
+        const topLevelSyncEpoch = typeof data?.syncEpoch === 'number' && Number.isFinite(data.syncEpoch)
+          ? Math.max(0, Math.floor(data.syncEpoch))
+          : null;
+        const payloadSyncEpoch = payloadRecord && typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
+          ? Math.max(0, Math.floor(payloadRecord.syncEpoch))
+          : null;
+        const syncEpoch = topLevelSyncEpoch ?? payloadSyncEpoch ?? 0;
 
         if (!data?.payload) {
           return;
@@ -235,6 +249,7 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
         options.onRemoteData(data.payload, {
           updatedBy: typeof data.updatedBy === 'string' ? data.updatedBy : undefined,
           signature: signature || undefined,
+          syncEpoch,
           channel,
         });
       } catch (error) {
@@ -285,6 +300,9 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
             {
               payload,
               signature,
+              syncEpoch: typeof (payload as { syncEpoch?: unknown }).syncEpoch === 'number'
+                ? Math.max(0, Math.floor((payload as { syncEpoch?: number }).syncEpoch || 0))
+                : 0,
               updatedBy: options.clientId,
               updatedAt: serverTimestamp(),
               updatedAtMs: nowMs,

@@ -156,10 +156,34 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             }
 
             const payloadRecord = payload as Record<string, unknown>;
-            const remoteSyncEpoch = typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
+            const payloadSyncEpoch = typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
               ? Math.max(0, Math.floor(payloadRecord.syncEpoch))
               : 0;
+            const remoteSyncEpoch = typeof metadata.syncEpoch === 'number'
+              ? Math.max(0, Math.floor(metadata.syncEpoch))
+              : payloadSyncEpoch;
             const localSyncEpoch = Storage.getSyncEpoch();
+
+            if (remoteSyncEpoch > payloadSyncEpoch) {
+              console.warn('[cloud-sync] remote sync epoch is ahead of payload epoch; enforcing clear-state recovery');
+              if (remoteSyncEpoch > localSyncEpoch) {
+                Storage.clearOperationalDataAtEpoch(remoteSyncEpoch);
+                refreshData();
+              }
+
+              const healedPayload = Storage.getFullSystemData({ includeSettings: true });
+              const healedSignature = createSyncSignature(healedPayload);
+              const activeSession = cloudSyncSessionRef.current;
+              if (activeSession && activeSession.isEnabled) {
+                void activeSession.publish(healedPayload, healedSignature).then(ok => {
+                  if (ok) {
+                    lastSyncedSignatureRef.current = healedSignature;
+                    console.info('[cloud-sync] recovered from stale payload overwrite');
+                  }
+                });
+              }
+              return;
+            }
 
             if (remoteSyncEpoch < localSyncEpoch) {
               console.warn('[cloud-sync] ignored stale remote payload (older sync epoch)');

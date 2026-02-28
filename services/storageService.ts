@@ -106,13 +106,13 @@ export const getSyncEpoch = (): number => {
   return parsed ?? 0;
 };
 
-const setSyncEpoch = (value: number): void => {
+export const setSyncEpochValue = (value: number): void => {
   localStorage.setItem(LOCAL_STORAGE_KEYS.SYNC_EPOCH, String(Math.max(0, Math.floor(value))));
 };
 
 export const bumpSyncEpoch = (): number => {
   const next = getSyncEpoch() + 1;
-  setSyncEpoch(next);
+  setSyncEpochValue(next);
   return next;
 };
 
@@ -343,9 +343,9 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
 
   if (incomingSyncEpoch !== null) {
     if (mode === 'replace') {
-      setSyncEpoch(incomingSyncEpoch);
+      setSyncEpochValue(incomingSyncEpoch);
     } else {
-      setSyncEpoch(Math.max(getSyncEpoch(), incomingSyncEpoch));
+      setSyncEpochValue(Math.max(getSyncEpoch(), incomingSyncEpoch));
     }
   }
 
@@ -354,6 +354,15 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
 
 export const clearOperationalData = () => {
   bumpSyncEpoch();
+  localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.CUSTOMERS, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.ALERTS, JSON.stringify([]));
+};
+
+export const clearOperationalDataAtEpoch = (syncEpoch: number) => {
+  setSyncEpochValue(syncEpoch);
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify([]));
