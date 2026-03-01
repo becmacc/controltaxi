@@ -234,12 +234,33 @@ export const TripsPage: React.FC = () => {
       };
     };
 
+    const parsePlaceCandidate = (payload: any) => {
+      const candidate = payload?.candidates?.[0];
+      const lat = Number(candidate?.geometry?.location?.lat);
+      const lng = Number(candidate?.geometry?.location?.lng);
+      if (!candidate || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+      return {
+        placeId: String(candidate.place_id || 'GEOCODED_DESTINATION'),
+        formattedAddress: String(candidate.formatted_address || candidate.name || query),
+        lat,
+        lng,
+      };
+    };
+
     const restrictedEndpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&components=country:LB&key=${encodeURIComponent(settings.googleMapsApiKey)}`;
     const restrictedResponse = await fetch(restrictedEndpoint);
     if (restrictedResponse.ok) {
       const restrictedPayload = await restrictedResponse.json();
       const restrictedResult = parseFirstResult(restrictedPayload);
       if (restrictedResult) return restrictedResult;
+    }
+
+    const placesEndpoint = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(query)}&inputtype=textquery&fields=place_id,name,formatted_address,geometry&locationbias=circle:30000@33.8938,35.5018&region=lb&language=en&key=${encodeURIComponent(settings.googleMapsApiKey)}`;
+    const placesResponse = await fetch(placesEndpoint);
+    if (placesResponse.ok) {
+      const placesPayload = await placesResponse.json();
+      const placesResult = parsePlaceCandidate(placesPayload);
+      if (placesResult) return placesResult;
     }
 
     const fallbackEndpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${encodeURIComponent(settings.googleMapsApiKey)}`;
@@ -1371,7 +1392,6 @@ const TripUpdateModal: React.FC<{
         const autocomplete = new google.maps.places.Autocomplete(destinationInputRef.current, {
           componentRestrictions: { country: 'lb' },
           fields: ['place_id', 'geometry', 'formatted_address', 'name'],
-          types: ['geocode'],
         });
 
         autocomplete.addListener('place_changed', () => {
@@ -1415,7 +1435,6 @@ const TripUpdateModal: React.FC<{
           const stopAutocomplete = new google.maps.places.Autocomplete(input, {
             componentRestrictions: { country: 'lb' },
             fields: ['place_id', 'geometry', 'formatted_address', 'name'],
-            types: ['geocode'],
           });
 
           stopAutocomplete.addListener('place_changed', () => {
