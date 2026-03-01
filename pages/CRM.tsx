@@ -1462,6 +1462,7 @@ export const CRMPage: React.FC = () => {
       const receipt = result.receipt;
       const text = [
         'CONTROL TAXI RECEIPT',
+        `Receipt Number: ${receipt.receiptNumber}`,
         `Receipt ID: ${receipt.id}`,
         `Issued At: ${receipt.issuedAt}`,
         `Party Type: ${receipt.partyType}`,
@@ -2972,6 +2973,39 @@ const FinanceCreditPanel: React.FC<{
     })
     .slice(0, 6);
 
+  const exportOpenBacklogCsv = () => {
+    if (openEntries.length === 0) return;
+
+    const escapeCsv = (value: unknown): string => {
+      const text = String(value ?? '');
+      if (text.includes('"') || text.includes(',') || text.includes('\n')) {
+        return `"${text.replace(/"/g, '""')}"`;
+      }
+      return text;
+    };
+
+    const headers = ['entry_id', 'party_type', 'party_name', 'cycle', 'amount_usd', 'due_date', 'notes', 'created_at'];
+    const rows = openEntries.map(entry => [
+      entry.id,
+      entry.partyType,
+      entry.partyName,
+      entry.cycle,
+      entry.amountUsd.toFixed(2),
+      entry.dueDate || '',
+      entry.notes || '',
+      entry.createdAt,
+    ].map(escapeCsv).join(','));
+
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `open-backlog-${filterDriverId || 'all'}-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const submitCredit = () => {
     const amount = Number(amountUsd);
     const selectedParty = partyOptions.find(option => option.id === partyId);
@@ -2999,6 +3033,14 @@ const FinanceCreditPanel: React.FC<{
           <h4 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Credit Ledger</h4>
           <p className="text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 mt-1">Open backlog ${openBacklog.toFixed(2)} · {openEntries.length} open</p>
         </div>
+        <button
+          type="button"
+          onClick={exportOpenBacklogCsv}
+          disabled={openEntries.length === 0}
+          className="h-8 px-3 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Export Open CSV
+        </button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -3080,6 +3122,7 @@ const FinanceCreditPanel: React.FC<{
             recentReceipts.map(receipt => (
               <div key={receipt.id} className="border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 bg-white dark:bg-brand-900">
                 <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100">{receipt.partyName}</p>
+                <p className="text-[8px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300">#{receipt.receiptNumber}</p>
                 <p className="text-[8px] font-bold uppercase tracking-widest text-slate-400">{receipt.partyType} · {receipt.cycle} · {format(parseISO(receipt.issuedAt), 'MMM d, h:mm a')}</p>
                 <p className="text-[10px] font-black text-emerald-600">${receipt.amountUsd.toFixed(2)}</p>
               </div>

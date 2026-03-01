@@ -191,6 +191,7 @@ export interface CreditLedgerEntry {
 
 export interface ReceiptRecord {
   id: string;
+  receiptNumber: string;
   ledgerEntryId: string;
   issuedAt: string;
   partyType: CreditPartyType;

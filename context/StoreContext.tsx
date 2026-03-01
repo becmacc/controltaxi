@@ -776,10 +776,28 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return { ok: false, reason: 'Entry is already settled.' };
     }
 
+    const issuedAt = new Date();
+    const year = issuedAt.getFullYear();
+    const periodLabel = current.cycle === 'MONTHLY'
+      ? `${year}-${String(issuedAt.getMonth() + 1).padStart(2, '0')}`
+      : (() => {
+          const start = new Date(Date.UTC(issuedAt.getFullYear(), issuedAt.getMonth(), issuedAt.getDate()));
+          start.setUTCDate(start.getUTCDate() + 4 - (start.getUTCDay() || 7));
+          const isoYear = start.getUTCFullYear();
+          const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+          const week = Math.ceil((((start.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+          return `${isoYear}-W${String(week).padStart(2, '0')}`;
+        })();
+
+    const receiptPrefix = `${current.partyType}-${current.cycle}-${periodLabel}`;
+    const existingForPeriod = receipts.filter(item => item.receiptNumber.startsWith(receiptPrefix)).length;
+    const receiptNumber = `${receiptPrefix}-${String(existingForPeriod + 1).padStart(3, '0')}`;
+
     const receipt: ReceiptRecord = {
       id: `receipt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      receiptNumber,
       ledgerEntryId: current.id,
-      issuedAt: new Date().toISOString(),
+      issuedAt: issuedAt.toISOString(),
       partyType: current.partyType,
       partyName: current.partyName,
       cycle: current.cycle,
