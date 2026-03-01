@@ -16,7 +16,7 @@ import { MessageModal } from '../components/MessageModal';
 import { CustomerSnapshotCard } from '../components/CustomerSnapshotCard';
 import { MIN_RIDE_FARE_USD } from '../constants';
 import { formatTripDestination, formatTripPickup, formatTripStops, replacePlaceholders } from '../services/placeholderService';
-import { buildWhatsAppLink } from '../services/whatsapp';
+import { buildWhatsAppLink, sanitizeCommunicationText } from '../services/whatsapp';
 import { buildCustomerSnapshotForTrip, CustomerSnapshot } from '../services/customerSnapshot';
 import { customerPhoneKey } from '../services/customerProfile';
 import { parseGoogleMapsLink, parseGpsOrLatLngInput } from '../services/locationParser';
@@ -192,13 +192,13 @@ export const TripsPage: React.FC = () => {
   };
 
   const copyToClipboard = (text: string, type: string, id: number) => {
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(sanitizeCommunicationText(text));
     setCopiedType(`${type}-${id}`);
     setTimeout(() => setCopiedType(null), 2000);
   };
 
   const openWhatsAppMessage = (phone: string | undefined, text: string) => {
-    const link = buildWhatsAppLink(phone || '', text);
+    const link = buildWhatsAppLink(phone || '', sanitizeCommunicationText(text));
     if (!link) {
       setWhatsAppError('Valid WhatsApp phone is required for this communication.');
       setTimeout(() => setWhatsAppError(null), 2500);
@@ -1650,12 +1650,12 @@ const TripUpdateModal: React.FC<{
           {customerSnapshot && <CustomerSnapshotCard snapshot={customerSnapshot} />}
 
           <div className="grid grid-cols-2 gap-4">
-             <div><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Phase Status</label><select value={status} onChange={e => setStatus(e.target.value as TripStatus)} className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 px-4 bg-slate-50 dark:bg-brand-950 text-[11px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all">
-                {Object.values(TripStatus).map(s => <option key={s} value={s}>{s}</option>)}
+             <div><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Phase Status</label><select value={status} onChange={e => setStatus(e.target.value as TripStatus)} className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 px-4 bg-slate-50 dark:bg-brand-950 text-brand-900 dark:text-white text-[11px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all">
+               {Object.values(TripStatus).map(s => <option key={s} value={s} className="text-brand-900">{s}</option>)}
              </select></div>
-             <div><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Active Unit</label><select value={driverId} onChange={e => setDriverId(e.target.value)} className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 px-4 bg-slate-50 dark:bg-brand-950 text-[11px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all">
-                <option value="">Unassigned</option>
-                 {drivers.map(d => <option key={d.id} value={d.id}>{d.name} ({d.plateNumber}) [{d.currentStatus}]</option>)}
+             <div><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Active Unit</label><select value={driverId} onChange={e => setDriverId(e.target.value)} className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 px-4 bg-slate-50 dark:bg-brand-950 text-brand-900 dark:text-white text-[11px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all">
+               <option value="" className="text-brand-900">Unassigned</option>
+                {drivers.map(d => <option key={d.id} value={d.id} className="text-brand-900">{d.name} ({d.plateNumber}) [{d.currentStatus}]</option>)}
              </select></div>
           </div>
 

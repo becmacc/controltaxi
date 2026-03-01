@@ -1,3 +1,4 @@
+import { buildWhatsAppLink, detectPhoneDialCode, applyPhoneDialCode, DEFAULT_PHONE_DIAL_CODE, PHONE_COUNTRY_PRESETS, sanitizeCommunicationText } from '../services/whatsapp';
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../context/StoreContext';
@@ -1529,7 +1530,7 @@ export const CalculatorPage: React.FC = () => {
     }
     const tempTrip = buildCurrentTripData();
     const quoteMsg = replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers);
-    navigator.clipboard.writeText(quoteMsg);
+    navigator.clipboard.writeText(sanitizeCommunicationText(quoteMsg));
     setQuickCopied(true);
     setTimeout(() => setQuickCopied(false), 2000);
   };
@@ -1542,7 +1543,7 @@ export const CalculatorPage: React.FC = () => {
       return;
     }
     const tempTrip = buildCurrentTripData();
-    const quoteMsg = replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers);
+    const quoteMsg = sanitizeCommunicationText(replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers));
     const link = buildWhatsAppLink(customerPhone, quoteMsg);
 
     if (!link) {
@@ -1561,7 +1562,7 @@ export const CalculatorPage: React.FC = () => {
       return;
     }
     const tempTrip = buildCurrentTripData();
-    const quoteMsg = replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers);
+    const quoteMsg = sanitizeCommunicationText(replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers));
     const link = buildWhatsAppLink(settings.operatorWhatsApp, quoteMsg);
 
     if (!link) {

@@ -10,8 +10,8 @@ export const DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT = 30;
 export const APP_NAME = "Control";
 
 export const DEFAULT_TEMPLATES = {
-  trip_confirmation: "Andrew's Taxi ✅\nHi {customer_name}, your ride is confirmed.\n🕒 Pickup Time: {trip_datetime_formatted}\n📍 Pickup: {pickup}\n🏁 Destination: {destination}\n🚗 Driver: {driver_name_with_plate}\n⏱ ETA: {eta_text}\n💵 Fare: ${fare_usd} (~{fare_lbp} LBP)\n{details_block}\n\nIf you need any changes, just reply to this chat.",
-  feedback_request: "Hi {customer_name}, thank you for riding with us.\nHow was your ride with {driver_name}?\nPlease rate it from 1–5 and share a quick note.\nExample: 5 - very good",
+  trip_confirmation: "Andrew's Taxi\nHi {customer_name}, your ride is confirmed.\nPickup Time: {trip_datetime_formatted}\nPickup: {pickup}\nDestination: {destination}\nDriver: {driver_name_with_plate}\nETA: {eta_text}\nFare: ${fare_usd} (~{fare_lbp} LBP)\n{details_block}\n\nIf you need any changes, just reply to this chat.",
+  feedback_request: "Hi {customer_name}, thank you for riding with us.\nHow was your ride with {driver_name}?\nPlease rate it from 1-5 and share a quick note.\nExample: 5 - very good",
   feedback_thanks: "Thank you {customer_name} for your feedback.\nWe appreciate your time and look forward to serving you again."
 };
 

@@ -37,7 +37,7 @@ const formatLocationText = (addressText?: string, lat?: number, lng?: number, di
   const mapLink = toGoogleMapsLink(addressText, lat, lng, directLink);
 
   if (readableAddress && mapLink) {
-    return `${readableAddress}\n🗺 ${mapLink}`;
+    return `${readableAddress}\nMap: ${mapLink}`;
   }
 
   if (readableAddress) {
@@ -69,7 +69,7 @@ export const formatTripDestination = (trip: Trip): string => {
   const destination = formatLocationText(trip.destinationText, trip.destLat, trip.destLng, trip.destinationOriginalLink, 'Destination');
   const stopsText = formatTripStops(trip);
   if (!stopsText) return destination;
-  return `${destination}\n🛑 Stops:\n${stopsText}`;
+  return `${destination}\nStops:\n${stopsText}`;
 };
 
 export const replacePlaceholders = (template: string, trip: Trip, drivers: Driver[]): string => {

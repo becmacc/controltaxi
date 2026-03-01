@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Copy, Check, Send, MessageCircle } from 'lucide-react';
 import { Button } from './ui/Button';
-import { buildWhatsAppLink } from '../services/whatsapp';
+import { buildWhatsAppLink, sanitizeCommunicationText } from '../services/whatsapp';
 import { CustomerSnapshot } from '../services/customerSnapshot';
 import { CustomerSnapshotCard } from './CustomerSnapshotCard';
 
@@ -39,7 +39,7 @@ export const MessageModal: React.FC<MessageModalProps> = ({
   if (!isOpen) return null;
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(message);
+    navigator.clipboard.writeText(sanitizeCommunicationText(message));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -106,7 +106,7 @@ export const MessageModal: React.FC<MessageModalProps> = ({
             <MessageCircle size={15} className="mr-1.5" />
             <span>OP</span>
           </Button>
-          <Button onClick={() => onMarkSent(message)} variant="gold" className="w-full h-12 px-1.5 text-[10px] tracking-widest" title="Mark Sent">
+          <Button onClick={() => onMarkSent(sanitizeCommunicationText(message))} variant="gold" className="w-full h-12 px-1.5 text-[10px] tracking-widest" title="Mark Sent">
             <Send size={15} className="mr-1.5" />
             <span>SENT</span>
           </Button>

@@ -49,6 +49,36 @@ const extractDigits = (value: string): string => {
   return normalizeUnicodeDigits(value || '').replace(/\D/g, '');
 };
 
+const COMM_TEXT_REPLACEMENTS: Record<string, string> = {
+  '’': "'",
+  '‘': "'",
+  '“': '"',
+  '”': '"',
+  '–': '-',
+  '—': '-',
+  '•': '-',
+  '…': '...',
+  '−': '-',
+  ' ': ' ',
+};
+
+export const sanitizeCommunicationText = (value: string): string => {
+  if (!value) return '';
+
+  let result = value;
+  Object.entries(COMM_TEXT_REPLACEMENTS).forEach(([source, replacement]) => {
+    result = result.split(source).join(replacement);
+  });
+
+  return result
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
+};
+
 const stripInternationalPrefix = (value: string): string => {
   return value.startsWith('00') ? value.slice(2) : value;
 };
@@ -117,5 +147,8 @@ export const buildWhatsAppLink = (phone: string, message?: string): string | nul
   const base = `https://wa.me/${normalized}`;
   if (!message) return base;
 
-  return `${base}?text=${encodeURIComponent(message)}`;
+  const sanitizedMessage = sanitizeCommunicationText(message);
+  if (!sanitizedMessage) return base;
+
+  return `${base}?text=${encodeURIComponent(sanitizedMessage)}`;
 };
