@@ -35,6 +35,7 @@ interface StoreContextType {
 
   // Customer Methods
   addCustomers: (newCustomers: Customer[]) => void;
+  removeCustomerByPhone: (phone: string) => { ok: boolean; reason?: string };
 
   // Driver Methods
   addDriver: (driver: Driver) => void;
@@ -711,6 +712,23 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setCustomers(merged);
   };
 
+  const removeCustomerByPhone = (phone: string): { ok: boolean; reason?: string } => {
+    const normalized = customerPhoneKey(phone);
+    if (!normalized) {
+      return { ok: false, reason: 'Invalid customer phone.' };
+    }
+
+    const hasTripHistory = trips.some(trip => customerPhoneKey(trip.customerPhone) === normalized);
+    if (hasTripHistory) {
+      return { ok: false, reason: 'Cannot remove customer with trip history from CRM directory.' };
+    }
+
+    const nextCustomers = customers.filter(entry => customerPhoneKey(entry.phone) !== normalized);
+    Storage.saveCustomers(nextCustomers);
+    setCustomers(nextCustomers);
+    return { ok: true };
+  };
+
   const addDriver = (driver: Driver) => {
     const updated = Storage.saveDispatch('driver', driver) as Driver[];
     setDrivers(updated);
@@ -791,7 +809,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     <StoreContext.Provider value={{ 
       trips, deletedTrips, drivers, customers, settings, alerts, theme, toggleTheme,
       addTrip, updateTripField, updateFullTrip, deleteCancelledTrip, restoreDeletedTrip, dismissAlert, snoozeAlert, resolveAlert,
-      addCustomers, addDriver, editDriver, removeDriver, updateSettings, refreshData, forceCloudSyncPublish, hardResetCloudSync 
+      addCustomers, removeCustomerByPhone, addDriver, editDriver, removeDriver, updateSettings, refreshData, forceCloudSyncPublish, hardResetCloudSync 
     }}>
       {children}
     </StoreContext.Provider>

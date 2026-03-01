@@ -218,7 +218,7 @@ const getLoyaltyTierTone = (tier?: 'VIP' | 'VVIP' | 'REGULAR' | 'NEW') => {
 };
 
 export const CRMPage: React.FC = () => {
-  const { trips, drivers, customers, alerts, settings, editDriver, addDriver, addCustomers, refreshData, hardResetCloudSync } = useStore();
+  const { trips, drivers, customers, alerts, settings, editDriver, addDriver, addCustomers, removeCustomerByPhone, removeDriver, refreshData, hardResetCloudSync } = useStore();
   const [activeView, setActiveView] = useState<ViewMode>('CUSTOMERS');
   const [metricsWindow, setMetricsWindow] = useState<'TODAY' | '7D' | '30D' | 'ALL'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
@@ -1379,6 +1379,42 @@ export const CRMPage: React.FC = () => {
     showCoreStatus(`Updated saved places for ${profile.name}.`);
   };
 
+  const handleRemoveCustomerProfile = (profile: EnhancedCustomerProfile) => {
+    const confirmed = window.confirm(`Remove CRM profile for ${profile.name}? This keeps trip history but removes this directory contact.`);
+    if (!confirmed) return;
+
+    const result = removeCustomerByPhone(profile.phone);
+    if (!result.ok) {
+      showCoreStatus(result.reason || 'Unable to remove CRM profile.');
+      return;
+    }
+
+    setSelectedItem(null);
+    showCoreStatus(`Removed CRM profile for ${profile.name}.`);
+  };
+
+  const handleRemoveFleetProfile = (stats: FleetUnitStats) => {
+    const confirmed = window.confirm(`Remove ${stats.driver.name} from Fleet and keep/add as CRM contact?`);
+    if (!confirmed) return;
+
+    const normalizedPhone = customerPhoneKey(stats.driver.phone) || stats.driver.phone;
+    addCustomers([
+      {
+        id: `fleet-contact-${stats.driver.id}`,
+        name: stats.driver.name,
+        phone: normalizedPhone,
+        source: 'MANUAL',
+        createdAt: new Date().toISOString(),
+        notes: '[FLEET CONTACT]',
+      },
+    ]);
+
+    removeDriver(stats.driver.id);
+    setActiveView('CUSTOMERS');
+    setSelectedItem(normalizedPhone);
+    showCoreStatus(`Removed ${stats.driver.name} from fleet and moved to CRM contacts.`);
+  };
+
   const renderIntelligenceContent = () => {
     if (!selectedItem) {
       if (activeView === 'CUSTOMERS') {
@@ -1433,6 +1469,7 @@ export const CRMPage: React.FC = () => {
           onUpdateEntityType={handleUpdateCustomerEntityType}
           onUpdateProfession={handleUpdateCustomerProfession}
           onUpdateLocations={handleUpdateCustomerLocations}
+          onRemoveProfile={handleRemoveCustomerProfile}
         />
       );
     }
@@ -1440,7 +1477,7 @@ export const CRMPage: React.FC = () => {
     if (activeView === 'FLEET') {
       const stats = fleetHealth.find(f => f.driver.id === selectedItem);
       if (!stats) return null;
-      return <FleetReadinessView stats={stats} onRefuel={() => handleRefuel(stats)} onUpdateGovernance={payload => handleUpdateFleetGovernance(stats, payload)} windowLabel={metricsWindowLabel} />;
+      return <FleetReadinessView stats={stats} onRefuel={() => handleRefuel(stats)} onUpdateGovernance={payload => handleUpdateFleetGovernance(stats, payload)} onRemoveFromFleet={() => handleRemoveFleetProfile(stats)} windowLabel={metricsWindowLabel} />;
     }
 
     if (activeView === 'FINANCE') {
@@ -1971,6 +2008,7 @@ const CustomerIntelligenceView: React.FC<{
   onUpdateGender: (profile: EnhancedCustomerProfile, nextGender: CustomerGender) => void,
   onUpdateEntityType: (profile: EnhancedCustomerProfile, nextEntityType: CustomerEntityType) => void,
   onUpdateProfession: (profile: EnhancedCustomerProfile, nextProfession: string) => void,
+  onRemoveProfile: (profile: EnhancedCustomerProfile) => void,
   onUpdateLocations: (profile: EnhancedCustomerProfile, payload: {
     homeAddress: string;
     homeMapOrCoords: string;
@@ -1978,7 +2016,7 @@ const CustomerIntelligenceView: React.FC<{
     businessMapOrCoords: string;
     frequentLocationsText: string;
   }) => void,
-}> = ({ profile, onJumpToDriver, onUpdateSegments, onUpdateGender, onUpdateEntityType, onUpdateProfession, onUpdateLocations }) => {
+}> = ({ profile, onJumpToDriver, onUpdateSegments, onUpdateGender, onUpdateEntityType, onUpdateProfession, onRemoveProfile, onUpdateLocations }) => {
   const profileTierTone = getLoyaltyTierTone(profile.loyaltyTier);
   const activeSegments = profile.marketSegments || [];
   const hasSingleSegment = activeSegments.length === 1;
@@ -2041,6 +2079,13 @@ const CustomerIntelligenceView: React.FC<{
                  WhatsApp
                </a>
              )}
+             <button
+               type="button"
+               onClick={() => onRemoveProfile(profile)}
+               className="h-8 px-3 rounded-lg border border-red-300 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 text-[9px] font-black uppercase tracking-widest text-red-700 dark:text-red-300 inline-flex items-center"
+             >
+               Remove CRM
+             </button>
           </div>
         </div>
       </div>
@@ -2470,8 +2515,9 @@ const FleetReadinessView: React.FC<{
     maintenanceResponsibility: DriverCostResponsibility;
     fuelRangeKm: number;
   }) => void;
+  onRemoveFromFleet: () => void;
   windowLabel: string;
-}> = ({ stats, onRefuel, onUpdateGovernance, windowLabel }) => {
+}> = ({ stats, onRefuel, onUpdateGovernance, onRemoveFromFleet, windowLabel }) => {
   const driverPhoneKey = customerPhoneKey(stats.driver.phone);
   const driverCallHref = driverPhoneKey ? `tel:+${driverPhoneKey}` : '';
   const driverWhatsappHref = buildWhatsAppLink(driverPhoneKey) || '';
@@ -2582,6 +2628,13 @@ const FleetReadinessView: React.FC<{
                 WhatsApp
               </a>
             )}
+            <button
+              type="button"
+              onClick={onRemoveFromFleet}
+              className="h-8 px-3 rounded-lg border border-red-300 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 text-[9px] font-black uppercase tracking-widest text-red-700 dark:text-red-300 inline-flex items-center"
+            >
+              Remove Fleet
+            </button>
           </div>
         </div>
         <div className="md:text-right">
