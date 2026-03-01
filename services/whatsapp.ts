@@ -24,20 +24,45 @@ const KNOWN_DIAL_CODES = PHONE_COUNTRY_PRESETS
   .map(option => option.dialCode)
   .sort((a, b) => b.length - a.length);
 
+const normalizeUnicodeDigits = (value: string): string => {
+  if (!value) return '';
+
+  const ARABIC_INDIC = '٠١٢٣٤٥٦٧٨٩';
+  const EASTERN_ARABIC = '۰۱۲۳۴۵۶۷۸۹';
+  const FULLWIDTH = '０１２３４５６７８９';
+
+  return value.replace(/[٠-٩۰-۹０-９]/g, char => {
+    const arabicIndex = ARABIC_INDIC.indexOf(char);
+    if (arabicIndex >= 0) return String(arabicIndex);
+
+    const easternIndex = EASTERN_ARABIC.indexOf(char);
+    if (easternIndex >= 0) return String(easternIndex);
+
+    const fullwidthIndex = FULLWIDTH.indexOf(char);
+    if (fullwidthIndex >= 0) return String(fullwidthIndex);
+
+    return char;
+  });
+};
+
+const extractDigits = (value: string): string => {
+  return normalizeUnicodeDigits(value || '').replace(/\D/g, '');
+};
+
 const stripInternationalPrefix = (value: string): string => {
   return value.startsWith('00') ? value.slice(2) : value;
 };
 
 export const detectPhoneDialCode = (rawPhone: string): string | null => {
-  const digitsOnly = stripInternationalPrefix((rawPhone || '').replace(/\D/g, ''));
+  const digitsOnly = stripInternationalPrefix(extractDigits(rawPhone || ''));
   if (!digitsOnly) return null;
   const match = KNOWN_DIAL_CODES.find(code => digitsOnly.startsWith(code));
   return match || null;
 };
 
 export const applyPhoneDialCode = (rawPhone: string, dialCode: string): string => {
-  const safeDialCode = (dialCode || '').replace(/\D/g, '') || DEFAULT_PHONE_DIAL_CODE;
-  let digitsOnly = stripInternationalPrefix((rawPhone || '').replace(/\D/g, ''));
+  const safeDialCode = extractDigits(dialCode || '') || DEFAULT_PHONE_DIAL_CODE;
+  let digitsOnly = stripInternationalPrefix(extractDigits(rawPhone || ''));
 
   const detectedCode = detectPhoneDialCode(digitsOnly);
   if (detectedCode) {
@@ -55,11 +80,11 @@ export const normalizePhoneForWhatsApp = (
   rawPhone: string,
   options?: { defaultDialCode?: string }
 ): string | null => {
-  const digitsOnly = (rawPhone || '').replace(/\D/g, '');
+  const digitsOnly = extractDigits(rawPhone || '');
   if (!digitsOnly) return null;
 
   let normalized = stripInternationalPrefix(digitsOnly);
-  const preferredDialCode = (options?.defaultDialCode || DEFAULT_PHONE_DIAL_CODE).replace(/\D/g, '') || DEFAULT_PHONE_DIAL_CODE;
+  const preferredDialCode = extractDigits(options?.defaultDialCode || DEFAULT_PHONE_DIAL_CODE) || DEFAULT_PHONE_DIAL_CODE;
 
   if (normalized.startsWith('961')) {
     return normalized.length >= 10 && normalized.length <= 11 ? normalized : null;

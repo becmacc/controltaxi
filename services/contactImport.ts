@@ -377,8 +377,59 @@ const parseContactsFromVcf = (text: string): ContactImportReport => {
   const valid: ContactImportCandidate[] = [];
   const errors: string[] = [];
 
+  const unfoldVcfLines = (block: string): string[] => {
+    const rawLines = block.split(/\r?\n/);
+    const unfolded: string[] = [];
+
+    rawLines.forEach(line => {
+      if ((line.startsWith(' ') || line.startsWith('\t')) && unfolded.length > 0) {
+        unfolded[unfolded.length - 1] += line.slice(1);
+        return;
+      }
+      unfolded.push(line);
+    });
+
+    return unfolded.map(line => line.trim()).filter(Boolean);
+  };
+
+  const decodeQuotedPrintable = (value: string): string => {
+    if (!value) return '';
+
+    const softBreakNormalized = value.replace(/=(\r?\n)/g, '');
+    const bytes: number[] = [];
+
+    for (let index = 0; index < softBreakNormalized.length; index += 1) {
+      const char = softBreakNormalized[index];
+      if (char === '=' && index + 2 < softBreakNormalized.length) {
+        const hex = softBreakNormalized.slice(index + 1, index + 3);
+        if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+          bytes.push(parseInt(hex, 16));
+          index += 2;
+          continue;
+        }
+      }
+
+      bytes.push(char.charCodeAt(0));
+    }
+
+    try {
+      return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
+    } catch {
+      return softBreakNormalized;
+    }
+  };
+
+  const unescapeVCardValue = (value: string): string => {
+    return value
+      .replace(/\\n/gi, '\n')
+      .replace(/\\,/g, ',')
+      .replace(/\\;/g, ';')
+      .replace(/\\:/g, ':')
+      .trim();
+  };
+
   blocks.forEach((block, index) => {
-    const lines = block.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const lines = unfoldVcfLines(block);
     const nameLine = lines.find(line => /^FN(?::|;)/i.test(line)) || lines.find(line => /^N(?::|;)/i.test(line));
     const telLine = lines.find(line => /^TEL(?::|;)/i.test(line));
     const noteLine = lines.find(line => /^NOTE(?::|;)/i.test(line));
@@ -387,7 +438,12 @@ const parseContactsFromVcf = (text: string): ContactImportReport => {
       if (!line) return '';
       const idx = line.indexOf(':');
       if (idx === -1) return '';
-      return line.slice(idx + 1).trim();
+      const metadata = line.slice(0, idx);
+      const rawValue = line.slice(idx + 1).trim();
+      const decoded = /ENCODING=QUOTED-PRINTABLE/i.test(metadata)
+        ? decodeQuotedPrintable(rawValue)
+        : rawValue;
+      return unescapeVCardValue(decoded);
     };
 
     const rawName = readValue(nameLine).replace(/;/g, ' ').trim();
