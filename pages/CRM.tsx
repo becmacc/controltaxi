@@ -731,12 +731,27 @@ export const CRMPage: React.FC = () => {
         setVaultSyncStatus('NOT_VERIFIED');
         setVaultSyncDetail(result.reason || 'Hard reset failed.');
       } else {
-        setVaultStatusMessage(`Hard reset complete. New sync channel: ${result.nextDocId || 'unknown'}. Reloading...`);
+        const nextChannel = result.nextDocId || 'unknown';
+        let copied = false;
+        if (result.nextDocId) {
+          try {
+            await navigator.clipboard.writeText(result.nextDocId);
+            copied = true;
+          } catch {
+            copied = false;
+          }
+        }
+
+        setVaultStatusMessage(
+          copied
+            ? `Hard reset complete. New sync channel copied: ${nextChannel}. Reloading in 3s...`
+            : `Hard reset complete. New sync channel: ${nextChannel}. Copy it now. Reloading in 3s...`
+        );
         setVaultSyncStatus('CHECKING');
-        setVaultSyncDetail(`Switching to ${result.nextDocId || 'new channel'}...`);
+        setVaultSyncDetail(`Switching to ${nextChannel}...`);
         window.setTimeout(() => {
           window.location.reload();
-        }, 500);
+        }, 3000);
       }
     } catch {
       setVaultClearArmed(false);
