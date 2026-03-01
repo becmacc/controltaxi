@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../context/StoreContext';
 import { loadGoogleMapsScript } from '../services/googleMapsLoader';
 import { parseGoogleMapsLink, parseGpsOrLatLngInput, ParsedLocation } from '../services/locationParser';
-import { SPECIAL_REQUIREMENTS } from '../constants';
+import { SPECIAL_REQUIREMENTS, MIN_RIDE_FARE_USD } from '../constants';
 import { RouteResult, TripStatus, Customer, CustomerLocation, Trip, TripStop } from '../types';
 import { Button } from '../components/ui/Button';
 import { 
@@ -1203,8 +1203,11 @@ export const CalculatorPage: React.FC = () => {
   const calculateFare = (route: RouteResult) => {
     const base = Math.ceil(route.distanceKm * (isRoundTrip ? 2 : 1) * settings.ratePerKm);
     const wait = addWaitTime ? Math.ceil(waitTimeHours * settings.hourlyWaitRate) : 0;
-    setFareUsd(base + wait);
-    setFareLbp((base + wait) * settings.exchangeRate);
+    const computedFare = base + wait;
+    const minimumFare = Number.isFinite(MIN_RIDE_FARE_USD) ? Math.max(0, MIN_RIDE_FARE_USD) : 7;
+    const finalFare = Math.max(minimumFare, computedFare);
+    setFareUsd(finalFare);
+    setFareLbp(finalFare * settings.exchangeRate);
   };
 
   const toggleRequirement = (id: string) => {

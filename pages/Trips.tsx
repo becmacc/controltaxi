@@ -14,6 +14,7 @@ import {
 import { Button } from '../components/ui/Button';
 import { MessageModal } from '../components/MessageModal';
 import { CustomerSnapshotCard } from '../components/CustomerSnapshotCard';
+import { MIN_RIDE_FARE_USD } from '../constants';
 import { formatTripDestination, formatTripPickup, formatTripStops, replacePlaceholders } from '../services/placeholderService';
 import { buildWhatsAppLink } from '../services/whatsapp';
 import { buildCustomerSnapshotForTrip, CustomerSnapshot } from '../services/customerSnapshot';
@@ -481,7 +482,9 @@ export const TripsPage: React.FC = () => {
       const effectiveDistance = distanceKm * (trip.isRoundTrip ? 2 : 1);
       const baseFare = Math.ceil(effectiveDistance * ratePerKm);
       const waitFare = Math.ceil((trip.waitTimeHours || 0) * hourlyWaitRate);
-      const fareUsd = baseFare + waitFare;
+      const computedFare = baseFare + waitFare;
+      const minimumFare = Number.isFinite(MIN_RIDE_FARE_USD) ? Math.max(0, MIN_RIDE_FARE_USD) : 7;
+      const fareUsd = Math.max(minimumFare, computedFare);
 
       return {
         ok: true,
