@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '../context/StoreContext';
-import { TripStatus, Trip, Driver, Settings } from '../types';
+import { TripStatus, Trip, Driver, Settings, TripPaymentMode, TripSettlementStatus } from '../types';
 import { loadGoogleMapsScript } from '../services/googleMapsLoader';
 import { parseGoogleMapsLink } from '../services/locationParser';
 import { buildWhatsAppLink } from '../services/whatsapp';
@@ -53,6 +53,9 @@ const getCompanyShareForDriver = (driver: Driver, settings: Settings): { rate: n
   return { rate: otherPercent / 100, label: 'OTHER CONFIG RULE' };
 };
 
+const getTripPaymentMode = (trip: Trip): TripPaymentMode => (trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH');
+const getTripSettlementStatus = (trip: Trip): TripSettlementStatus => (trip.settlementStatus || 'PENDING');
+
 const AccountingPulse: React.FC<{
   grossRevenue: number;
   companyOwed: number;
@@ -63,6 +66,9 @@ const AccountingPulse: React.FC<{
   weeklyOpenUsd: number;
   monthlyOpenUsd: number;
   collectedTodayUsd: number;
+  cashSettledTodayUsd: number;
+  openCreditTripTodayUsd: number;
+  receiptedTripTodayUsd: number;
 }> = ({
   grossRevenue,
   companyOwed,
@@ -73,6 +79,9 @@ const AccountingPulse: React.FC<{
   weeklyOpenUsd,
   monthlyOpenUsd,
   collectedTodayUsd,
+  cashSettledTodayUsd,
+  openCreditTripTodayUsd,
+  receiptedTripTodayUsd,
 }) => {
   const cycleTotal = Math.max(weeklyOpenUsd + monthlyOpenUsd, 1);
   const weeklyShare = Math.round((weeklyOpenUsd / cycleTotal) * 100);
@@ -90,7 +99,7 @@ const AccountingPulse: React.FC<{
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
           <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><Wallet size={10} /> Gross</p>
           <p className="text-xl font-black text-emerald-600 mt-1">${Math.round(grossRevenue)}</p>
@@ -108,6 +117,18 @@ const AccountingPulse: React.FC<{
           <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><Receipt size={10} /> Collected Today</p>
           <p className="text-xl font-black text-indigo-600 mt-1">${Math.round(collectedTodayUsd)}</p>
           <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Net after owed ${Math.round(netAfterCompany)}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Cash Settled (Trips)</p>
+          <p className="text-xl font-black text-emerald-600 mt-1">${Math.round(cashSettledTodayUsd)}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Open Credit (Trips)</p>
+          <p className="text-xl font-black text-amber-600 mt-1">${Math.round(openCreditTripTodayUsd)}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Receipted (Trips)</p>
+          <p className="text-xl font-black text-indigo-600 mt-1">${Math.round(receiptedTripTodayUsd)}</p>
         </div>
       </div>
 
@@ -574,6 +595,16 @@ export const GMBriefPage: React.FC = () => {
       .filter(receipt => isToday(parseISO(receipt.issuedAt)))
       .reduce((sum, receipt) => sum + receipt.amountUsd, 0);
 
+    const cashSettledTodayUsd = todayCompleted
+      .filter(trip => getTripPaymentMode(trip) === 'CASH' && getTripSettlementStatus(trip) !== 'PENDING')
+      .reduce((sum, trip) => sum + trip.fareUsd, 0);
+    const openCreditTripTodayUsd = todayCompleted
+      .filter(trip => getTripPaymentMode(trip) === 'CREDIT' && getTripSettlementStatus(trip) === 'PENDING')
+      .reduce((sum, trip) => sum + trip.fareUsd, 0);
+    const receiptedTripTodayUsd = todayCompleted
+      .filter(trip => getTripSettlementStatus(trip) === 'RECEIPTED')
+      .reduce((sum, trip) => sum + trip.fareUsd, 0);
+
     const topBacklog = openEntries.reduce<Record<string, number>>((acc, entry) => {
       const key = entry.partyName || 'Unknown';
       acc[key] = (acc[key] || 0) + entry.amountUsd;
@@ -591,6 +622,9 @@ export const GMBriefPage: React.FC = () => {
       weeklyOpenUsd,
       monthlyOpenUsd,
       collectedTodayUsd,
+      cashSettledTodayUsd,
+      openCreditTripTodayUsd,
+      receiptedTripTodayUsd,
       topBacklogPartyName: topBacklogParty?.[0] || '',
       topBacklogPartyAmount: topBacklogParty?.[1] || 0,
     };
@@ -630,6 +664,7 @@ export const GMBriefPage: React.FC = () => {
       const creditSignal = accountingMetrics.openBacklogCount > 0
         ? `open backlog $${Math.round(accountingMetrics.openBacklogUsd)} across ${accountingMetrics.openBacklogCount} entries (${accountingMetrics.overdueOpenCount} overdue)`
         : 'no open credit backlog';
+      const settlementSignal = `cash settled $${Math.round(accountingMetrics.cashSettledTodayUsd)} · receipted $${Math.round(accountingMetrics.receiptedTripTodayUsd)} · trip credit pending $${Math.round(accountingMetrics.openCreditTripTodayUsd)}`;
       const debtorSignal = accountingMetrics.topBacklogPartyAmount > 0
         ? `largest open party ${accountingMetrics.topBacklogPartyName} ($${Math.round(accountingMetrics.topBacklogPartyAmount)})`
         : 'no dominant debtor profile';
@@ -638,7 +673,7 @@ export const GMBriefPage: React.FC = () => {
         `LOAD — ${demandSignal}: ${synthesisMetrics.busyDrivers}/${synthesisMetrics.activeDrivers || drivers.length || 0} active units are busy (${stats.loadFactor}%).`,
         `FLOW — ${synthesisMetrics.totalTrips} missions, ${synthesisMetrics.completedTrips} completed (${synthesisMetrics.completionRate}%), ${synthesisMetrics.cancelRate}% canceled, revenue $${Math.round(stats.revenueToday)}.`,
         `TRAFFIC — Peak ${synthesisMetrics.peakHourLabel} (${synthesisMetrics.peakHourCount} mission${synthesisMetrics.peakHourCount === 1 ? '' : 's'}); ${trafficSignal} (TI ${synthesisMetrics.avgTraffic}, delay ${synthesisMetrics.avgDelay}m).`,
-        `ACCOUNTING — ${accountingSignal}; collected today $${Math.round(accountingMetrics.collectedTodayUsd)}.`,
+        `ACCOUNTING — ${accountingSignal}; collected today $${Math.round(accountingMetrics.collectedTodayUsd)}; ${settlementSignal}.`,
         `CREDIT — ${creditSignal}; ${debtorSignal}.`,
         `ACTION — ${assignmentSignal}; ${outputSignal}.`,
       ];
@@ -720,6 +755,9 @@ export const GMBriefPage: React.FC = () => {
             weeklyOpenUsd={accountingMetrics.weeklyOpenUsd}
             monthlyOpenUsd={accountingMetrics.monthlyOpenUsd}
             collectedTodayUsd={accountingMetrics.collectedTodayUsd}
+                      cashSettledTodayUsd={accountingMetrics.cashSettledTodayUsd}
+                      openCreditTripTodayUsd={accountingMetrics.openCreditTripTodayUsd}
+                      receiptedTripTodayUsd={accountingMetrics.receiptedTripTodayUsd}
           />
         </div>
 
@@ -785,6 +823,14 @@ export const GMBriefPage: React.FC = () => {
                       <div className="flex items-center justify-between p-4 bg-brand-950 rounded-2xl border border-white/5">
                         <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Collected Today</span>
                         <span className="text-xl font-black text-indigo-400">${Math.round(accountingMetrics.collectedTodayUsd)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-brand-950 rounded-2xl border border-white/5">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Cash Settled</span>
+                        <span className="text-xl font-black text-emerald-400">${Math.round(accountingMetrics.cashSettledTodayUsd)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-brand-950 rounded-2xl border border-white/5">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Trip Credit Pending</span>
+                        <span className="text-xl font-black text-amber-400">${Math.round(accountingMetrics.openCreditTripTodayUsd)}</span>
                       </div>
                   </div>
                 </div>

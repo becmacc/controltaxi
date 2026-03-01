@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../context/StoreContext';
-import { Trip, TripStatus, Driver, Customer, CustomerLocation, TripStop } from '../types';
+import { Trip, TripStatus, Driver, Customer, CustomerLocation, TripStop, TripPaymentMode, TripSettlementStatus } from '../types';
 import { useLocation } from 'react-router-dom';
 import { format, isToday, isFuture, isPast, parseISO } from 'date-fns';
 import { 
@@ -569,6 +569,11 @@ export const TripsPage: React.FC = () => {
       'surplus_min',
       'fare_usd',
       'fare_lbp',
+      'payment_mode',
+      'settlement_status',
+      'credit_entry_id',
+      'receipt_id',
+      'settled_at',
       'stops_count',
       'stops',
       'confirmation_sent',
@@ -599,6 +604,11 @@ export const TripsPage: React.FC = () => {
           trip.surplusMin ?? 0,
           trip.fareUsd,
           trip.fareLbp,
+          trip.paymentMode || 'CASH',
+          trip.settlementStatus || 'PENDING',
+          trip.creditLedgerEntryId || '',
+          trip.receiptId || '',
+          trip.settledAt || '',
           trip.stops?.length || 0,
           formatTripStops(trip).replace(/\n/g, ' | '),
           trip.confirmation_sent_at ? 'YES' : 'NO',
@@ -630,6 +640,11 @@ export const TripsPage: React.FC = () => {
           trip.surplusMin ?? 0,
           trip.fareUsd,
           trip.fareLbp,
+          trip.paymentMode || 'CASH',
+          trip.settlementStatus || 'PENDING',
+          trip.creditLedgerEntryId || '',
+          trip.receiptId || '',
+          trip.settledAt || '',
           trip.stops?.length || 0,
           formatTripStops(trip).replace(/\n/g, ' | '),
           trip.confirmation_sent_at ? 'YES' : 'NO',
@@ -660,29 +675,31 @@ export const TripsPage: React.FC = () => {
 
   const getDriverTemplate = (trip: Trip) => {
     const date = trip.tripDate ? format(parseISO(trip.tripDate), "d MMM, h:mm a") : format(parseISO(trip.createdAt), "d MMM, h:mm a");
-    return `🚕 *MISSION ASSIGNED*\n📅 Time: ${date}\n👤 Client: ${trip.customerName}\n📞 Call: ${trip.customerPhone}\n\n📍 *Pickup:* ${formatTripPickup(trip)}\n🏁 *Drop-off:* ${formatTripDestination(trip)}\n\n📝 Notes: ${trip.notes || 'Standard pickup'}`;
+    return `MISSION ASSIGNED\nTime: ${date}\nClient: ${trip.customerName}\nCall: ${trip.customerPhone}\n\nPickup: ${formatTripPickup(trip)}\nDrop-off: ${formatTripDestination(trip)}\n\nPayment: ${trip.paymentMode || 'CASH'}\nSettlement: ${trip.settlementStatus || 'PENDING'}\n\nNotes: ${trip.notes || 'Standard pickup'}`;
   };
 
   const getCustomerTemplate = (trip: Trip) => {
     const driver = drivers.find(d => d.id === trip.driverId);
     const date = trip.tripDate ? format(parseISO(trip.tripDate), "d MMM, h:mm a") : format(parseISO(trip.createdAt), "d MMM, h:mm a");
-    const driverInfo = driver ? `\n🚖 Driver: ${driver.name}` : '';
-    return `🚕 *RIDE CONFIRMED*\n📅 Date: ${date}\n📍 From: ${formatTripPickup(trip)}\n🏁 To: ${formatTripDestination(trip)}\n💰 Fare: $${trip.fareUsd}${driverInfo}`;
+    const driverInfo = driver ? `\nDriver: ${driver.name}` : '';
+    return `RIDE CONFIRMED\nDate: ${date}\nFrom: ${formatTripPickup(trip)}\nTo: ${formatTripDestination(trip)}\nFare: $${trip.fareUsd}${driverInfo}`;
   };
 
   const getTripExtractTemplate = (trip: Trip) => {
     const driver = drivers.find(d => d.id === trip.driverId);
     const date = trip.tripDate ? format(parseISO(trip.tripDate), "d MMM, h:mm a") : format(parseISO(trip.createdAt), "d MMM, h:mm a");
     return [
-      `🚕 *MISSION EXTRACT*`,
-      `🆔 #${trip.id.toString().slice(-4)} · *${statusConfig[trip.status].label.toUpperCase()}*`,
-      `📅 ${date}`,
-      `👤 ${trip.customerName} (${trip.customerPhone})`,
-      `🚖 ${driver?.name || 'Unassigned'}`,
-      `📍 ${formatTripPickup(trip)}`,
-      `🏁 ${formatTripDestination(trip)}`,
-      `💰 $${trip.fareUsd}`,
-      `📝 ${trip.notes || '—'}`
+      `MISSION EXTRACT`,
+      `#${trip.id.toString().slice(-4)} · ${statusConfig[trip.status].label.toUpperCase()}`,
+      `${date}`,
+      `${trip.customerName} (${trip.customerPhone})`,
+      `Driver: ${driver?.name || 'Unassigned'}`,
+      `Pickup: ${formatTripPickup(trip)}`,
+      `Destination: ${formatTripDestination(trip)}`,
+      `Fare: $${trip.fareUsd}`,
+      `Payment: ${trip.paymentMode || 'CASH'}`,
+      `Settlement: ${trip.settlementStatus || 'PENDING'}`,
+      `Notes: ${trip.notes || '-'}`
     ].join('\n');
   };
 
@@ -1021,6 +1038,14 @@ export const TripsPage: React.FC = () => {
                          <div className="text-[9px] font-bold text-slate-400 mt-0.5 uppercase tracking-tighter">{trip.distanceText}</div>
                          <div className="text-[8px] font-black text-slate-500 dark:text-slate-300 mt-1 uppercase tracking-widest">ETA {trip.durationInTrafficText || trip.durationText}</div>
                          <div className={`text-[8px] font-black mt-0.5 uppercase tracking-widest ${traffic.tone}`}>{traffic.label} · TI {Number.isFinite(trip.trafficIndex) ? trip.trafficIndex : 0}</div>
+                         <div className="mt-1.5 flex flex-wrap gap-1">
+                           <span className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest ${trip.paymentMode === 'CREDIT' ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10' : 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'}`}>
+                             {trip.paymentMode || 'CASH'}
+                           </span>
+                           <span className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest ${trip.settlementStatus === 'RECEIPTED' ? 'border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10' : trip.settlementStatus === 'SETTLED' ? 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10' : 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20'}`}>
+                             {trip.settlementStatus || 'PENDING'}
+                           </span>
+                         </div>
                       </td>
                        <td className="px-4 py-4">
                          <div className="text-[11px] font-black text-brand-900 dark:text-white">+{Number.isFinite(trip.surplusMin) ? trip.surplusMin : 0}m</div>
@@ -1157,9 +1182,19 @@ export const TripsPage: React.FC = () => {
                   </div>
 
                   <div className="flex justify-between items-center pt-6 border-t border-slate-50 dark:border-brand-800">
-                     <div className="flex items-center space-x-2 text-brand-900 dark:text-white">
-                        <span className="text-[10px] font-black">$</span>
-                        <span className="text-lg font-black tracking-tighter">{trip.fareUsd}</span>
+                     <div className="space-y-1">
+                       <div className="flex items-center space-x-2 text-brand-900 dark:text-white">
+                          <span className="text-[10px] font-black">$</span>
+                          <span className="text-lg font-black tracking-tighter">{trip.fareUsd}</span>
+                       </div>
+                       <div className="flex flex-wrap gap-1">
+                         <span className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest ${trip.paymentMode === 'CREDIT' ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10' : 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'}`}>
+                           {trip.paymentMode || 'CASH'}
+                         </span>
+                         <span className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest ${trip.settlementStatus === 'RECEIPTED' ? 'border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10' : trip.settlementStatus === 'SETTLED' ? 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10' : 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20'}`}>
+                           {trip.settlementStatus || 'PENDING'}
+                         </span>
+                       </div>
                      </div>
                      <div className="flex items-center space-x-2">
                         <button onClick={() => copyToClipboard(getCustomerTemplate(trip), 'customer', trip.id)} className={`p-2.5 rounded-xl transition-all ${copiedType === `customer-${trip.id}` ? 'bg-emerald-500 text-white' : 'bg-slate-50 dark:bg-brand-950 text-slate-400 border border-slate-100 dark:border-white/5'}`}>
@@ -1318,6 +1353,8 @@ const TripUpdateModal: React.FC<{
 }> = ({ trip, drivers, onClose, onSave, onCopy, onWhatsApp, customerPhone, operatorPhone, mapsApiKey, buildDriverTemplate, buildCustomerTemplate, buildOperatorTemplate, copiedType, customerSnapshot, onAssignLocation, onSetCustomerPriority, onRequoteDestination, onApplyRequote, onDeleteCancelled }) => {
   const [status, setStatus] = useState<TripStatus>(trip.status);
   const [driverId, setDriverId] = useState<string>(trip.driverId || '');
+  const [paymentMode, setPaymentMode] = useState<TripPaymentMode>(trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH');
+  const [settlementStatus, setSettlementStatus] = useState<TripSettlementStatus>(trip.settlementStatus || 'PENDING');
   const [notes, setNotes] = useState<string>(trip.notes || '');
   const [rating, setRating] = useState<number | undefined>(trip.rating);
   const [feedback, setFeedback] = useState<string>(trip.feedback || '');
@@ -1349,6 +1386,8 @@ const TripUpdateModal: React.FC<{
   useEffect(() => {
     setStatus(trip.status);
     setDriverId(trip.driverId || '');
+    setPaymentMode(trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH');
+    setSettlementStatus(trip.settlementStatus || 'PENDING');
     setNotes(trip.notes || '');
     setRating(trip.rating);
     setFeedback(trip.feedback || '');
@@ -1486,6 +1525,8 @@ const TripUpdateModal: React.FC<{
     ...quotePatch,
     status,
     driverId: driverId || undefined,
+    paymentMode,
+    settlementStatus,
     notes,
     rating,
     feedback,
@@ -1649,7 +1690,7 @@ const TripUpdateModal: React.FC<{
         <div className="p-6 md:p-8 space-y-6 overflow-y-auto scrollbar-hide min-h-0 flex-1 pb-[calc(1.5rem+env(safe-area-inset-bottom))] md:pb-8">
           {customerSnapshot && <CustomerSnapshotCard snapshot={customerSnapshot} />}
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Phase Status</label><select value={status} onChange={e => setStatus(e.target.value as TripStatus)} className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 px-4 bg-slate-50 dark:bg-brand-950 text-brand-900 dark:text-white text-[11px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all">
                {Object.values(TripStatus).map(s => <option key={s} value={s} className="text-brand-900">{s}</option>)}
              </select></div>
@@ -1657,6 +1698,24 @@ const TripUpdateModal: React.FC<{
                <option value="" className="text-brand-900">Unassigned</option>
                 {drivers.map(d => <option key={d.id} value={d.id} className="text-brand-900">{d.name} ({d.plateNumber}) [{d.currentStatus}]</option>)}
              </select></div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+            <div>
+              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Payment Mode</label>
+              <select value={paymentMode} onChange={e => setPaymentMode(e.target.value as TripPaymentMode)} className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 px-4 bg-slate-50 dark:bg-brand-950 text-brand-900 dark:text-white text-[11px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all">
+                <option value="CASH" className="text-brand-900">Cash</option>
+                <option value="CREDIT" className="text-brand-900">Credit</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Settlement</label>
+              <select value={settlementStatus} onChange={e => setSettlementStatus(e.target.value as TripSettlementStatus)} className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 px-4 bg-slate-50 dark:bg-brand-950 text-brand-900 dark:text-white text-[11px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all">
+                <option value="PENDING" className="text-brand-900">Pending</option>
+                <option value="SETTLED" className="text-brand-900">Settled</option>
+                <option value="RECEIPTED" className="text-brand-900">Receipted</option>
+              </select>
+            </div>
           </div>
 
           <div className="pt-4 border-t border-slate-100 dark:border-brand-800 space-y-3">

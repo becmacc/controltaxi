@@ -106,6 +106,8 @@ export const replacePlaceholders = (template: string, trip: Trip, drivers: Drive
     '{eta_text}': trip.durationInTrafficText || trip.durationText || "TBD",
     '{fare_usd}': trip.fareUsd ? trip.fareUsd.toString() : "0",
     '{fare_lbp}': trip.fareLbp ? trip.fareLbp.toLocaleString() : "0",
+    '{payment_mode}': trip.paymentMode || 'CASH',
+    '{settlement_status}': trip.settlementStatus || 'PENDING',
     '{stops_text}': stopsText,
     '{driver_name}': driverName,
     '{driver_name_with_plate}': driverNameWithPlate,

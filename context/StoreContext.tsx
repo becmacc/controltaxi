@@ -1,6 +1,6 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { Trip, Settings, Driver, Customer, MissionAlert, TripStatus, DeletedTripRecord, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle } from '../types';
+import { Trip, Settings, Driver, Customer, MissionAlert, TripStatus, DeletedTripRecord, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle, TripPaymentMode, TripSettlementStatus } from '../types';
 import * as Storage from '../services/storageService';
 import { addMinutes, parseISO, isAfter } from 'date-fns';
 import { buildCustomerFromTrip, customerPhoneKey, mergeCustomerCollections } from '../services/customerProfile';
@@ -648,8 +648,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const addTrip = (tripData: Omit<Trip, 'id' | 'createdAt'>) => {
+    const normalizedPaymentMode: TripPaymentMode = tripData.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH';
+    const normalizedSettlementStatus: TripSettlementStatus = tripData.settlementStatus || 'PENDING';
     const newTrip: Trip = {
       ...tripData,
+      paymentMode: normalizedPaymentMode,
+      settlementStatus: normalizedSettlementStatus,
       id: Date.now(),
       createdAt: new Date().toISOString(),
     };
@@ -681,16 +685,164 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const updateFullTrip = (trip: Trip) => {
     const previousTrip = trips.find(t => t.id === trip.id);
-    const updatedList = Storage.updateTrip(trip);
+    const nowIso = new Date().toISOString();
+    const normalizedPaymentMode: TripPaymentMode = trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH';
+    let nextTrip: Trip = {
+      ...trip,
+      paymentMode: normalizedPaymentMode,
+      settlementStatus: trip.settlementStatus || 'PENDING',
+    };
+
+    let nextLedger = creditLedger;
+    let nextReceipts = receipts;
+
+    const buildReceiptNumber = (partyType: CreditPartyType, cycle: CreditCycle, issuedAtIso: string): string => {
+      const issuedAt = new Date(issuedAtIso);
+      const year = issuedAt.getFullYear();
+      const periodLabel = cycle === 'MONTHLY'
+        ? `${year}-${String(issuedAt.getMonth() + 1).padStart(2, '0')}`
+        : (() => {
+            const start = new Date(Date.UTC(issuedAt.getFullYear(), issuedAt.getMonth(), issuedAt.getDate()));
+            start.setUTCDate(start.getUTCDate() + 4 - (start.getUTCDay() || 7));
+            const isoYear = start.getUTCFullYear();
+            const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+            const week = Math.ceil((((start.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+            return `${isoYear}-W${String(week).padStart(2, '0')}`;
+          })();
+
+      const receiptPrefix = `${partyType}-${cycle}-${periodLabel}`;
+      const existingForPeriod = nextReceipts.filter(item => item.receiptNumber.startsWith(receiptPrefix)).length;
+      return `${receiptPrefix}-${String(existingForPeriod + 1).padStart(3, '0')}`;
+    };
+
+    if (nextTrip.status === TripStatus.COMPLETED && normalizedPaymentMode === 'CREDIT' && !nextTrip.creditLedgerEntryId) {
+      const rawTripDate = nextTrip.tripDate || nextTrip.createdAt;
+      const tripDate = new Date(rawTripDate);
+      const dueDateIso = Number.isFinite(tripDate.getTime())
+        ? new Date(tripDate.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+        : undefined;
+
+      const entry: CreditLedgerEntry = {
+        id: `credit-trip-${nextTrip.id}-${Math.random().toString(36).slice(2, 8)}`,
+        partyType: 'CLIENT',
+        partyId: customerPhoneKey(nextTrip.customerPhone) || undefined,
+        partyName: nextTrip.customerName,
+        cycle: 'WEEKLY',
+        amountUsd: Math.max(0, Number(nextTrip.fareUsd) || 0),
+        ...(dueDateIso ? { dueDate: dueDateIso } : {}),
+        notes: `Auto-linked from trip #${nextTrip.id}`,
+        status: 'OPEN',
+        createdAt: nowIso,
+      };
+
+      nextLedger = [entry, ...nextLedger];
+      nextTrip = {
+        ...nextTrip,
+        creditLedgerEntryId: entry.id,
+      };
+    }
+
+    if (nextTrip.status === TripStatus.COMPLETED && normalizedPaymentMode === 'CASH' && nextTrip.settlementStatus === 'PENDING') {
+      nextTrip = {
+        ...nextTrip,
+        settlementStatus: 'SETTLED',
+        settledAt: nextTrip.settledAt || nowIso,
+      };
+    }
+
+    if (nextTrip.settlementStatus === 'SETTLED' && !nextTrip.settledAt) {
+      nextTrip = {
+        ...nextTrip,
+        settledAt: nowIso,
+      };
+    }
+
+    if (nextTrip.settlementStatus === 'RECEIPTED' && !nextTrip.receiptId) {
+      const issueAtIso = nowIso;
+
+      if (normalizedPaymentMode === 'CREDIT' && nextTrip.creditLedgerEntryId) {
+        const linkedEntry = nextLedger.find(item => item.id === nextTrip.creditLedgerEntryId);
+        if (linkedEntry) {
+          if (linkedEntry.status === 'PAID' && linkedEntry.receiptId) {
+            nextTrip = {
+              ...nextTrip,
+              receiptId: linkedEntry.receiptId,
+              settledAt: linkedEntry.paidAt || issueAtIso,
+            };
+          } else {
+            const receipt: ReceiptRecord = {
+              id: `receipt-trip-${nextTrip.id}-${Math.random().toString(36).slice(2, 8)}`,
+              receiptNumber: buildReceiptNumber(linkedEntry.partyType, linkedEntry.cycle, issueAtIso),
+              ledgerEntryId: linkedEntry.id,
+              issuedAt: issueAtIso,
+              partyType: linkedEntry.partyType,
+              partyName: linkedEntry.partyName,
+              cycle: linkedEntry.cycle,
+              amountUsd: linkedEntry.amountUsd,
+              ...(linkedEntry.notes ? { notes: linkedEntry.notes } : {}),
+            };
+
+            nextLedger = nextLedger.map(item =>
+              item.id === linkedEntry.id
+                ? {
+                    ...item,
+                    status: 'PAID' as const,
+                    paidAt: receipt.issuedAt,
+                    receiptId: receipt.id,
+                  }
+                : item
+            );
+            nextReceipts = [receipt, ...nextReceipts];
+            nextTrip = {
+              ...nextTrip,
+              receiptId: receipt.id,
+              settledAt: receipt.issuedAt,
+            };
+          }
+        }
+      }
+
+      if (!nextTrip.receiptId) {
+        const receipt: ReceiptRecord = {
+          id: `receipt-trip-${nextTrip.id}-${Math.random().toString(36).slice(2, 8)}`,
+          receiptNumber: buildReceiptNumber('CLIENT', 'WEEKLY', issueAtIso),
+          ledgerEntryId: nextTrip.creditLedgerEntryId || `trip-${nextTrip.id}-cash`,
+          issuedAt: issueAtIso,
+          partyType: 'CLIENT',
+          partyName: nextTrip.customerName,
+          cycle: 'WEEKLY',
+          amountUsd: Math.max(0, Number(nextTrip.fareUsd) || 0),
+          notes: `Trip #${nextTrip.id}`,
+        };
+        nextReceipts = [receipt, ...nextReceipts];
+        nextTrip = {
+          ...nextTrip,
+          receiptId: receipt.id,
+          settledAt: receipt.issuedAt,
+        };
+      }
+    }
+
+    if (nextLedger !== creditLedger) {
+      Storage.saveCreditLedger(nextLedger);
+      setCreditLedger(nextLedger);
+    }
+
+    if (nextReceipts !== receipts) {
+      Storage.saveReceipts(nextReceipts);
+      setReceipts(nextReceipts);
+    }
+
+    const updatedList = Storage.updateTrip(nextTrip);
     setTrips([...updatedList]); // Deep copy to trigger redraws across components
 
-    const currentNote = trip.notes?.trim() || '';
+    const currentNote = nextTrip.notes?.trim() || '';
     const previousNote = previousTrip?.notes?.trim() || '';
     const includeTimelineEvent = currentNote.length > 0 && currentNote !== previousNote;
-    const customerPatch = buildCustomerFromTrip(trip, { includeTimelineEvent });
+    const customerPatch = buildCustomerFromTrip(nextTrip, { includeTimelineEvent });
     addCustomers([customerPatch]);
 
-    scheduleMissionAlerts(trip);
+    scheduleMissionAlerts(nextTrip);
   };
 
   const deleteCancelledTrip = (id: number) => {

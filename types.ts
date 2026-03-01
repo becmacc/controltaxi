@@ -109,6 +109,9 @@ export interface TripStop {
   lng?: number;
 }
 
+export type TripPaymentMode = 'CASH' | 'CREDIT';
+export type TripSettlementStatus = 'PENDING' | 'SETTLED' | 'RECEIPTED';
+
 export interface Trip {
   id: number;
   createdAt: string; 
@@ -150,6 +153,11 @@ export interface Trip {
   fareUsd: number;
   fareLbp: number;
   exchangeRateSnapshot: number;
+  paymentMode?: TripPaymentMode;
+  settlementStatus?: TripSettlementStatus;
+  creditLedgerEntryId?: string;
+  receiptId?: string;
+  settledAt?: string;
   status: TripStatus;
   notes: string;
 

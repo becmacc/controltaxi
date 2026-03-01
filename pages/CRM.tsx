@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
-import { Trip, TripStatus, Driver, Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, DriverFuelLogEntry, DriverCostResponsibility, DriverVehicleOwnership, Settings, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle } from '../types';
+import { Trip, TripStatus, Driver, Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, DriverFuelLogEntry, DriverCostResponsibility, DriverVehicleOwnership, Settings, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle, TripPaymentMode, TripSettlementStatus } from '../types';
 import { 
   User, Users, Phone, MapPin, Search, Calendar, Star, DollarSign, 
   ShieldCheck, ArrowLeft, History, Award, AlertCircle,
@@ -94,6 +94,9 @@ interface FinanceDriverProfile {
   shareRuleLabel: string;
   burnRatio: number;
   efficiency: number;
+  cashSettledRevenue: number;
+  openCreditRevenue: number;
+  receiptedRevenue: number;
 }
 
 interface FinanceTotals {
@@ -104,6 +107,9 @@ interface FinanceTotals {
   completedTrips: number;
   avgFare: number;
   burnRatio: number;
+  cashSettledRevenue: number;
+  openCreditRevenue: number;
+  receiptedRevenue: number;
 }
 
 const ownershipLabelMap: Record<DriverVehicleOwnership, string> = {
@@ -123,6 +129,9 @@ const getFuelCostWeight = (responsibility?: DriverCostResponsibility): number =>
   if (responsibility === 'SHARED') return 0.5;
   return 1;
 };
+
+const getTripPaymentMode = (trip: Trip): TripPaymentMode => (trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH');
+const getTripSettlementStatus = (trip: Trip): TripSettlementStatus => (trip.settlementStatus || 'PENDING');
 
 const clampSharePercent = (value: unknown, fallback: number): number => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
@@ -556,6 +565,15 @@ export const CRMPage: React.FC = () => {
       const netAlpha = grossRevenue - accountableGasShare;
       const companyShare = getCompanyShareForDriver(driver, settings);
       const companyOwed = grossRevenue * companyShare.rate;
+      const cashSettledRevenue = dTrips
+        .filter(t => getTripPaymentMode(t) === 'CASH' && getTripSettlementStatus(t) !== 'PENDING')
+        .reduce((acc, t) => acc + t.fareUsd, 0);
+      const openCreditRevenue = dTrips
+        .filter(t => getTripPaymentMode(t) === 'CREDIT' && getTripSettlementStatus(t) === 'PENDING')
+        .reduce((acc, t) => acc + t.fareUsd, 0);
+      const receiptedRevenue = dTrips
+        .filter(t => getTripSettlementStatus(t) === 'RECEIPTED')
+        .reduce((acc, t) => acc + t.fareUsd, 0);
 
       return {
         id: driver.id,
@@ -571,6 +589,9 @@ export const CRMPage: React.FC = () => {
         shareRuleLabel: companyShare.label,
         burnRatio: grossRevenue > 0 ? accountableGasShare / grossRevenue : 0,
         efficiency: totalDistance > 0 ? grossRevenue / totalDistance : 0,
+        cashSettledRevenue,
+        openCreditRevenue,
+        receiptedRevenue,
       };
     }).sort((a, b) => b.netAlpha - a.netAlpha);
   }, [trips, drivers, metricsWindow, settings.fuelPriceUsdPerLiter, settings.ownerDriverCompanySharePercent, settings.companyCarDriverGasCompanySharePercent, settings.otherDriverCompanySharePercent]);
@@ -590,6 +611,15 @@ export const CRMPage: React.FC = () => {
       return acc + (scopedFuel * getFuelCostWeight(d.fuelCostResponsibility));
     }, 0);
     const completedCount = completedTrips.length;
+    const cashSettledRevenue = completedTrips
+      .filter(t => getTripPaymentMode(t) === 'CASH' && getTripSettlementStatus(t) !== 'PENDING')
+      .reduce((acc, t) => acc + t.fareUsd, 0);
+    const openCreditRevenue = completedTrips
+      .filter(t => getTripPaymentMode(t) === 'CREDIT' && getTripSettlementStatus(t) === 'PENDING')
+      .reduce((acc, t) => acc + t.fareUsd, 0);
+    const receiptedRevenue = completedTrips
+      .filter(t => getTripSettlementStatus(t) === 'RECEIPTED')
+      .reduce((acc, t) => acc + t.fareUsd, 0);
 
     return {
       grossRevenue,
@@ -599,6 +629,9 @@ export const CRMPage: React.FC = () => {
       completedTrips: completedCount,
       avgFare: completedCount > 0 ? grossRevenue / completedCount : 0,
       burnRatio: grossRevenue > 0 ? totalGasSpent / grossRevenue : 0,
+      cashSettledRevenue,
+      openCreditRevenue,
+      receiptedRevenue,
     };
   }, [trips, drivers, metricsWindow, settings.exchangeRate, settings.fuelPriceUsdPerLiter, settings.ownerDriverCompanySharePercent, settings.companyCarDriverGasCompanySharePercent, settings.otherDriverCompanySharePercent]);
 
@@ -3287,11 +3320,14 @@ const FinanceOverviewView: React.FC<{
       <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400 mt-2">{windowLabel} Net Alpha Overview</p>
     </div>
 
-    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 md:gap-6">
+    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-8 gap-4 md:gap-6">
       {[
         { label: 'Gross Revenue', value: `$${totals.grossRevenue.toFixed(0)}`, tone: 'text-brand-900 dark:text-emerald-500', icon: DollarSign },
         { label: 'Company Owed', value: `$${totals.companyOwed.toFixed(0)}`, tone: 'text-blue-600 dark:text-blue-300', icon: Briefcase },
         { label: 'Net Alpha', value: `$${totals.netAlpha.toFixed(0)}`, tone: totals.netAlpha >= 0 ? 'text-emerald-600' : 'text-red-500', icon: TrendingUp },
+        { label: 'Cash Settled', value: `$${totals.cashSettledRevenue.toFixed(0)}`, tone: 'text-emerald-600', icon: CheckCircle },
+        { label: 'Open Credit', value: `$${totals.openCreditRevenue.toFixed(0)}`, tone: 'text-amber-600', icon: AlertOctagon },
+        { label: 'Receipted', value: `$${totals.receiptedRevenue.toFixed(0)}`, tone: 'text-indigo-600', icon: FileText },
         { label: 'Burn Ratio', value: `${(totals.burnRatio * 100).toFixed(1)}%`, tone: 'text-gold-600', icon: PieChart },
         { label: 'Avg Fare', value: `$${totals.avgFare.toFixed(1)}`, tone: 'text-blue-600', icon: BarChart3 },
       ].map((card, idx) => (
@@ -3315,11 +3351,14 @@ const FinanceOverviewView: React.FC<{
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">{row.plateNumber} · Attr Unit · {row.completedTrips} Trips</p>
               <p className="text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 mt-1">Company share {(row.companyShareRate * 100).toFixed(1)}%</p>
               <p className="text-[8px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300 mt-1">{row.shareRuleLabel}</p>
+              <p className="text-[8px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mt-1">Cash settled ${row.cashSettledRevenue.toFixed(0)}</p>
+              <p className="text-[8px] font-black uppercase tracking-widest text-amber-600 dark:text-amber-400 mt-1">Open credit ${row.openCreditRevenue.toFixed(0)}</p>
             </div>
             <div className="text-right">
               <p className={`text-sm font-black ${row.netAlpha >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>${row.netAlpha.toFixed(0)}</p>
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Net</p>
               <p className="text-[9px] font-bold uppercase tracking-widest text-blue-700 dark:text-blue-300">Owed ${row.companyOwed.toFixed(0)}</p>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-indigo-700 dark:text-indigo-300">Receipted ${row.receiptedRevenue.toFixed(0)}</p>
               <p className="text-[9px] font-bold uppercase tracking-widest text-gold-600 dark:text-gold-400">BR {(safeBurnRatio * 100).toFixed(1)}%</p>
             </div>
           </div>
@@ -3370,11 +3409,14 @@ const FinancePerformanceView: React.FC<{
       </div>
     </div>
 
-    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 md:gap-6">
+    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 2xl:grid-cols-9 gap-4 md:gap-6">
       {[
         { label: 'Net Alpha', value: `$${row.netAlpha.toFixed(0)}`, tone: row.netAlpha >= 0 ? 'text-emerald-600' : 'text-red-500', icon: row.netAlpha >= 0 ? ArrowUpRight : ArrowDownRight },
         { label: 'Gross Revenue', value: `$${row.grossRevenue.toFixed(0)}`, tone: 'text-brand-900 dark:text-emerald-500', icon: DollarSign },
         { label: 'Company Owed', value: `$${row.companyOwed.toFixed(0)}`, tone: 'text-blue-600 dark:text-blue-300', icon: Briefcase },
+        { label: 'Cash Settled', value: `$${row.cashSettledRevenue.toFixed(0)}`, tone: 'text-emerald-600', icon: CheckCircle },
+        { label: 'Open Credit', value: `$${row.openCreditRevenue.toFixed(0)}`, tone: 'text-amber-600', icon: AlertOctagon },
+        { label: 'Receipted', value: `$${row.receiptedRevenue.toFixed(0)}`, tone: 'text-indigo-600', icon: FileText },
         { label: 'Share Rate', value: `${(row.companyShareRate * 100).toFixed(1)}%`, tone: 'text-cyan-600 dark:text-cyan-300', icon: ShieldQuestion },
         { label: 'Avg Fare', value: `$${row.avgFare.toFixed(1)}`, tone: 'text-blue-600', icon: BarChart3 },
         { label: 'Burn Ratio', value: `${(row.burnRatio * 100).toFixed(1)}%`, tone: 'text-gold-600', icon: Zap },

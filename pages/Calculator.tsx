@@ -1,11 +1,9 @@
-import { buildWhatsAppLink, detectPhoneDialCode, applyPhoneDialCode, DEFAULT_PHONE_DIAL_CODE, PHONE_COUNTRY_PRESETS, sanitizeCommunicationText } from '../services/whatsapp';
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../context/StoreContext';
 import { loadGoogleMapsScript } from '../services/googleMapsLoader';
 import { parseGoogleMapsLink, parseGpsOrLatLngInput, ParsedLocation } from '../services/locationParser';
 import { SPECIAL_REQUIREMENTS, MIN_RIDE_FARE_USD } from '../constants';
-import { RouteResult, TripStatus, Customer, CustomerLocation, Trip, TripStop } from '../types';
+import { RouteResult, TripStatus, Customer, CustomerLocation, Trip, TripStop, TripPaymentMode } from '../types';
 import { Button } from '../components/ui/Button';
 import { 
   MapPin, Navigation, Copy, Check, Save, Calculator as CalcIcon, 
@@ -26,6 +24,7 @@ import {
   detectPhoneDialCode,
   normalizePhoneForWhatsApp,
   PHONE_COUNTRY_PRESETS,
+  sanitizeCommunicationText,
 } from '../services/whatsapp';
 import { buildCustomerSnapshot, buildCustomerSnapshotForTrip } from '../services/customerSnapshot';
 import { customerPhoneKey } from '../services/customerProfile';
@@ -48,6 +47,7 @@ interface CalculatorDraft {
   customerName: string;
   customerPhone: string;
   selectedDriverId: string;
+  paymentMode: TripPaymentMode;
   isRoundTrip: boolean;
   addWaitTime: boolean;
   waitTimeHours: number;
@@ -143,6 +143,7 @@ export const CalculatorPage: React.FC = () => {
   const [customerPhoneUseCustomDialCode, setCustomerPhoneUseCustomDialCode] = useState(false);
   const [customerPhoneCustomDialCode, setCustomerPhoneCustomDialCode] = useState('');
   const [selectedDriverId, setSelectedDriverId] = useState('');
+  const [paymentMode, setPaymentMode] = useState<TripPaymentMode>('CASH');
 
   const customerPhonePopularPresets = PHONE_COUNTRY_PRESETS;
   const resolvedCustomerCustomDialCode = customerPhoneCustomDialCode.replace(/\D/g, '');
@@ -748,6 +749,7 @@ export const CalculatorPage: React.FC = () => {
         }
       }
       if (typeof draft.selectedDriverId === 'string') setSelectedDriverId(draft.selectedDriverId);
+      if (draft.paymentMode === 'CASH' || draft.paymentMode === 'CREDIT') setPaymentMode(draft.paymentMode);
       if (typeof draft.isRoundTrip === 'boolean') setIsRoundTrip(draft.isRoundTrip);
       if (typeof draft.addWaitTime === 'boolean') setAddWaitTime(draft.addWaitTime);
       if (typeof draft.waitTimeHours === 'number') setWaitTimeHours(draft.waitTimeHours);
@@ -807,6 +809,7 @@ export const CalculatorPage: React.FC = () => {
       Boolean(customerName.trim()) ||
       Boolean(customerPhone.trim()) ||
       Boolean(selectedDriverId) ||
+      paymentMode === 'CREDIT' ||
       Boolean(notes.trim()) ||
       Boolean(tripDate) ||
       Boolean(pickupPlace) ||
@@ -823,6 +826,7 @@ export const CalculatorPage: React.FC = () => {
       customerName,
       customerPhone,
       selectedDriverId,
+      paymentMode,
       isRoundTrip,
       addWaitTime,
       waitTimeHours,
@@ -845,6 +849,7 @@ export const CalculatorPage: React.FC = () => {
     customerName,
     customerPhone,
     selectedDriverId,
+    paymentMode,
     isRoundTrip,
     addWaitTime,
     waitTimeHours,
@@ -1442,6 +1447,8 @@ export const CalculatorPage: React.FC = () => {
       customerName: customerName || 'Walk-in Client', 
       customerPhone: normalizedCustomerPhone || customerPhone || 'N/A', 
       driverId: selectedDriverId || undefined,
+      paymentMode,
+      settlementStatus: 'PENDING',
       pickupText: result!.pickupAddress,
       pickupPlaceId: pickupPlace.place_id || 'GPS', 
       pickupOriginalLink,
@@ -1511,6 +1518,7 @@ export const CalculatorPage: React.FC = () => {
       setCustomerPhoneUseCustomDialCode(false);
       setCustomerPhoneCustomDialCode('');
       setSelectedDriverId('');
+      setPaymentMode('CASH');
       setTripDate('');
       setSelectedRequirements([]);
       setNotes('');
@@ -2115,6 +2123,25 @@ export const CalculatorPage: React.FC = () => {
                     </div>
 
                     <div className="grid grid-cols-1 gap-2">
+                      <div className="flex items-center bg-white dark:bg-brand-950 border border-slate-200 dark:border-brand-800 rounded-xl px-2 h-11">
+                        <DollarSign size={14} className="text-gold-500 mr-2" />
+                        <div className="grid grid-cols-2 gap-1 w-full">
+                          <button
+                            type="button"
+                            onClick={() => setPaymentMode('CASH')}
+                            className={`h-8 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors ${paymentMode === 'CASH' ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
+                          >
+                            Cash
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPaymentMode('CREDIT')}
+                            className={`h-8 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors ${paymentMode === 'CREDIT' ? 'bg-blue-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
+                          >
+                            Credit
+                          </button>
+                        </div>
+                      </div>
                       <div className="flex items-center bg-white dark:bg-brand-950 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-11">
                         <Car size={14} className="text-emerald-500 mr-3" />
                         <select
