@@ -20,7 +20,7 @@ import { parseContactsImport, ContactImportCandidate } from '../services/contact
 import { buildWhatsAppLink, normalizePhoneForWhatsApp } from '../services/whatsapp';
 import { buildCustomerFromImportedContact, customerPhoneKey, mergeCustomerCollections } from '../services/customerProfile';
 import { parseGoogleMapsLink, parseGpsOrLatLngInput } from '../services/locationParser';
-import { createSyncSignature, fetchCloudSyncSignature } from '../services/cloudSyncService';
+import { createSyncSignature, fetchCloudSyncSignature, getCloudSyncDocId } from '../services/cloudSyncService';
 
 type ViewMode = 'CUSTOMERS' | 'FLEET' | 'FINANCE' | 'VAULT';
 type CustomerSort = 'SPEND' | 'RECENCY' | 'FREQUENCY';
@@ -214,6 +214,7 @@ export const CRMPage: React.FC = () => {
 
   const now = new Date();
   const showOverviewMode = !selectedItem && (activeView === 'FINANCE' || activeView === 'VAULT');
+  const syncChannel = useMemo(() => getCloudSyncDocId(), [vaultStatusMessage]);
   const contactPickerSupported = typeof navigator !== 'undefined' && typeof (navigator as any).contacts?.select === 'function';
   const savedPlacesSectionId = (phone: string) => `saved-places-${customerPhoneKey(phone)}`;
 
@@ -748,6 +749,15 @@ export const CRMPage: React.FC = () => {
   const handleVaultClearCancel = () => {
     setVaultClearArmed(false);
     setVaultStatusMessage('Clear operation canceled.');
+  };
+
+  const handleCopySyncChannel = async () => {
+    try {
+      await navigator.clipboard.writeText(syncChannel);
+      setVaultStatusMessage(`Sync channel copied: ${syncChannel}`);
+    } catch {
+      setVaultStatusMessage('Failed to copy sync channel.');
+    }
   };
 
   const filteredItems = useMemo(() => {
@@ -1338,6 +1348,7 @@ export const CRMPage: React.FC = () => {
             statusMessage={vaultStatusMessage}
             syncStatus={vaultSyncStatus}
             syncDetail={vaultSyncDetail}
+            syncChannel={syncChannel}
             clearArmed={vaultClearArmed}
             busyAction={vaultBusyAction}
             pendingImport={pendingVaultImport}
@@ -1347,6 +1358,7 @@ export const CRMPage: React.FC = () => {
             onCancelImport={handleVaultCancelImport}
             onClear={handleVaultClear}
             onCancelClear={handleVaultClearCancel}
+            onCopySyncChannel={handleCopySyncChannel}
           />
         );
       }
@@ -1395,6 +1407,7 @@ export const CRMPage: React.FC = () => {
           statusMessage={vaultStatusMessage}
           syncStatus={vaultSyncStatus}
           syncDetail={vaultSyncDetail}
+          syncChannel={syncChannel}
           clearArmed={vaultClearArmed}
           busyAction={vaultBusyAction}
           pendingImport={pendingVaultImport}
@@ -1404,6 +1417,7 @@ export const CRMPage: React.FC = () => {
           onCancelImport={handleVaultCancelImport}
           onClear={handleVaultClear}
           onCancelClear={handleVaultClearCancel}
+          onCopySyncChannel={handleCopySyncChannel}
         />
       );
     }
@@ -2765,6 +2779,7 @@ const VaultConsoleView: React.FC<{
   statusMessage: string;
   syncStatus: 'IDLE' | 'CHECKING' | 'VERIFIED' | 'NOT_VERIFIED';
   syncDetail: string;
+  syncChannel: string;
   clearArmed: boolean;
   busyAction: 'EXPORT' | 'IMPORT' | 'CLEAR' | null;
   pendingImport: PendingVaultImport | null;
@@ -2774,7 +2789,8 @@ const VaultConsoleView: React.FC<{
   onCancelImport: () => void;
   onClear: () => void;
   onCancelClear: () => void;
-}> = ({ selectedActionId, counts, statusMessage, syncStatus, syncDetail, clearArmed, busyAction, pendingImport, onExport, onImport, onConfirmImport, onCancelImport, onClear, onCancelClear }) => {
+  onCopySyncChannel: () => void;
+}> = ({ selectedActionId, counts, statusMessage, syncStatus, syncDetail, syncChannel, clearArmed, busyAction, pendingImport, onExport, onImport, onConfirmImport, onCancelImport, onClear, onCancelClear, onCopySyncChannel }) => {
   const actionLabels: Record<string, string> = {
     STATUS: 'System Status',
     EXPORT: 'Export Backup',
@@ -2819,6 +2835,16 @@ const VaultConsoleView: React.FC<{
         {syncDetail ? (
           <p className="mt-2 text-[9px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-300">{syncDetail}</p>
         ) : null}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <p className="text-[9px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-300">Channel: {syncChannel}</p>
+          <button
+            type="button"
+            onClick={onCopySyncChannel}
+            className="h-7 px-2 rounded-lg border border-slate-300 dark:border-white/20 bg-white dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+          >
+            Copy Channel
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 md:gap-6">
