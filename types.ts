@@ -170,6 +170,36 @@ export interface DeletedTripRecord {
   trip: Trip;
 }
 
+export type CreditPartyType = 'CLIENT' | 'DRIVER';
+export type CreditCycle = 'WEEKLY' | 'MONTHLY';
+export type CreditLedgerStatus = 'OPEN' | 'PAID';
+
+export interface CreditLedgerEntry {
+  id: string;
+  partyType: CreditPartyType;
+  partyId?: string;
+  partyName: string;
+  cycle: CreditCycle;
+  amountUsd: number;
+  dueDate?: string;
+  notes?: string;
+  status: CreditLedgerStatus;
+  createdAt: string;
+  paidAt?: string;
+  receiptId?: string;
+}
+
+export interface ReceiptRecord {
+  id: string;
+  ledgerEntryId: string;
+  issuedAt: string;
+  partyType: CreditPartyType;
+  partyName: string;
+  cycle: CreditCycle;
+  amountUsd: number;
+  notes?: string;
+}
+
 export interface MessageTemplates {
   trip_confirmation: string;
   feedback_request: string;

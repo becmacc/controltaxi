@@ -1,6 +1,6 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { Trip, Settings, Driver, Customer, MissionAlert, TripStatus, DeletedTripRecord } from '../types';
+import { Trip, Settings, Driver, Customer, MissionAlert, TripStatus, DeletedTripRecord, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle } from '../types';
 import * as Storage from '../services/storageService';
 import { addMinutes, parseISO, isAfter } from 'date-fns';
 import { buildCustomerFromTrip, customerPhoneKey, mergeCustomerCollections } from '../services/customerProfile';
@@ -18,6 +18,8 @@ interface StoreContextType {
   deletedTrips: DeletedTripRecord[];
   drivers: Driver[];
   customers: Customer[];
+  creditLedger: CreditLedgerEntry[];
+  receipts: ReceiptRecord[];
   settings: Settings;
   alerts: MissionAlert[];
   theme: 'light' | 'dark';
@@ -36,6 +38,16 @@ interface StoreContextType {
   // Customer Methods
   addCustomers: (newCustomers: Customer[]) => void;
   removeCustomerByPhone: (phone: string) => { ok: boolean; reason?: string };
+  addCreditLedgerEntry: (payload: {
+    partyType: CreditPartyType;
+    partyName: string;
+    cycle: CreditCycle;
+    amountUsd: number;
+    partyId?: string;
+    dueDate?: string;
+    notes?: string;
+  }) => { ok: boolean; reason?: string; entry?: CreditLedgerEntry };
+  settleCreditLedgerEntry: (entryId: string) => { ok: boolean; reason?: string; receipt?: ReceiptRecord };
 
   // Driver Methods
   addDriver: (driver: Driver) => void;
@@ -60,6 +72,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [deletedTrips, setDeletedTrips] = useState<DeletedTripRecord[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [creditLedger, setCreditLedger] = useState<CreditLedgerEntry[]>([]);
+  const [receipts, setReceipts] = useState<ReceiptRecord[]>([]);
   const [alerts, setAlerts] = useState<MissionAlert[]>([]);
   const [settings, setSettings] = useState<Settings>(Storage.getSettings());
   const [theme, setTheme] = useState<'light' | 'dark'>((localStorage.getItem('theme') as 'light' | 'dark') || 'light');
@@ -104,6 +118,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setDeletedTrips(Storage.getDeletedTrips());
     setDrivers(Storage.getDrivers());
     setCustomers(Storage.getCustomers());
+    setCreditLedger(Storage.getCreditLedger());
+    setReceipts(Storage.getReceipts());
     setAlerts(Storage.getAlerts());
     setSettings(Storage.getSettings());
   }, []);
@@ -401,7 +417,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         console.warn('[cloud-sync] publish failed');
       }
     }, 700);
-  }, [alerts, cloudSyncReady, cloudSyncSessionVersion, customers, deletedTrips, drivers, settings, trips]);
+  }, [alerts, cloudSyncReady, cloudSyncSessionVersion, creditLedger, customers, deletedTrips, drivers, receipts, settings, trips]);
 
   useEffect(() => {
     Storage.saveAlerts(alerts);
@@ -712,6 +728,85 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setCustomers(merged);
   };
 
+  const addCreditLedgerEntry = (payload: {
+    partyType: CreditPartyType;
+    partyName: string;
+    cycle: CreditCycle;
+    amountUsd: number;
+    partyId?: string;
+    dueDate?: string;
+    notes?: string;
+  }): { ok: boolean; reason?: string; entry?: CreditLedgerEntry } => {
+    const safeAmount = Number(payload.amountUsd);
+    if (!Number.isFinite(safeAmount) || safeAmount <= 0) {
+      return { ok: false, reason: 'Amount must be greater than zero.' };
+    }
+
+    const safeName = String(payload.partyName || '').trim();
+    if (!safeName) {
+      return { ok: false, reason: 'Party name is required.' };
+    }
+
+    const entry: CreditLedgerEntry = {
+      id: `credit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      partyType: payload.partyType,
+      partyName: safeName,
+      cycle: payload.cycle,
+      amountUsd: Math.max(0, safeAmount),
+      ...(payload.partyId ? { partyId: payload.partyId } : {}),
+      ...(payload.dueDate ? { dueDate: payload.dueDate } : {}),
+      ...(payload.notes ? { notes: payload.notes } : {}),
+      status: 'OPEN',
+      createdAt: new Date().toISOString(),
+    };
+
+    const nextLedger = [entry, ...creditLedger];
+    Storage.saveCreditLedger(nextLedger);
+    setCreditLedger(nextLedger);
+    return { ok: true, entry };
+  };
+
+  const settleCreditLedgerEntry = (entryId: string): { ok: boolean; reason?: string; receipt?: ReceiptRecord } => {
+    const current = creditLedger.find(item => item.id === entryId);
+    if (!current) {
+      return { ok: false, reason: 'Ledger entry not found.' };
+    }
+
+    if (current.status === 'PAID') {
+      return { ok: false, reason: 'Entry is already settled.' };
+    }
+
+    const receipt: ReceiptRecord = {
+      id: `receipt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      ledgerEntryId: current.id,
+      issuedAt: new Date().toISOString(),
+      partyType: current.partyType,
+      partyName: current.partyName,
+      cycle: current.cycle,
+      amountUsd: current.amountUsd,
+      ...(current.notes ? { notes: current.notes } : {}),
+    };
+
+    const nextLedger = creditLedger.map(item =>
+      item.id === current.id
+        ? {
+            ...item,
+            status: 'PAID' as const,
+            paidAt: receipt.issuedAt,
+            receiptId: receipt.id,
+          }
+        : item
+    );
+    const nextReceipts = [receipt, ...receipts];
+
+    Storage.saveCreditLedger(nextLedger);
+    Storage.saveReceipts(nextReceipts);
+    setCreditLedger(nextLedger);
+    setReceipts(nextReceipts);
+
+    return { ok: true, receipt };
+  };
+
   const removeCustomerByPhone = (phone: string): { ok: boolean; reason?: string } => {
     const normalized = customerPhoneKey(phone);
     if (!normalized) {
@@ -807,9 +902,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   return (
     <StoreContext.Provider value={{ 
-      trips, deletedTrips, drivers, customers, settings, alerts, theme, toggleTheme,
+      trips, deletedTrips, drivers, customers, creditLedger, receipts, settings, alerts, theme, toggleTheme,
       addTrip, updateTripField, updateFullTrip, deleteCancelledTrip, restoreDeletedTrip, dismissAlert, snoozeAlert, resolveAlert,
-      addCustomers, removeCustomerByPhone, addDriver, editDriver, removeDriver, updateSettings, refreshData, forceCloudSyncPublish, hardResetCloudSync 
+      addCustomers, removeCustomerByPhone, addCreditLedgerEntry, settleCreditLedgerEntry, addDriver, editDriver, removeDriver, updateSettings, refreshData, forceCloudSyncPublish, hardResetCloudSync 
     }}>
       {children}
     </StoreContext.Provider>

@@ -1,5 +1,5 @@
 
-import { Trip, Settings, Driver, Customer, MissionAlert, DeletedTripRecord } from '../types';
+import { Trip, Settings, Driver, Customer, MissionAlert, DeletedTripRecord, CreditLedgerEntry, ReceiptRecord } from '../types';
 import { LOCAL_STORAGE_KEYS, DEFAULT_EXCHANGE_RATE, DEFAULT_HOURLY_WAIT_RATE, DEFAULT_RATE_USD_PER_KM, DEFAULT_FUEL_PRICE_USD_PER_LITER, DEFAULT_TEMPLATES, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 import { mergeCustomerCollections } from './customerProfile';
 
@@ -13,6 +13,8 @@ interface FullSystemBackup {
   drivers?: Driver[];
   customers?: Customer[];
   alerts?: MissionAlert[];
+  creditLedger?: CreditLedgerEntry[];
+  receipts?: ReceiptRecord[];
   settings?: Partial<Settings>;
 }
 
@@ -26,6 +28,8 @@ export interface BackupInspection {
     drivers: number;
     customers: number;
     alerts: number;
+    creditLedger: number;
+    receipts: number;
   };
   hasSettings: boolean;
 }
@@ -40,6 +44,8 @@ export interface RestoreResult {
     drivers: boolean;
     customers: boolean;
     alerts: boolean;
+    creditLedger: boolean;
+    receipts: boolean;
     settings: boolean;
   };
 }
@@ -148,6 +154,8 @@ export const getFullSystemData = (options?: { includeSettings?: boolean }) => {
     drivers: getDrivers(),
     customers: getCustomers(),
     alerts: getAlerts(),
+    creditLedger: getCreditLedger(),
+    receipts: getReceipts(),
     ...(includeSettings ? { settings: getSettings() } : {}),
     timestamp: new Date().toISOString(),
     version: "2.1.0"
@@ -159,7 +167,7 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Backup must be a JSON object.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -170,7 +178,7 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Backup version is missing or invalid.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -179,7 +187,7 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Sync epoch section is invalid.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -188,7 +196,7 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Reset token section is invalid.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -197,7 +205,7 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Trips section is invalid.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -206,7 +214,7 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Deleted trips section is invalid.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -215,7 +223,7 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Drivers section is invalid.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -224,7 +232,7 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Customers section is invalid.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -233,7 +241,25 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Alerts section is invalid.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
+      hasSettings: false,
+    };
+  }
+
+  if ('creditLedger' in backup && !Array.isArray(backup.creditLedger)) {
+    return {
+      isValid: false,
+      error: 'Credit ledger section is invalid.',
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
+      hasSettings: false,
+    };
+  }
+
+  if ('receipts' in backup && !Array.isArray(backup.receipts)) {
+    return {
+      isValid: false,
+      error: 'Receipts section is invalid.',
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -242,7 +268,7 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     return {
       isValid: false,
       error: 'Settings section is invalid.',
-      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0 },
+      counts: { trips: 0, deletedTrips: 0, drivers: 0, customers: 0, alerts: 0, creditLedger: 0, receipts: 0 },
       hasSettings: false,
     };
   }
@@ -253,10 +279,12 @@ export const inspectFullSystemBackup = (data: unknown): BackupInspection => {
     drivers: Array.isArray(backup.drivers) ? backup.drivers.length : 0,
     customers: Array.isArray(backup.customers) ? backup.customers.length : 0,
     alerts: Array.isArray(backup.alerts) ? backup.alerts.length : 0,
+    creditLedger: Array.isArray(backup.creditLedger) ? backup.creditLedger.length : 0,
+    receipts: Array.isArray(backup.receipts) ? backup.receipts.length : 0,
   };
   const hasSettings = isRecord(backup.settings);
 
-  if (counts.trips + counts.deletedTrips + counts.drivers + counts.customers + counts.alerts === 0 && !hasSettings) {
+  if (counts.trips + counts.deletedTrips + counts.drivers + counts.customers + counts.alerts + counts.creditLedger + counts.receipts === 0 && !hasSettings) {
     return {
       isValid: false,
       error: 'Backup has no restorable sections.',
@@ -283,6 +311,8 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
     drivers: false,
     customers: false,
     alerts: false,
+    creditLedger: false,
+    receipts: false,
     settings: false,
   };
 
@@ -352,6 +382,22 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
     applied.alerts = true;
   }
 
+  if (Array.isArray(backup.creditLedger)) {
+    const nextCreditLedger = mode === 'replace'
+      ? backup.creditLedger
+      : mergeByKey(getCreditLedger(), backup.creditLedger, entry => entry.id);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.CREDIT_LEDGER, JSON.stringify(nextCreditLedger));
+    applied.creditLedger = true;
+  }
+
+  if (Array.isArray(backup.receipts)) {
+    const nextReceipts = mode === 'replace'
+      ? backup.receipts
+      : mergeByKey(getReceipts(), backup.receipts, entry => entry.id);
+    localStorage.setItem(LOCAL_STORAGE_KEYS.RECEIPTS, JSON.stringify(nextReceipts));
+    applied.receipts = true;
+  }
+
   if (isRecord(backup.settings)) {
     const templates = isRecord(backup.settings.templates) ? backup.settings.templates : DEFAULT_TEMPLATES;
 
@@ -399,6 +445,8 @@ export const clearOperationalData = () => {
   localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.CUSTOMERS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.ALERTS, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.CREDIT_LEDGER, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.RECEIPTS, JSON.stringify([]));
 };
 
 export const clearOperationalDataAtEpoch = (syncEpoch: number, resetToken?: string) => {
@@ -411,6 +459,36 @@ export const clearOperationalDataAtEpoch = (syncEpoch: number, resetToken?: stri
   localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.CUSTOMERS, JSON.stringify([]));
   localStorage.setItem(LOCAL_STORAGE_KEYS.ALERTS, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.CREDIT_LEDGER, JSON.stringify([]));
+  localStorage.setItem(LOCAL_STORAGE_KEYS.RECEIPTS, JSON.stringify([]));
+};
+
+export const getCreditLedger = (): CreditLedgerEntry[] => {
+  try {
+    const data = localStorage.getItem(LOCAL_STORAGE_KEYS.CREDIT_LEDGER);
+    return data ? JSON.parse(data) : [];
+  } catch (e) {
+    console.error('Failed to load credit ledger', e);
+    return [];
+  }
+};
+
+export const saveCreditLedger = (entries: CreditLedgerEntry[]): void => {
+  localStorage.setItem(LOCAL_STORAGE_KEYS.CREDIT_LEDGER, JSON.stringify(entries));
+};
+
+export const getReceipts = (): ReceiptRecord[] => {
+  try {
+    const data = localStorage.getItem(LOCAL_STORAGE_KEYS.RECEIPTS);
+    return data ? JSON.parse(data) : [];
+  } catch (e) {
+    console.error('Failed to load receipts', e);
+    return [];
+  }
+};
+
+export const saveReceipts = (entries: ReceiptRecord[]): void => {
+  localStorage.setItem(LOCAL_STORAGE_KEYS.RECEIPTS, JSON.stringify(entries));
 };
 
 // --- ALERTS ---

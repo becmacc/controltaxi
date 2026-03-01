@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
-import { Trip, TripStatus, Driver, Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, DriverFuelLogEntry, DriverCostResponsibility, DriverVehicleOwnership, Settings } from '../types';
+import { Trip, TripStatus, Driver, Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, DriverFuelLogEntry, DriverCostResponsibility, DriverVehicleOwnership, Settings, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle } from '../types';
 import { 
   User, Users, Phone, MapPin, Search, Calendar, Star, DollarSign, 
   ShieldCheck, ArrowLeft, History, Award, AlertCircle,
@@ -232,7 +232,7 @@ const getLoyaltyTierTone = (tier?: 'VIP' | 'VVIP' | 'REGULAR' | 'NEW') => {
 };
 
 export const CRMPage: React.FC = () => {
-  const { trips, drivers, customers, alerts, settings, editDriver, addDriver, addCustomers, removeCustomerByPhone, removeDriver, refreshData, hardResetCloudSync } = useStore();
+  const { trips, drivers, customers, creditLedger, receipts, alerts, settings, editDriver, addDriver, addCustomers, removeCustomerByPhone, addCreditLedgerEntry, settleCreditLedgerEntry, removeDriver, refreshData, hardResetCloudSync } = useStore();
   const [activeView, setActiveView] = useState<ViewMode>('CUSTOMERS');
   const [metricsWindow, setMetricsWindow] = useState<'TODAY' | '7D' | '30D' | 'ALL'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
@@ -1434,6 +1434,55 @@ export const CRMPage: React.FC = () => {
     showCoreStatus(`Removed ${stats.driver.name} from fleet and moved to CRM contacts.`);
   };
 
+  const handleCreateCreditEntry = (payload: {
+    partyType: CreditPartyType;
+    partyName: string;
+    cycle: CreditCycle;
+    amountUsd: number;
+    partyId?: string;
+    dueDate?: string;
+    notes?: string;
+  }) => {
+    const result = addCreditLedgerEntry(payload);
+    if (!result.ok) {
+      showCoreStatus(result.reason || 'Unable to create credit entry.');
+      return;
+    }
+    showCoreStatus(`Credit logged for ${payload.partyName} (${payload.cycle}).`);
+  };
+
+  const handleSettleCreditEntry = (entryId: string) => {
+    const result = settleCreditLedgerEntry(entryId);
+    if (!result.ok) {
+      showCoreStatus(result.reason || 'Unable to settle credit entry.');
+      return;
+    }
+
+    if (result.receipt) {
+      const receipt = result.receipt;
+      const text = [
+        'CONTROL TAXI RECEIPT',
+        `Receipt ID: ${receipt.id}`,
+        `Issued At: ${receipt.issuedAt}`,
+        `Party Type: ${receipt.partyType}`,
+        `Party: ${receipt.partyName}`,
+        `Cycle: ${receipt.cycle}`,
+        `Amount USD: $${receipt.amountUsd.toFixed(2)}`,
+        ...(receipt.notes ? [`Notes: ${receipt.notes}`] : []),
+      ].join('\n');
+
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `receipt-${receipt.id}.txt`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    }
+
+    showCoreStatus('Credit entry settled and receipt generated.');
+  };
+
   const renderIntelligenceContent = () => {
     if (!selectedItem) {
       if (activeView === 'CUSTOMERS') {
@@ -1443,7 +1492,19 @@ export const CRMPage: React.FC = () => {
         return <FleetOverviewView units={fleetHealth} windowLabel={metricsWindowLabel} onSelectDriver={setSelectedItem} />;
       }
       if (activeView === 'FINANCE') {
-        return <FinanceOverviewView totals={financeTotals} rows={financeRows} windowLabel={metricsWindowLabel} />;
+        return (
+          <FinanceOverviewView
+            totals={financeTotals}
+            rows={financeRows}
+            windowLabel={metricsWindowLabel}
+            creditLedger={creditLedger}
+            receipts={receipts}
+            customers={customers}
+            drivers={drivers}
+            onCreateCreditEntry={handleCreateCreditEntry}
+            onSettleCreditEntry={handleSettleCreditEntry}
+          />
+        );
       }
       if (activeView === 'VAULT') {
         return (
@@ -1501,8 +1562,34 @@ export const CRMPage: React.FC = () => {
 
     if (activeView === 'FINANCE') {
       const row = financeRows.find(r => r.id === selectedItem);
-      if (!row) return <FinanceOverviewView totals={financeTotals} rows={financeRows} windowLabel={metricsWindowLabel} />;
-      return <FinancePerformanceView row={row} totals={financeTotals} windowLabel={metricsWindowLabel} />;
+      if (!row) {
+        return (
+          <FinanceOverviewView
+            totals={financeTotals}
+            rows={financeRows}
+            windowLabel={metricsWindowLabel}
+            creditLedger={creditLedger}
+            receipts={receipts}
+            customers={customers}
+            drivers={drivers}
+            onCreateCreditEntry={handleCreateCreditEntry}
+            onSettleCreditEntry={handleSettleCreditEntry}
+          />
+        );
+      }
+      return (
+        <FinancePerformanceView
+          row={row}
+          totals={financeTotals}
+          windowLabel={metricsWindowLabel}
+          creditLedger={creditLedger}
+          receipts={receipts}
+          customers={customers}
+          drivers={drivers}
+          onCreateCreditEntry={handleCreateCreditEntry}
+          onSettleCreditEntry={handleSettleCreditEntry}
+        />
+      );
     }
 
     if (activeView === 'VAULT') {
@@ -2836,7 +2923,193 @@ const FleetReadinessView: React.FC<{
   );
 };
 
-const FinanceOverviewView: React.FC<{ totals: FinanceTotals; rows: FinanceDriverProfile[]; windowLabel: string }> = ({ totals, rows, windowLabel }) => (
+const FinanceCreditPanel: React.FC<{
+  entries: CreditLedgerEntry[];
+  receipts: ReceiptRecord[];
+  customers: Customer[];
+  drivers: Driver[];
+  onCreateCreditEntry: (payload: {
+    partyType: CreditPartyType;
+    partyName: string;
+    cycle: CreditCycle;
+    amountUsd: number;
+    partyId?: string;
+    dueDate?: string;
+    notes?: string;
+  }) => void;
+  onSettleCreditEntry: (entryId: string) => void;
+  filterDriverId?: string;
+}> = ({ entries, receipts, customers, drivers, onCreateCreditEntry, onSettleCreditEntry, filterDriverId }) => {
+  const [partyType, setPartyType] = useState<CreditPartyType>('CLIENT');
+  const [cycle, setCycle] = useState<CreditCycle>('WEEKLY');
+  const [partyId, setPartyId] = useState('');
+  const [amountUsd, setAmountUsd] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [notes, setNotes] = useState('');
+
+  useEffect(() => {
+    if (filterDriverId) {
+      setPartyType('DRIVER');
+      setPartyId(filterDriverId);
+    }
+  }, [filterDriverId]);
+
+  const partyOptions = partyType === 'CLIENT'
+    ? customers.map(item => ({ id: item.id, name: item.name }))
+    : drivers.map(item => ({ id: item.id, name: item.name }));
+
+  const filteredEntries = entries.filter(entry => {
+    if (!filterDriverId) return true;
+    return entry.partyType === 'DRIVER' && entry.partyId === filterDriverId;
+  });
+
+  const openEntries = filteredEntries.filter(entry => entry.status === 'OPEN');
+  const openBacklog = openEntries.reduce((sum, entry) => sum + entry.amountUsd, 0);
+  const recentReceipts = receipts
+    .filter(receipt => {
+      if (!filterDriverId) return true;
+      return receipt.partyType === 'DRIVER' && drivers.some(driver => driver.id === filterDriverId && driver.name === receipt.partyName);
+    })
+    .slice(0, 6);
+
+  const submitCredit = () => {
+    const amount = Number(amountUsd);
+    const selectedParty = partyOptions.find(option => option.id === partyId);
+    if (!selectedParty) return;
+
+    onCreateCreditEntry({
+      partyType,
+      partyId: selectedParty.id,
+      partyName: selectedParty.name,
+      cycle,
+      amountUsd: amount,
+      dueDate: dueDate || undefined,
+      notes: notes.trim() || undefined,
+    });
+
+    setAmountUsd('');
+    setDueDate('');
+    setNotes('');
+  };
+
+  return (
+    <div className="bg-white dark:bg-brand-900 border border-slate-200 dark:border-white/10 rounded-[2rem] p-6 md:p-8 space-y-5">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div>
+          <h4 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Credit Ledger</h4>
+          <p className="text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 mt-1">Open backlog ${openBacklog.toFixed(2)} · {openEntries.length} open</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <select value={partyType} onChange={event => { setPartyType(event.target.value as CreditPartyType); setPartyId(''); }} className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest">
+          <option value="CLIENT">Client Credit</option>
+          <option value="DRIVER">Driver Credit</option>
+        </select>
+        <select value={cycle} onChange={event => setCycle(event.target.value as CreditCycle)} className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest">
+          <option value="WEEKLY">Weekly</option>
+          <option value="MONTHLY">Monthly</option>
+        </select>
+        <select value={partyId} onChange={event => setPartyId(event.target.value)} className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest">
+          <option value="">Select {partyType === 'CLIENT' ? 'Client' : 'Driver'}</option>
+          {partyOptions.map(option => (
+            <option key={option.id} value={option.id}>{option.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <input
+          type="number"
+          min={0}
+          step={0.01}
+          value={amountUsd}
+          onChange={event => setAmountUsd(event.target.value)}
+          placeholder="Amount USD"
+          className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest"
+        />
+        <input
+          type="date"
+          value={dueDate}
+          onChange={event => setDueDate(event.target.value)}
+          className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest"
+        />
+        <input
+          type="text"
+          value={notes}
+          onChange={event => setNotes(event.target.value)}
+          placeholder="Notes"
+          className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest"
+        />
+        <button
+          type="button"
+          onClick={submitCredit}
+          disabled={!partyId || !Number.isFinite(Number(amountUsd)) || Number(amountUsd) <= 0}
+          className="h-10 rounded-xl border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[10px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Add Credit
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4 space-y-2">
+          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Open Credits</p>
+          {openEntries.length === 0 ? (
+            <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">No open credits.</p>
+          ) : (
+            openEntries.slice(0, 8).map(entry => (
+              <div key={entry.id} className="flex items-center justify-between border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 bg-white dark:bg-brand-900">
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100">{entry.partyName}</p>
+                  <p className="text-[8px] font-bold uppercase tracking-widest text-slate-400">{entry.partyType} · {entry.cycle} · {entry.dueDate || 'No due date'}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-black text-blue-700 dark:text-blue-300">${entry.amountUsd.toFixed(2)}</p>
+                  <button type="button" onClick={() => onSettleCreditEntry(entry.id)} className="text-[8px] font-black uppercase tracking-widest text-emerald-600">Settle + Receipt</button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4 space-y-2">
+          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">Recent Receipts</p>
+          {recentReceipts.length === 0 ? (
+            <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">No receipts yet.</p>
+          ) : (
+            recentReceipts.map(receipt => (
+              <div key={receipt.id} className="border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 bg-white dark:bg-brand-900">
+                <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100">{receipt.partyName}</p>
+                <p className="text-[8px] font-bold uppercase tracking-widest text-slate-400">{receipt.partyType} · {receipt.cycle} · {format(parseISO(receipt.issuedAt), 'MMM d, h:mm a')}</p>
+                <p className="text-[10px] font-black text-emerald-600">${receipt.amountUsd.toFixed(2)}</p>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const FinanceOverviewView: React.FC<{
+  totals: FinanceTotals;
+  rows: FinanceDriverProfile[];
+  windowLabel: string;
+  creditLedger: CreditLedgerEntry[];
+  receipts: ReceiptRecord[];
+  customers: Customer[];
+  drivers: Driver[];
+  onCreateCreditEntry: (payload: {
+    partyType: CreditPartyType;
+    partyName: string;
+    cycle: CreditCycle;
+    amountUsd: number;
+    partyId?: string;
+    dueDate?: string;
+    notes?: string;
+  }) => void;
+  onSettleCreditEntry: (entryId: string) => void;
+}> = ({ totals, rows, windowLabel, creditLedger, receipts, customers, drivers, onCreateCreditEntry, onSettleCreditEntry }) => (
   <div className="space-y-8 md:space-y-12 animate-in fade-in duration-700">
     <div className="border-b border-slate-200 dark:border-white/10 pb-6">
       <h2 className="text-3xl md:text-5xl font-black tracking-tighter uppercase text-brand-900 dark:text-white">Yield Command</h2>
@@ -2882,10 +3155,37 @@ const FinanceOverviewView: React.FC<{ totals: FinanceTotals; rows: FinanceDriver
         )})}
       </div>
     </div>
+
+    <FinanceCreditPanel
+      entries={creditLedger}
+      receipts={receipts}
+      customers={customers}
+      drivers={drivers}
+      onCreateCreditEntry={onCreateCreditEntry}
+      onSettleCreditEntry={onSettleCreditEntry}
+    />
   </div>
 );
 
-const FinancePerformanceView: React.FC<{ row: FinanceDriverProfile; totals: FinanceTotals; windowLabel: string }> = ({ row, totals, windowLabel }) => (
+const FinancePerformanceView: React.FC<{
+  row: FinanceDriverProfile;
+  totals: FinanceTotals;
+  windowLabel: string;
+  creditLedger: CreditLedgerEntry[];
+  receipts: ReceiptRecord[];
+  customers: Customer[];
+  drivers: Driver[];
+  onCreateCreditEntry: (payload: {
+    partyType: CreditPartyType;
+    partyName: string;
+    cycle: CreditCycle;
+    amountUsd: number;
+    partyId?: string;
+    dueDate?: string;
+    notes?: string;
+  }) => void;
+  onSettleCreditEntry: (entryId: string) => void;
+}> = ({ row, totals, windowLabel, creditLedger, receipts, customers, drivers, onCreateCreditEntry, onSettleCreditEntry }) => (
   <div className="space-y-8 md:space-y-12 animate-in fade-in duration-700">
     <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-slate-200 dark:border-white/10 pb-6 gap-4">
       <div>
@@ -2929,6 +3229,16 @@ const FinancePerformanceView: React.FC<{ row: FinanceDriverProfile; totals: Fina
         </div>
       </div>
     </div>
+
+    <FinanceCreditPanel
+      entries={creditLedger}
+      receipts={receipts}
+      customers={customers}
+      drivers={drivers}
+      onCreateCreditEntry={onCreateCreditEntry}
+      onSettleCreditEntry={onSettleCreditEntry}
+      filterDriverId={row.id}
+    />
   </div>
 );
 
