@@ -1,18 +1,130 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useStore } from '../context/StoreContext';
-import { TripStatus, Trip } from '../types';
+import { TripStatus, Trip, Driver, Settings } from '../types';
 import { loadGoogleMapsScript } from '../services/googleMapsLoader';
 import { parseGoogleMapsLink } from '../services/locationParser';
 import { buildWhatsAppLink } from '../services/whatsapp';
+import {
+  DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT,
+  DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT,
+  DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT,
+} from '../constants';
 import { 
   Sparkles, Globe, LocateFixed, Focus, Timer,
-  Activity, Zap, Sun, Moon, Sunrise, Sunset, Copy, Check, MessageCircle
+  Activity, Zap, Sun, Moon, Sunrise, Sunset, Copy, Check, MessageCircle, Briefcase, Receipt, Wallet, AlertTriangle
 } from 'lucide-react';
 import { format, isToday, parseISO, startOfDay, addHours, isSameHour } from 'date-fns';
 import { Button } from '../components/ui/Button';
 
 declare var google: any;
+
+const clampSharePercent = (value: unknown, fallback: number): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(100, value));
+};
+
+const getCompanyShareForDriver = (driver: Driver, settings: Settings): { rate: number; label: string } => {
+  const ownerDriverPercent = clampSharePercent(settings.ownerDriverCompanySharePercent, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT);
+  const companyCarDriverGasPercent = clampSharePercent(settings.companyCarDriverGasCompanySharePercent, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT);
+  const otherPercent = clampSharePercent(settings.otherDriverCompanySharePercent, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT);
+
+  const overrideRaw = typeof driver.companyShareOverridePercent === 'number' && Number.isFinite(driver.companyShareOverridePercent)
+    ? Math.max(0, Math.min(100, driver.companyShareOverridePercent))
+    : null;
+
+  if (overrideRaw !== null) {
+    return { rate: overrideRaw / 100, label: 'MANUAL OVERRIDE' };
+  }
+
+  const ownerPaysOps =
+    driver.vehicleOwnership === 'OWNER_DRIVER' &&
+    driver.fuelCostResponsibility === 'DRIVER' &&
+    driver.maintenanceResponsibility === 'DRIVER';
+
+  if (ownerPaysOps) {
+    return { rate: ownerDriverPercent / 100, label: 'OWNER + GAS + MAINT' };
+  }
+
+  if (driver.vehicleOwnership === 'COMPANY_FLEET' && driver.fuelCostResponsibility === 'DRIVER') {
+    return { rate: companyCarDriverGasPercent / 100, label: 'COMPANY CAR + DRIVER GAS' };
+  }
+
+  return { rate: otherPercent / 100, label: 'OTHER CONFIG RULE' };
+};
+
+const AccountingPulse: React.FC<{
+  grossRevenue: number;
+  companyOwed: number;
+  netAfterCompany: number;
+  openBacklogUsd: number;
+  openBacklogCount: number;
+  overdueOpenCount: number;
+  weeklyOpenUsd: number;
+  monthlyOpenUsd: number;
+  collectedTodayUsd: number;
+}> = ({
+  grossRevenue,
+  companyOwed,
+  netAfterCompany,
+  openBacklogUsd,
+  openBacklogCount,
+  overdueOpenCount,
+  weeklyOpenUsd,
+  monthlyOpenUsd,
+  collectedTodayUsd,
+}) => {
+  const cycleTotal = Math.max(weeklyOpenUsd + monthlyOpenUsd, 1);
+  const weeklyShare = Math.round((weeklyOpenUsd / cycleTotal) * 100);
+  const monthlyShare = Math.round((monthlyOpenUsd / cycleTotal) * 100);
+
+  return (
+    <div className="bg-white dark:bg-brand-900 rounded-[2.5rem] p-6 md:p-8 border border-slate-200 dark:border-white/5 shadow-xl space-y-6">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Accounting Visualizer</h3>
+          <p className="text-sm font-black text-brand-900 dark:text-white uppercase tracking-tight">Yield · Credit · Backlog</p>
+        </div>
+        <div className="inline-flex items-center h-8 px-3 rounded-lg border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300">
+          Live
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><Wallet size={10} /> Gross</p>
+          <p className="text-xl font-black text-emerald-600 mt-1">${Math.round(grossRevenue)}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><Briefcase size={10} /> Company Owed</p>
+          <p className="text-xl font-black text-blue-600 mt-1">${Math.round(companyOwed)}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><AlertTriangle size={10} /> Open Backlog</p>
+          <p className="text-xl font-black text-amber-600 mt-1">${Math.round(openBacklogUsd)}</p>
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">{openBacklogCount} open · {overdueOpenCount} overdue</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><Receipt size={10} /> Collected Today</p>
+          <p className="text-xl font-black text-indigo-600 mt-1">${Math.round(collectedTodayUsd)}</p>
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Net after owed ${Math.round(netAfterCompany)}</p>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4 space-y-3">
+        <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Cycle Mix (Open Credit)</p>
+        <div className="h-2 rounded-full bg-slate-200 dark:bg-brand-800 overflow-hidden flex">
+          <div className="h-full bg-blue-500" style={{ width: `${weeklyShare}%` }} />
+          <div className="h-full bg-purple-500" style={{ width: `${monthlyShare}%` }} />
+        </div>
+        <div className="flex items-center justify-between text-[8px] font-black uppercase tracking-widest">
+          <span className="text-blue-600 dark:text-blue-300">Weekly ${Math.round(weeklyOpenUsd)} ({weeklyShare}%)</span>
+          <span className="text-purple-600 dark:text-purple-300">Monthly ${Math.round(monthlyOpenUsd)} ({monthlyShare}%)</span>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const TemporalPulse: React.FC<{ trips: Trip[] }> = ({ trips }) => {
   const [hoveredHour, setHoveredHour] = useState<number | null>(null);
@@ -360,7 +472,7 @@ const FleetHeatmap: React.FC<{ trips: Trip[], apiKey: string, theme: string, map
 };
 
 export const GMBriefPage: React.FC = () => {
-  const { trips, drivers, settings, theme } = useStore();
+  const { trips, drivers, creditLedger, receipts, settings, theme } = useStore();
   const [isGeneratingAi, setIsGeneratingAi] = useState(false);
   const [aiInsightBullets, setAiInsightBullets] = useState<string[] | null>(null);
   const [aiProgress, setAiProgress] = useState(0);
@@ -433,6 +545,57 @@ export const GMBriefPage: React.FC = () => {
     };
   }, [stats.todayTripsList, drivers]);
 
+  const accountingMetrics = useMemo(() => {
+    const todayCompleted = stats.todayTripsList.filter(t => t.status === TripStatus.COMPLETED);
+    const grossCompletedRevenue = todayCompleted.reduce((sum, trip) => sum + trip.fareUsd, 0);
+
+    const revenueByDriver = new Map<string, number>();
+    todayCompleted.forEach(trip => {
+      if (!trip.driverId) return;
+      revenueByDriver.set(trip.driverId, (revenueByDriver.get(trip.driverId) || 0) + trip.fareUsd);
+    });
+
+    const companyOwedToday = drivers.reduce((sum, driver) => {
+      const driverRevenue = revenueByDriver.get(driver.id) || 0;
+      return sum + (driverRevenue * getCompanyShareForDriver(driver, settings).rate);
+    }, 0);
+
+    const openEntries = creditLedger.filter(entry => entry.status === 'OPEN');
+    const openBacklogUsd = openEntries.reduce((sum, entry) => sum + entry.amountUsd, 0);
+    const weeklyOpenUsd = openEntries.filter(entry => entry.cycle === 'WEEKLY').reduce((sum, entry) => sum + entry.amountUsd, 0);
+    const monthlyOpenUsd = openEntries.filter(entry => entry.cycle === 'MONTHLY').reduce((sum, entry) => sum + entry.amountUsd, 0);
+    const overdueOpenCount = openEntries.filter(entry => {
+      if (!entry.dueDate) return false;
+      const due = parseISO(entry.dueDate);
+      return Number.isFinite(due.getTime()) && due < new Date();
+    }).length;
+
+    const collectedTodayUsd = receipts
+      .filter(receipt => isToday(parseISO(receipt.issuedAt)))
+      .reduce((sum, receipt) => sum + receipt.amountUsd, 0);
+
+    const topBacklog = openEntries.reduce<Record<string, number>>((acc, entry) => {
+      const key = entry.partyName || 'Unknown';
+      acc[key] = (acc[key] || 0) + entry.amountUsd;
+      return acc;
+    }, {});
+    const topBacklogParty = Object.entries(topBacklog).sort((a, b) => b[1] - a[1])[0];
+
+    return {
+      grossCompletedRevenue,
+      companyOwedToday,
+      netAfterCompany: grossCompletedRevenue - companyOwedToday,
+      openBacklogUsd,
+      openBacklogCount: openEntries.length,
+      overdueOpenCount,
+      weeklyOpenUsd,
+      monthlyOpenUsd,
+      collectedTodayUsd,
+      topBacklogPartyName: topBacklogParty?.[0] || '',
+      topBacklogPartyAmount: topBacklogParty?.[1] || 0,
+    };
+  }, [stats.todayTripsList, drivers, settings, creditLedger, receipts]);
+
   const generateAiSummary = async () => {
     setIsGeneratingAi(true);
     setAiInsightBullets(null);
@@ -463,10 +626,20 @@ export const GMBriefPage: React.FC = () => {
         ? `${synthesisMetrics.topDriver.name} leads with ${synthesisMetrics.topDriver.trips} completions / $${Math.round(synthesisMetrics.topDriver.revenue)}`
         : 'no driver output leader yet';
 
+      const accountingSignal = `owed $${Math.round(accountingMetrics.companyOwedToday)} on completed revenue; net after owed $${Math.round(accountingMetrics.netAfterCompany)}`;
+      const creditSignal = accountingMetrics.openBacklogCount > 0
+        ? `open backlog $${Math.round(accountingMetrics.openBacklogUsd)} across ${accountingMetrics.openBacklogCount} entries (${accountingMetrics.overdueOpenCount} overdue)`
+        : 'no open credit backlog';
+      const debtorSignal = accountingMetrics.topBacklogPartyAmount > 0
+        ? `largest open party ${accountingMetrics.topBacklogPartyName} ($${Math.round(accountingMetrics.topBacklogPartyAmount)})`
+        : 'no dominant debtor profile';
+
       const bullets = [
         `LOAD — ${demandSignal}: ${synthesisMetrics.busyDrivers}/${synthesisMetrics.activeDrivers || drivers.length || 0} active units are busy (${stats.loadFactor}%).`,
         `FLOW — ${synthesisMetrics.totalTrips} missions, ${synthesisMetrics.completedTrips} completed (${synthesisMetrics.completionRate}%), ${synthesisMetrics.cancelRate}% canceled, revenue $${Math.round(stats.revenueToday)}.`,
         `TRAFFIC — Peak ${synthesisMetrics.peakHourLabel} (${synthesisMetrics.peakHourCount} mission${synthesisMetrics.peakHourCount === 1 ? '' : 's'}); ${trafficSignal} (TI ${synthesisMetrics.avgTraffic}, delay ${synthesisMetrics.avgDelay}m).`,
+        `ACCOUNTING — ${accountingSignal}; collected today $${Math.round(accountingMetrics.collectedTodayUsd)}.`,
+        `CREDIT — ${creditSignal}; ${debtorSignal}.`,
         `ACTION — ${assignmentSignal}; ${outputSignal}.`,
       ];
 
@@ -537,6 +710,17 @@ export const GMBriefPage: React.FC = () => {
             mapIdDark={settings.googleMapsMapIdDark}
           />
           <TemporalPulse trips={trips} />
+          <AccountingPulse
+            grossRevenue={accountingMetrics.grossCompletedRevenue}
+            companyOwed={accountingMetrics.companyOwedToday}
+            netAfterCompany={accountingMetrics.netAfterCompany}
+            openBacklogUsd={accountingMetrics.openBacklogUsd}
+            openBacklogCount={accountingMetrics.openBacklogCount}
+            overdueOpenCount={accountingMetrics.overdueOpenCount}
+            weeklyOpenUsd={accountingMetrics.weeklyOpenUsd}
+            monthlyOpenUsd={accountingMetrics.monthlyOpenUsd}
+            collectedTodayUsd={accountingMetrics.collectedTodayUsd}
+          />
         </div>
 
         {/* Intelligence Layer */}
@@ -590,6 +774,18 @@ export const GMBriefPage: React.FC = () => {
                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Gross Yield</span>
                        <span className="text-xl font-black text-emerald-500">${stats.revenueToday}</span>
                     </div>
+                      <div className="flex items-center justify-between p-4 bg-brand-950 rounded-2xl border border-white/5">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Company Owed</span>
+                        <span className="text-xl font-black text-blue-400">${Math.round(accountingMetrics.companyOwedToday)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-brand-950 rounded-2xl border border-white/5">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Open Backlog</span>
+                        <span className="text-xl font-black text-amber-400">${Math.round(accountingMetrics.openBacklogUsd)}</span>
+                      </div>
+                      <div className="flex items-center justify-between p-4 bg-brand-950 rounded-2xl border border-white/5">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Collected Today</span>
+                        <span className="text-xl font-black text-indigo-400">${Math.round(accountingMetrics.collectedTodayUsd)}</span>
+                      </div>
                   </div>
                 </div>
               )}

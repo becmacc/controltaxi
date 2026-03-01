@@ -3053,6 +3053,7 @@ const FinanceCreditPanel: React.FC<{
   const [partyType, setPartyType] = useState<CreditPartyType>('CLIENT');
   const [cycle, setCycle] = useState<CreditCycle>('WEEKLY');
   const [partyId, setPartyId] = useState('');
+  const [partySearch, setPartySearch] = useState('');
   const [amountUsd, setAmountUsd] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [notes, setNotes] = useState('');
@@ -3067,6 +3068,11 @@ const FinanceCreditPanel: React.FC<{
   const partyOptions = partyType === 'CLIENT'
     ? customers.map(item => ({ id: item.id, name: item.name }))
     : drivers.map(item => ({ id: item.id, name: item.name }));
+
+  const normalizedPartySearch = partySearch.trim().toLowerCase();
+  const filteredPartyOptions = normalizedPartySearch
+    ? partyOptions.filter(option => option.name.toLowerCase().includes(normalizedPartySearch))
+    : partyOptions;
 
   const filteredEntries = entries.filter(entry => {
     if (!filterDriverId) return true;
@@ -3153,7 +3159,7 @@ const FinanceCreditPanel: React.FC<{
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <select value={partyType} onChange={event => { setPartyType(event.target.value as CreditPartyType); setPartyId(''); }} className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest">
+        <select value={partyType} onChange={event => { setPartyType(event.target.value as CreditPartyType); setPartyId(''); setPartySearch(''); }} className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest">
           <option value="CLIENT">Client Credit</option>
           <option value="DRIVER">Driver Credit</option>
         </select>
@@ -3161,12 +3167,25 @@ const FinanceCreditPanel: React.FC<{
           <option value="WEEKLY">Weekly</option>
           <option value="MONTHLY">Monthly</option>
         </select>
+        <input
+          type="text"
+          value={partySearch}
+          onChange={event => setPartySearch(event.target.value)}
+          placeholder={`Search ${partyType === 'CLIENT' ? 'Client' : 'Driver'}`}
+          className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-3">
         <select value={partyId} onChange={event => setPartyId(event.target.value)} className="h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest">
           <option value="">Select {partyType === 'CLIENT' ? 'Client' : 'Driver'}</option>
-          {partyOptions.map(option => (
+          {filteredPartyOptions.map(option => (
             <option key={option.id} value={option.id}>{option.name}</option>
           ))}
         </select>
+        {normalizedPartySearch && filteredPartyOptions.length === 0 && (
+          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">No matches for this search.</p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3">

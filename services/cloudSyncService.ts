@@ -90,9 +90,12 @@ export const createSyncSignature = (payload: unknown): string => {
     syncEpoch,
     resetToken,
     trips: Array.isArray(record.trips) ? record.trips : [],
+    deletedTrips: Array.isArray(record.deletedTrips) ? record.deletedTrips : [],
     drivers: Array.isArray(record.drivers) ? record.drivers : [],
     customers: Array.isArray(record.customers) ? record.customers : [],
     alerts: Array.isArray(record.alerts) ? record.alerts : [],
+    creditLedger: Array.isArray(record.creditLedger) ? record.creditLedger : [],
+    receipts: Array.isArray(record.receipts) ? record.receipts : [],
     settings: record.settings && typeof record.settings === 'object' ? record.settings : {},
   });
 };

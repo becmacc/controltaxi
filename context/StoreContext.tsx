@@ -195,7 +195,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               (Array.isArray(payloadRecord.deletedTrips) && payloadRecord.deletedTrips.length > 0) ||
               (Array.isArray(payloadRecord.drivers) && payloadRecord.drivers.length > 0) ||
               (Array.isArray(payloadRecord.customers) && payloadRecord.customers.length > 0) ||
-              (Array.isArray(payloadRecord.alerts) && payloadRecord.alerts.length > 0);
+              (Array.isArray(payloadRecord.alerts) && payloadRecord.alerts.length > 0) ||
+              (Array.isArray(payloadRecord.creditLedger) && payloadRecord.creditLedger.length > 0) ||
+              (Array.isArray(payloadRecord.receipts) && payloadRecord.receipts.length > 0);
 
             if (remoteResetToken !== localResetToken) {
               const canAdoptRemoteReset = Boolean(remoteResetToken) && remoteSyncEpoch > localSyncEpoch;
