@@ -2067,22 +2067,22 @@ export const CalculatorPage: React.FC = () => {
                     </div>
 
                     <div className="grid grid-cols-1 gap-2">
-                      <div className="flex items-center bg-brand-950 border border-brand-800 rounded-xl px-3 h-11">
+                      <div className="flex items-center bg-white dark:bg-brand-950 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-11">
                         <Car size={14} className="text-emerald-500 mr-3" />
                         <select
                           value={selectedDriverId}
                           onChange={e => setSelectedDriverId(e.target.value)}
-                          className="bg-transparent border-none focus:ring-0 text-white font-bold text-xs flex-1 h-full"
+                          className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-xs flex-1 h-full"
                         >
-                          <option value="">Assign Driver (Optional)</option>
+                          <option value="" className="text-brand-900">Assign Driver (Optional)</option>
                           {activeDrivers.map(driver => (
-                            <option key={driver.id} value={driver.id}>{driver.name} ({driver.plateNumber}) [{driver.currentStatus}]</option>
+                            <option key={driver.id} value={driver.id} className="text-brand-900">{driver.name} ({driver.plateNumber}) [{driver.currentStatus}]</option>
                           ))}
                         </select>
                       </div>
-                      <div className="flex items-start bg-brand-950 border border-brand-800 rounded-xl px-3 py-2 min-h-20">
+                      <div className="flex items-start bg-white dark:bg-brand-950 border border-slate-200 dark:border-brand-800 rounded-xl px-3 py-2 min-h-20">
                         <FileText size={14} className="text-slate-500 mr-3 mt-1" />
-                        <textarea placeholder="Specific notes..." value={notes} onChange={e => setNotes(e.target.value)} className="bg-transparent border-none focus:ring-0 text-white font-bold text-xs flex-1 h-full resize-none" />
+                        <textarea placeholder="Specific notes..." value={notes} onChange={e => setNotes(e.target.value)} className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-xs flex-1 h-full resize-none" />
                       </div>
                     </div>
 

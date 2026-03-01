@@ -1,6 +1,6 @@
 
 import { Trip, Settings, Driver, Customer, MissionAlert, DeletedTripRecord } from '../types';
-import { LOCAL_STORAGE_KEYS, DEFAULT_EXCHANGE_RATE, DEFAULT_HOURLY_WAIT_RATE, DEFAULT_RATE_USD_PER_KM, DEFAULT_FUEL_PRICE_USD_PER_LITER, DEFAULT_TEMPLATES } from '../constants';
+import { LOCAL_STORAGE_KEYS, DEFAULT_EXCHANGE_RATE, DEFAULT_HOURLY_WAIT_RATE, DEFAULT_RATE_USD_PER_KM, DEFAULT_FUEL_PRICE_USD_PER_LITER, DEFAULT_TEMPLATES, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 import { mergeCustomerCollections } from './customerProfile';
 
 interface FullSystemBackup {
@@ -364,6 +364,9 @@ export const restoreFullSystemData = (data: unknown, options?: RestoreOptions): 
       hourlyWaitRate: typeof backup.settings.hourlyWaitRate === 'number' ? backup.settings.hourlyWaitRate : DEFAULT_HOURLY_WAIT_RATE,
       ratePerKm: typeof backup.settings.ratePerKm === 'number' ? backup.settings.ratePerKm : DEFAULT_RATE_USD_PER_KM,
       fuelPriceUsdPerLiter: typeof backup.settings.fuelPriceUsdPerLiter === 'number' ? backup.settings.fuelPriceUsdPerLiter : DEFAULT_FUEL_PRICE_USD_PER_LITER,
+      ownerDriverCompanySharePercent: typeof backup.settings.ownerDriverCompanySharePercent === 'number' ? backup.settings.ownerDriverCompanySharePercent : DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT,
+      companyCarDriverGasCompanySharePercent: typeof backup.settings.companyCarDriverGasCompanySharePercent === 'number' ? backup.settings.companyCarDriverGasCompanySharePercent : DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT,
+      otherDriverCompanySharePercent: typeof backup.settings.otherDriverCompanySharePercent === 'number' ? backup.settings.otherDriverCompanySharePercent : DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT,
       templates: {
         trip_confirmation: typeof templates.trip_confirmation === 'string' ? templates.trip_confirmation : DEFAULT_TEMPLATES.trip_confirmation,
         feedback_request: typeof templates.feedback_request === 'string' ? templates.feedback_request : DEFAULT_TEMPLATES.feedback_request,
@@ -689,6 +692,9 @@ export const getSettings = (): Settings => {
         hourlyWaitRate: parsed.hourlyWaitRate ?? DEFAULT_HOURLY_WAIT_RATE,
         ratePerKm: parsed.ratePerKm ?? DEFAULT_RATE_USD_PER_KM,
         fuelPriceUsdPerLiter: parsed.fuelPriceUsdPerLiter ?? DEFAULT_FUEL_PRICE_USD_PER_LITER,
+        ownerDriverCompanySharePercent: parsed.ownerDriverCompanySharePercent ?? DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT,
+        companyCarDriverGasCompanySharePercent: parsed.companyCarDriverGasCompanySharePercent ?? DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT,
+        otherDriverCompanySharePercent: parsed.otherDriverCompanySharePercent ?? DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT,
         templates: migratedTemplates.templates
       };
     }
@@ -705,6 +711,9 @@ export const getSettings = (): Settings => {
     hourlyWaitRate: DEFAULT_HOURLY_WAIT_RATE,
     ratePerKm: DEFAULT_RATE_USD_PER_KM,
     fuelPriceUsdPerLiter: DEFAULT_FUEL_PRICE_USD_PER_LITER,
+    ownerDriverCompanySharePercent: DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT,
+    companyCarDriverGasCompanySharePercent: DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT,
+    otherDriverCompanySharePercent: DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT,
     templates: DEFAULT_TEMPLATES
   };
 };

@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
-import { Trip, TripStatus, Driver, Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, DriverFuelLogEntry, DriverCostResponsibility, DriverVehicleOwnership } from '../types';
+import { Trip, TripStatus, Driver, Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, DriverFuelLogEntry, DriverCostResponsibility, DriverVehicleOwnership, Settings } from '../types';
 import { 
   User, Users, Phone, MapPin, Search, Calendar, Star, DollarSign, 
   ShieldCheck, ArrowLeft, History, Award, AlertCircle,
@@ -21,6 +21,7 @@ import { buildWhatsAppLink, normalizePhoneForWhatsApp } from '../services/whatsa
 import { buildCustomerFromImportedContact, customerPhoneKey, mergeCustomerCollections } from '../services/customerProfile';
 import { parseGoogleMapsLink, parseGpsOrLatLngInput } from '../services/locationParser';
 import { createSyncSignature, fetchCloudSyncSignature, getCloudSyncDocId } from '../services/cloudSyncService';
+import { DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 
 type ViewMode = 'CUSTOMERS' | 'FLEET' | 'FINANCE' | 'VAULT';
 type CustomerSort = 'SPEND' | 'RECENCY' | 'FREQUENCY';
@@ -88,6 +89,8 @@ interface FinanceDriverProfile {
   avgFare: number;
   totalDistance: number;
   netAlpha: number;
+  companyOwed: number;
+  companyShareRate: number;
   burnRatio: number;
   efficiency: number;
 }
@@ -95,6 +98,7 @@ interface FinanceDriverProfile {
 interface FinanceTotals {
   grossRevenue: number;
   netAlpha: number;
+  companyOwed: number;
   totalGasSpent: number;
   completedTrips: number;
   avgFare: number;
@@ -117,6 +121,27 @@ const getFuelCostWeight = (responsibility?: DriverCostResponsibility): number =>
   if (responsibility === 'DRIVER') return 0;
   if (responsibility === 'SHARED') return 0.5;
   return 1;
+};
+
+const clampSharePercent = (value: unknown, fallback: number): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(100, value));
+};
+
+const getCompanyShareRateForDriver = (driver: Driver, settings: Settings): number => {
+  const ownerDriverPercent = clampSharePercent(settings.ownerDriverCompanySharePercent, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT);
+  const companyCarDriverGasPercent = clampSharePercent(settings.companyCarDriverGasCompanySharePercent, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT);
+  const otherPercent = clampSharePercent(settings.otherDriverCompanySharePercent, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT);
+
+  if (driver.vehicleOwnership === 'OWNER_DRIVER') {
+    return ownerDriverPercent / 100;
+  }
+
+  if (driver.vehicleOwnership === 'COMPANY_FLEET' && driver.fuelCostResponsibility === 'DRIVER') {
+    return companyCarDriverGasPercent / 100;
+  }
+
+  return otherPercent / 100;
 };
 
 interface VaultFeedItem {
@@ -503,6 +528,8 @@ export const CRMPage: React.FC = () => {
       const driverGasShare = getDriverFuelUsdForWindow(driver, totalDistance);
       const accountableGasShare = driverGasShare * getFuelCostWeight(driver.fuelCostResponsibility);
       const netAlpha = grossRevenue - accountableGasShare;
+      const companyShareRate = getCompanyShareRateForDriver(driver, settings);
+      const companyOwed = grossRevenue * companyShareRate;
 
       return {
         id: driver.id,
@@ -513,15 +540,22 @@ export const CRMPage: React.FC = () => {
         avgFare,
         totalDistance,
         netAlpha,
+        companyOwed,
+        companyShareRate,
         burnRatio: grossRevenue > 0 ? accountableGasShare / grossRevenue : 0,
         efficiency: totalDistance > 0 ? grossRevenue / totalDistance : 0,
       };
     }).sort((a, b) => b.netAlpha - a.netAlpha);
-  }, [trips, drivers, metricsWindow, settings.fuelPriceUsdPerLiter]);
+  }, [trips, drivers, metricsWindow, settings.fuelPriceUsdPerLiter, settings.ownerDriverCompanySharePercent, settings.companyCarDriverGasCompanySharePercent, settings.otherDriverCompanySharePercent]);
 
   const financeTotals = useMemo((): FinanceTotals => {
     const completedTrips = trips.filter(t => t.status === TripStatus.COMPLETED && isTripInMetricsWindow(t));
     const grossRevenue = completedTrips.reduce((acc, t) => acc + t.fareUsd, 0);
+    const companyOwed = drivers.reduce((acc, d) => {
+      const driverTrips = completedTrips.filter(t => t.driverId === d.id);
+      const driverRevenue = driverTrips.reduce((sum, t) => sum + t.fareUsd, 0);
+      return acc + (driverRevenue * getCompanyShareRateForDriver(d, settings));
+    }, 0);
     const totalGasSpent = drivers.reduce((acc, d) => {
       const driverTrips = completedTrips.filter(t => t.driverId === d.id);
       const driverDistance = driverTrips.reduce((sum, t) => sum + t.distanceKm, 0);
@@ -533,12 +567,13 @@ export const CRMPage: React.FC = () => {
     return {
       grossRevenue,
       netAlpha: grossRevenue - totalGasSpent,
+      companyOwed,
       totalGasSpent,
       completedTrips: completedCount,
       avgFare: completedCount > 0 ? grossRevenue / completedCount : 0,
       burnRatio: grossRevenue > 0 ? totalGasSpent / grossRevenue : 0,
     };
-  }, [trips, drivers, metricsWindow, settings.exchangeRate, settings.fuelPriceUsdPerLiter]);
+  }, [trips, drivers, metricsWindow, settings.exchangeRate, settings.fuelPriceUsdPerLiter, settings.ownerDriverCompanySharePercent, settings.companyCarDriverGasCompanySharePercent, settings.otherDriverCompanySharePercent]);
 
   const vaultItems = useMemo((): VaultFeedItem[] => {
     return [
@@ -1106,7 +1141,7 @@ export const CRMPage: React.FC = () => {
     if (!pendingContactsImport) return;
 
     const shouldRouteToFleet = (name: string, notes?: string) => {
-      return /\b(driver|delivery)\b/i.test(`${name || ''} ${notes || ''}`);
+      return /\b(driver|delivery|taxi|cab)\b/i.test(`${name || ''} ${notes || ''}`);
     };
 
     const existingDriverPhones = new Set(
@@ -1854,11 +1889,15 @@ export const CRMPage: React.FC = () => {
                     <h4 className="text-sm font-black uppercase tracking-tight truncate text-brand-900 dark:text-white leading-none mb-1">{profile.name}</h4>
                     <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate">{profile.plateNumber}</p>
                     <p className="text-[10px] font-black mt-1 text-brand-900 dark:text-emerald-500">${profile.netAlpha.toFixed(0)} NET</p>
+                    <p className="text-[9px] font-black mt-0.5 text-blue-700 dark:text-blue-300">${profile.companyOwed.toFixed(0)} OWED</p>
                     <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10">
+                        SHARE {(profile.companyShareRate * 100).toFixed(1)}%
+                      </span>
                       <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-gold-300 text-gold-700 bg-gold-50 dark:border-gold-900/40 dark:text-gold-300 dark:bg-gold-900/10">
                         BR {(safeBurnRatio * 100).toFixed(1)}%
                       </span>
-                      <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10">
+                      <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-cyan-300 text-cyan-700 bg-cyan-50 dark:border-cyan-900/40 dark:text-cyan-300 dark:bg-cyan-900/10">
                         ATTR UNIT
                       </span>
                     </div>
@@ -2705,9 +2744,10 @@ const FinanceOverviewView: React.FC<{ totals: FinanceTotals; rows: FinanceDriver
       <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400 mt-2">{windowLabel} Net Alpha Overview</p>
     </div>
 
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 md:gap-6">
       {[
         { label: 'Gross Revenue', value: `$${totals.grossRevenue.toFixed(0)}`, tone: 'text-brand-900 dark:text-emerald-500', icon: DollarSign },
+        { label: 'Company Owed', value: `$${totals.companyOwed.toFixed(0)}`, tone: 'text-blue-600 dark:text-blue-300', icon: Briefcase },
         { label: 'Net Alpha', value: `$${totals.netAlpha.toFixed(0)}`, tone: totals.netAlpha >= 0 ? 'text-emerald-600' : 'text-red-500', icon: TrendingUp },
         { label: 'Burn Ratio', value: `${(totals.burnRatio * 100).toFixed(1)}%`, tone: 'text-gold-600', icon: PieChart },
         { label: 'Avg Fare', value: `$${totals.avgFare.toFixed(1)}`, tone: 'text-blue-600', icon: BarChart3 },
@@ -2730,10 +2770,12 @@ const FinanceOverviewView: React.FC<{ totals: FinanceTotals; rows: FinanceDriver
             <div>
               <p className="text-sm font-black uppercase tracking-tight text-brand-900 dark:text-white">{row.name}</p>
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">{row.plateNumber} · Attr Unit · {row.completedTrips} Trips</p>
+              <p className="text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 mt-1">Company share {(row.companyShareRate * 100).toFixed(1)}%</p>
             </div>
             <div className="text-right">
               <p className={`text-sm font-black ${row.netAlpha >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>${row.netAlpha.toFixed(0)}</p>
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">Net</p>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-blue-700 dark:text-blue-300">Owed ${row.companyOwed.toFixed(0)}</p>
               <p className="text-[9px] font-bold uppercase tracking-widest text-gold-600 dark:text-gold-400">BR {(safeBurnRatio * 100).toFixed(1)}%</p>
             </div>
           </div>
@@ -2757,10 +2799,12 @@ const FinancePerformanceView: React.FC<{ row: FinanceDriverProfile; totals: Fina
       </div>
     </div>
 
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 md:gap-6">
       {[
         { label: 'Net Alpha', value: `$${row.netAlpha.toFixed(0)}`, tone: row.netAlpha >= 0 ? 'text-emerald-600' : 'text-red-500', icon: row.netAlpha >= 0 ? ArrowUpRight : ArrowDownRight },
         { label: 'Gross Revenue', value: `$${row.grossRevenue.toFixed(0)}`, tone: 'text-brand-900 dark:text-emerald-500', icon: DollarSign },
+        { label: 'Company Owed', value: `$${row.companyOwed.toFixed(0)}`, tone: 'text-blue-600 dark:text-blue-300', icon: Briefcase },
+        { label: 'Share Rate', value: `${(row.companyShareRate * 100).toFixed(1)}%`, tone: 'text-cyan-600 dark:text-cyan-300', icon: ShieldQuestion },
         { label: 'Avg Fare', value: `$${row.avgFare.toFixed(1)}`, tone: 'text-blue-600', icon: BarChart3 },
         { label: 'Burn Ratio', value: `${(row.burnRatio * 100).toFixed(1)}%`, tone: 'text-gold-600', icon: Zap },
       ].map((box, idx) => (

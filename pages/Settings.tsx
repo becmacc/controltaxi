@@ -4,7 +4,7 @@ import { useStore } from '../context/StoreContext';
 import { Button } from '../components/ui/Button';
 import { Save, Coins, Clock, Activity, MessageSquare, Info, Phone, Fuel } from 'lucide-react';
 import { MessageTemplates } from '../types';
-import { DEFAULT_TEMPLATES } from '../constants';
+import { DEFAULT_TEMPLATES, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 import {
   applyPhoneDialCode,
   DEFAULT_PHONE_DIAL_CODE,
@@ -19,6 +19,9 @@ export const SettingsPage: React.FC = () => {
   const [hourlyWaitRate, setHourlyWaitRate] = useState(settings.hourlyWaitRate.toString());
   const [ratePerKm, setRatePerKm] = useState(settings.ratePerKm.toString());
   const [fuelPriceUsdPerLiter, setFuelPriceUsdPerLiter] = useState(settings.fuelPriceUsdPerLiter.toString());
+  const [ownerDriverCompanySharePercent, setOwnerDriverCompanySharePercent] = useState(settings.ownerDriverCompanySharePercent.toString());
+  const [companyCarDriverGasCompanySharePercent, setCompanyCarDriverGasCompanySharePercent] = useState(settings.companyCarDriverGasCompanySharePercent.toString());
+  const [otherDriverCompanySharePercent, setOtherDriverCompanySharePercent] = useState(settings.otherDriverCompanySharePercent.toString());
   const [operatorWhatsApp, setOperatorWhatsApp] = useState(settings.operatorWhatsApp || '');
   const [operatorIntlEnabled, setOperatorIntlEnabled] = useState(false);
   const [operatorDialCode, setOperatorDialCode] = useState(DEFAULT_PHONE_DIAL_CODE);
@@ -39,6 +42,9 @@ export const SettingsPage: React.FC = () => {
     setHourlyWaitRate(settings.hourlyWaitRate.toString());
     setRatePerKm(settings.ratePerKm.toString());
     setFuelPriceUsdPerLiter(settings.fuelPriceUsdPerLiter.toString());
+    setOwnerDriverCompanySharePercent(settings.ownerDriverCompanySharePercent.toString());
+    setCompanyCarDriverGasCompanySharePercent(settings.companyCarDriverGasCompanySharePercent.toString());
+    setOtherDriverCompanySharePercent(settings.otherDriverCompanySharePercent.toString());
     const operatorPhone = settings.operatorWhatsApp || '';
     setOperatorWhatsApp(operatorPhone);
     const detectedDialCode = detectPhoneDialCode(operatorPhone) || DEFAULT_PHONE_DIAL_CODE;
@@ -59,19 +65,27 @@ export const SettingsPage: React.FC = () => {
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
 
+    const parseOrDefault = (raw: string, fallback: number) => {
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
     const normalizedOperatorWhatsApp = normalizePhoneForWhatsApp(operatorWhatsApp.trim(), {
       defaultDialCode: operatorEffectiveDialCode,
     });
 
     updateSettings({
-      exchangeRate: parseInt(exchangeRate) || 90000,
-      hourlyWaitRate: parseFloat(hourlyWaitRate) || 5,
-      ratePerKm: parseFloat(ratePerKm) || 1.1,
+      exchangeRate: parseOrDefault(exchangeRate, 90000),
+      hourlyWaitRate: parseOrDefault(hourlyWaitRate, 5),
+      ratePerKm: parseOrDefault(ratePerKm, 1.1),
       googleMapsApiKey: settings.googleMapsApiKey,
       googleMapsMapId: settings.googleMapsMapId,
       googleMapsMapIdDark: settings.googleMapsMapIdDark,
       operatorWhatsApp: normalizedOperatorWhatsApp || operatorWhatsApp.trim(),
-      fuelPriceUsdPerLiter: parseFloat(fuelPriceUsdPerLiter) || 1.3,
+      fuelPriceUsdPerLiter: parseOrDefault(fuelPriceUsdPerLiter, 1.3),
+      ownerDriverCompanySharePercent: parseOrDefault(ownerDriverCompanySharePercent, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT),
+      companyCarDriverGasCompanySharePercent: parseOrDefault(companyCarDriverGasCompanySharePercent, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT),
+      otherDriverCompanySharePercent: parseOrDefault(otherDriverCompanySharePercent, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT),
       templates
     });
     setMessage('Settings saved successfully.');
@@ -178,6 +192,54 @@ export const SettingsPage: React.FC = () => {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="bg-white dark:bg-brand-900 rounded-2xl shadow-xl border border-slate-200 dark:border-brand-800 p-6 md:p-8 transition-colors">
+            <h3 className="text-sm font-black text-brand-900 dark:text-gold-500 uppercase tracking-widest mb-6 border-b pb-4 dark:border-brand-800">Driver Share Rules</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Owner Driver → Company %</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.5"
+                  value={ownerDriverCompanySharePercent}
+                  onChange={(e) => setOwnerDriverCompanySharePercent(e.target.value)}
+                  className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-lg font-black p-3 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Company Car + Driver Gas → Company %</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.5"
+                  value={companyCarDriverGasCompanySharePercent}
+                  onChange={(e) => setCompanyCarDriverGasCompanySharePercent(e.target.value)}
+                  className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-lg font-black p-3 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">Other Arrangements → Company %</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.5"
+                  value={otherDriverCompanySharePercent}
+                  onChange={(e) => setOtherDriverCompanySharePercent(e.target.value)}
+                  className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-lg font-black p-3 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all"
+                  required
+                />
+              </div>
+            </div>
+            <p className="mt-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Used in CRM finance calculations to compute company owed share per driver.</p>
           </div>
 
           {/* Messaging Templates */}

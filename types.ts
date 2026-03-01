@@ -184,6 +184,9 @@ export interface Settings {
   hourlyWaitRate: number;
   ratePerKm: number;
   fuelPriceUsdPerLiter: number;
+  ownerDriverCompanySharePercent: number;
+  companyCarDriverGasCompanySharePercent: number;
+  otherDriverCompanySharePercent: number;
   templates: MessageTemplates;
 }
 
