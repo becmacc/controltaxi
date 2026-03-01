@@ -66,6 +66,7 @@ export interface Driver {
   lastRefuelKm: number; 
   fuelRangeKm: number; // Estimated range on a full tank (default ~500km)
   fuelLogs?: DriverFuelLogEntry[];
+  companyShareOverridePercent?: number;
 }
 
 export interface Customer {

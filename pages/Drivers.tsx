@@ -240,7 +240,8 @@ export const DriversPage: React.FC = () => {
       totalGasSpent: existing ? existing.totalGasSpent : 0,
       lastRefuelKm: existing ? existing.lastRefuelKm : 0,
       fuelRangeKm: existing ? existing.fuelRangeKm : 500,
-      fuelLogs: existing?.fuelLogs || []
+      fuelLogs: existing?.fuelLogs || [],
+      companyShareOverridePercent: existing?.companyShareOverridePercent,
     };
 
     if (editingId) editDriver(driverData); else addDriver(driverData);

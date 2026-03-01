@@ -91,6 +91,7 @@ interface FinanceDriverProfile {
   netAlpha: number;
   companyOwed: number;
   companyShareRate: number;
+  shareRuleLabel: string;
   burnRatio: number;
   efficiency: number;
 }
@@ -128,20 +129,33 @@ const clampSharePercent = (value: unknown, fallback: number): number => {
   return Math.max(0, Math.min(100, value));
 };
 
-const getCompanyShareRateForDriver = (driver: Driver, settings: Settings): number => {
+const getCompanyShareForDriver = (driver: Driver, settings: Settings): { rate: number; label: string } => {
   const ownerDriverPercent = clampSharePercent(settings.ownerDriverCompanySharePercent, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT);
   const companyCarDriverGasPercent = clampSharePercent(settings.companyCarDriverGasCompanySharePercent, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT);
   const otherPercent = clampSharePercent(settings.otherDriverCompanySharePercent, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT);
 
-  if (driver.vehicleOwnership === 'OWNER_DRIVER') {
-    return ownerDriverPercent / 100;
+  const overrideRaw = typeof driver.companyShareOverridePercent === 'number' && Number.isFinite(driver.companyShareOverridePercent)
+    ? Math.max(0, Math.min(100, driver.companyShareOverridePercent))
+    : null;
+
+  if (overrideRaw !== null) {
+    return { rate: overrideRaw / 100, label: 'MANUAL OVERRIDE' };
+  }
+
+  const ownerPaysOps =
+    driver.vehicleOwnership === 'OWNER_DRIVER' &&
+    driver.fuelCostResponsibility === 'DRIVER' &&
+    driver.maintenanceResponsibility === 'DRIVER';
+
+  if (ownerPaysOps) {
+    return { rate: ownerDriverPercent / 100, label: 'OWNER + GAS + MAINT' };
   }
 
   if (driver.vehicleOwnership === 'COMPANY_FLEET' && driver.fuelCostResponsibility === 'DRIVER') {
-    return companyCarDriverGasPercent / 100;
+    return { rate: companyCarDriverGasPercent / 100, label: 'COMPANY CAR + DRIVER GAS' };
   }
 
-  return otherPercent / 100;
+  return { rate: otherPercent / 100, label: 'OTHER CONFIG RULE' };
 };
 
 interface VaultFeedItem {
@@ -528,8 +542,8 @@ export const CRMPage: React.FC = () => {
       const driverGasShare = getDriverFuelUsdForWindow(driver, totalDistance);
       const accountableGasShare = driverGasShare * getFuelCostWeight(driver.fuelCostResponsibility);
       const netAlpha = grossRevenue - accountableGasShare;
-      const companyShareRate = getCompanyShareRateForDriver(driver, settings);
-      const companyOwed = grossRevenue * companyShareRate;
+      const companyShare = getCompanyShareForDriver(driver, settings);
+      const companyOwed = grossRevenue * companyShare.rate;
 
       return {
         id: driver.id,
@@ -541,7 +555,8 @@ export const CRMPage: React.FC = () => {
         totalDistance,
         netAlpha,
         companyOwed,
-        companyShareRate,
+        companyShareRate: companyShare.rate,
+        shareRuleLabel: companyShare.label,
         burnRatio: grossRevenue > 0 ? accountableGasShare / grossRevenue : 0,
         efficiency: totalDistance > 0 ? grossRevenue / totalDistance : 0,
       };
@@ -554,7 +569,7 @@ export const CRMPage: React.FC = () => {
     const companyOwed = drivers.reduce((acc, d) => {
       const driverTrips = completedTrips.filter(t => t.driverId === d.id);
       const driverRevenue = driverTrips.reduce((sum, t) => sum + t.fareUsd, 0);
-      return acc + (driverRevenue * getCompanyShareRateForDriver(d, settings));
+      return acc + (driverRevenue * getCompanyShareForDriver(d, settings).rate);
     }, 0);
     const totalGasSpent = drivers.reduce((acc, d) => {
       const driverTrips = completedTrips.filter(t => t.driverId === d.id);
@@ -956,6 +971,7 @@ export const CRMPage: React.FC = () => {
       fuelCostResponsibility: DriverCostResponsibility;
       maintenanceResponsibility: DriverCostResponsibility;
       fuelRangeKm: number;
+      companyShareOverridePercent?: number;
     }
   ) => {
     if (!Number.isFinite(payload.fuelRangeKm) || payload.fuelRangeKm <= 0) {
@@ -969,6 +985,9 @@ export const CRMPage: React.FC = () => {
       fuelCostResponsibility: payload.fuelCostResponsibility,
       maintenanceResponsibility: payload.maintenanceResponsibility,
       fuelRangeKm: Math.round(payload.fuelRangeKm),
+      companyShareOverridePercent: typeof payload.companyShareOverridePercent === 'number' && Number.isFinite(payload.companyShareOverridePercent)
+        ? Math.max(0, Math.min(100, payload.companyShareOverridePercent))
+        : undefined,
     });
     showCoreStatus(`Asset governance updated for ${stats.driver.name}.`);
   };
@@ -1927,6 +1946,7 @@ export const CRMPage: React.FC = () => {
                     <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate">{profile.plateNumber}</p>
                     <p className="text-[10px] font-black mt-1 text-brand-900 dark:text-emerald-500">${profile.netAlpha.toFixed(0)} NET</p>
                     <p className="text-[9px] font-black mt-0.5 text-blue-700 dark:text-blue-300">${profile.companyOwed.toFixed(0)} OWED</p>
+                    <p className="text-[8px] font-black mt-0.5 text-indigo-700 dark:text-indigo-300 uppercase tracking-widest">{profile.shareRuleLabel}</p>
                     <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
                       <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10">
                         SHARE {(profile.companyShareRate * 100).toFixed(1)}%
@@ -2514,6 +2534,7 @@ const FleetReadinessView: React.FC<{
     fuelCostResponsibility: DriverCostResponsibility;
     maintenanceResponsibility: DriverCostResponsibility;
     fuelRangeKm: number;
+    companyShareOverridePercent?: number;
   }) => void;
   onRemoveFromFleet: () => void;
   windowLabel: string;
@@ -2525,6 +2546,11 @@ const FleetReadinessView: React.FC<{
   const [fuelCostDraft, setFuelCostDraft] = useState<DriverCostResponsibility>(stats.driver.fuelCostResponsibility || 'COMPANY');
   const [maintenanceCostDraft, setMaintenanceCostDraft] = useState<DriverCostResponsibility>(stats.driver.maintenanceResponsibility || 'COMPANY');
   const [fuelRangeDraft, setFuelRangeDraft] = useState(String(stats.driver.fuelRangeKm || 500));
+  const [companyShareOverrideDraft, setCompanyShareOverrideDraft] = useState<string>(
+    typeof stats.driver.companyShareOverridePercent === 'number' && Number.isFinite(stats.driver.companyShareOverridePercent)
+      ? String(stats.driver.companyShareOverridePercent)
+      : ''
+  );
   const recentFuelLogs = Array.isArray(stats.driver.fuelLogs)
     ? stats.driver.fuelLogs
         .slice()
@@ -2537,12 +2563,18 @@ const FleetReadinessView: React.FC<{
     setFuelCostDraft(stats.driver.fuelCostResponsibility || 'COMPANY');
     setMaintenanceCostDraft(stats.driver.maintenanceResponsibility || 'COMPANY');
     setFuelRangeDraft(String(stats.driver.fuelRangeKm || 500));
+    setCompanyShareOverrideDraft(
+      typeof stats.driver.companyShareOverridePercent === 'number' && Number.isFinite(stats.driver.companyShareOverridePercent)
+        ? String(stats.driver.companyShareOverridePercent)
+        : ''
+    );
   }, [
     stats.driver.id,
     stats.driver.vehicleOwnership,
     stats.driver.fuelCostResponsibility,
     stats.driver.maintenanceResponsibility,
     stats.driver.fuelRangeKm,
+    stats.driver.companyShareOverridePercent,
   ]);
 
   const handleExportFuelLedger = () => {
@@ -2703,6 +2735,19 @@ const FleetReadinessView: React.FC<{
                 className="w-full h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest"
               />
             </div>
+            <div>
+              <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-1 block">Company Share Override % (Optional)</label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.5}
+                value={companyShareOverrideDraft}
+                onChange={e => setCompanyShareOverrideDraft(e.target.value)}
+                placeholder="Leave empty for auto rules"
+                className="w-full h-10 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-black uppercase tracking-widest"
+              />
+            </div>
             <button
               type="button"
               onClick={() => onUpdateGovernance({
@@ -2710,6 +2755,7 @@ const FleetReadinessView: React.FC<{
                 fuelCostResponsibility: fuelCostDraft,
                 maintenanceResponsibility: maintenanceCostDraft,
                 fuelRangeKm: Number(fuelRangeDraft),
+                companyShareOverridePercent: companyShareOverrideDraft.trim() === '' ? undefined : Number(companyShareOverrideDraft),
               })}
               className="h-10 rounded-xl border border-indigo-300 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-900/10 text-[10px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300"
             >
@@ -2824,6 +2870,7 @@ const FinanceOverviewView: React.FC<{ totals: FinanceTotals; rows: FinanceDriver
               <p className="text-sm font-black uppercase tracking-tight text-brand-900 dark:text-white">{row.name}</p>
               <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">{row.plateNumber} · Attr Unit · {row.completedTrips} Trips</p>
               <p className="text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 mt-1">Company share {(row.companyShareRate * 100).toFixed(1)}%</p>
+              <p className="text-[8px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300 mt-1">{row.shareRuleLabel}</p>
             </div>
             <div className="text-right">
               <p className={`text-sm font-black ${row.netAlpha >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>${row.netAlpha.toFixed(0)}</p>
