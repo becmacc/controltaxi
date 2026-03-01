@@ -151,6 +151,18 @@ export const DriversPage: React.FC = () => {
     }
   }, [desktopView]);
 
+  useEffect(() => {
+    if (isTableFullView) {
+      document.body.classList.add('fleet-table-fullview');
+    } else {
+      document.body.classList.remove('fleet-table-fullview');
+    }
+
+    return () => {
+      document.body.classList.remove('fleet-table-fullview');
+    };
+  }, [isTableFullView]);
+
   const normalizePlate = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const phonePopularPresets = PHONE_COUNTRY_PRESETS;
 
@@ -471,9 +483,9 @@ export const DriversPage: React.FC = () => {
 
       {/* Desktop Table View */}
       {desktopView === 'TABLE' && (
-      <div className={isTableFullView ? 'fixed inset-0 z-[70] bg-slate-50 dark:bg-brand-950 p-4 md:p-6' : ''}>
+      <div className={isTableFullView ? 'fixed inset-0 z-[9999] bg-slate-50 dark:bg-brand-950 p-4 md:p-6 flex flex-col overflow-hidden' : ''}>
       {isTableFullView && (
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex items-center justify-between shrink-0">
           <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-300">Fleet Command · Full View</p>
           <button
             type="button"
@@ -486,8 +498,8 @@ export const DriversPage: React.FC = () => {
         </div>
       )}
       <HorizontalScrollArea
-        className={`${isTableFullView ? 'block h-[calc(100dvh-5.5rem)] bg-white dark:bg-brand-900 rounded-2xl border border-slate-200 dark:border-brand-800 shadow-2xl' : 'hidden md:block bg-white dark:bg-brand-900 shadow-xl rounded-3xl border border-slate-200 dark:border-brand-800'}`}
-        viewportClassName={isTableFullView ? 'rounded-2xl h-full' : 'rounded-3xl'}
+        className={`${isTableFullView ? 'block flex-1 min-h-0 overflow-hidden bg-white dark:bg-brand-900 rounded-2xl border border-slate-200 dark:border-brand-800 shadow-2xl' : 'hidden md:block bg-white dark:bg-brand-900 shadow-xl rounded-3xl border border-slate-200 dark:border-brand-800'}`}
+        viewportClassName={isTableFullView ? 'rounded-2xl h-full min-h-0' : 'rounded-3xl'}
       >
         <table className="min-w-[1080px] w-full divide-y divide-slate-100 dark:divide-brand-800">
           <thead className="bg-slate-50 dark:bg-brand-950">

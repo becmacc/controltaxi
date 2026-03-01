@@ -278,6 +278,41 @@ body.missionlog-table-fullview .app-main {
   padding-bottom: 0 !important;
 }
 
+body.fleet-table-fullview {
+  overflow: hidden !important;
+}
+
+body.fleet-table-fullview .app-header,
+body.fleet-table-fullview .app-sidebar,
+body.fleet-table-fullview .app-bottom-nav,
+body.fleet-table-fullview .trip-summary-bar {
+  display: none !important;
+}
+
+body.fleet-table-fullview .app-main {
+  padding-bottom: 0 !important;
+}
+
+body.gm-brief-fullview {
+  overflow: hidden !important;
+}
+
+body.gm-brief-fullview .app-header,
+body.gm-brief-fullview .app-sidebar,
+body.gm-brief-fullview .app-bottom-nav,
+body.gm-brief-fullview .trip-summary-bar {
+  display: none !important;
+}
+
+body.gm-brief-fullview .app-main {
+  padding-bottom: 0 !important;
+}
+
+body.gm-brief-fullview [class*="OperationalFlowNavigator"],
+body.gm-brief-fullview .operational-flow-navigator {
+  display: none !important;
+}
+
 .horizontal-scroll-slider::-moz-range-track {
   height: 0.55rem;
   border-radius: 9999px;

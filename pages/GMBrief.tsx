@@ -466,7 +466,7 @@ const FleetYieldPulse: React.FC<{ rows: FleetYieldDriverRow[]; summary: FleetYie
   );
 };
 
-const TemporalPulse: React.FC<{ trips: Trip[] }> = ({ trips }) => {
+const TemporalPulse: React.FC<{ trips: Trip[]; isFullscreen?: boolean }> = ({ trips, isFullscreen = false }) => {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [windowMode, setWindowMode] = useState<'6h' | '24h' | '7d'>('24h');
@@ -787,7 +787,7 @@ const TemporalPulse: React.FC<{ trips: Trip[] }> = ({ trips }) => {
                 </div>
 
                 {/* X-Axis Label */}
-                <div className={`mt-3 flex flex-col items-center space-y-1 transition-opacity duration-300 ${bucketData.entries.length <= 7 || index % 3 === 0 || isHovered || isCurrent || isSelected ? 'opacity-100' : 'opacity-30'}`}>
+                <div className={`mt-3 flex flex-col items-center space-y-1 transition-opacity duration-300 ${isFullscreen || bucketData.entries.length <= 7 || index % 3 === 0 || isHovered || isCurrent || isSelected ? 'opacity-100' : 'opacity-30'}`}>
                    {getTimeIcon(data.start)}
                    <span className="text-[7px] sm:text-[8px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wide">
                     {windowMode === '7d' ? (
@@ -1455,13 +1455,28 @@ const FleetHeatmap: React.FC<{ trips: Trip[], apiKey: string, theme: string, map
 
 export const GMBriefPage: React.FC = () => {
   const { trips, drivers, creditLedger, receipts, settings, theme } = useStore();
+  type GmPanel = 'HEATMAP' | 'TEMPORAL' | 'FLEET_YIELD' | 'ACCOUNTING' | 'SYNTHESIS';
+  type GmBundle = 'SPACE_TIME' | 'ACCOUNT_AUDIT' | 'SYNTHESIS';
   const [isGeneratingAi, setIsGeneratingAi] = useState(false);
   const [aiInsightBullets, setAiInsightBullets] = useState<string[] | null>(null);
   const [aiProgress, setAiProgress] = useState(0);
   const [insightActionStatus, setInsightActionStatus] = useState('');
   const [copiedInsight, setCopiedInsight] = useState(false);
   const [exportStatus, setExportStatus] = useState('');
-  const [activeBundle, setActiveBundle] = useState<'SPACE_TIME' | 'ACCOUNT_AUDIT' | 'SYNTHESIS'>('SPACE_TIME');
+  const [activeBundle, setActiveBundle] = useState<GmBundle>('SPACE_TIME');
+  const [hoveredGmPanel, setHoveredGmPanel] = useState<GmPanel | null>(null);
+  const [lastInteractedGmPanel, setLastInteractedGmPanel] = useState<GmPanel | null>(null);
+  const [fullscreenGmPanel, setFullscreenGmPanel] = useState<GmPanel | null>(null);
+  const hoveredGmPanelRef = useRef<GmPanel | null>(null);
+  const fullscreenGmPanelRef = useRef<GmPanel | null>(null);
+
+  useEffect(() => {
+    hoveredGmPanelRef.current = hoveredGmPanel;
+  }, [hoveredGmPanel]);
+
+  useEffect(() => {
+    fullscreenGmPanelRef.current = fullscreenGmPanel;
+  }, [fullscreenGmPanel]);
 
   const gmBundles = useMemo(() => ([
     { key: 'SPACE_TIME' as const, label: 'Space & Time', icon: <Globe size={11} className="mr-1.5" /> },
@@ -1480,6 +1495,71 @@ export const GMBriefPage: React.FC = () => {
     setActiveBundle(gmBundles[nextIndex].key);
   };
 
+  const getDefaultBundlePanel = (bundle: GmBundle): GmPanel => {
+    if (bundle === 'SPACE_TIME') return 'HEATMAP';
+    if (bundle === 'ACCOUNT_AUDIT') return 'FLEET_YIELD';
+    return 'SYNTHESIS';
+  };
+
+  const getViewportPreferredPanel = (bundle: GmBundle): GmPanel | null => {
+    const panelIds: Array<{ panel: GmPanel; id: string }> = bundle === 'SPACE_TIME'
+      ? [
+          { panel: 'HEATMAP', id: 'gm-stage-map' },
+          { panel: 'TEMPORAL', id: 'gm-stage-temporal' },
+        ]
+      : bundle === 'ACCOUNT_AUDIT'
+        ? [
+            { panel: 'FLEET_YIELD', id: 'gm-stage-fleet-yield' },
+            { panel: 'ACCOUNTING', id: 'gm-stage-accounting' },
+          ]
+        : [{ panel: 'SYNTHESIS', id: 'gm-stage-synthesis' }];
+
+    const viewportTop = 0;
+    const viewportBottom = window.innerHeight || 0;
+    const viewportCenter = viewportBottom / 2;
+
+    const scored = panelIds
+      .map(entry => {
+        const element = document.getElementById(entry.id);
+        if (!element) return null;
+
+        const rect = element.getBoundingClientRect();
+        const visibleTop = Math.max(viewportTop, rect.top);
+        const visibleBottom = Math.min(viewportBottom, rect.bottom);
+        const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+        const distanceFromCenter = Math.abs(((rect.top + rect.bottom) / 2) - viewportCenter);
+
+        return {
+          panel: entry.panel,
+          visibleHeight,
+          distanceFromCenter,
+        };
+      })
+      .filter((item): item is { panel: GmPanel; visibleHeight: number; distanceFromCenter: number } => Boolean(item) && item.visibleHeight > 0)
+      .sort((a, b) => {
+        if (b.visibleHeight !== a.visibleHeight) return b.visibleHeight - a.visibleHeight;
+        return a.distanceFromCenter - b.distanceFromCenter;
+      });
+
+    return scored[0]?.panel ?? null;
+  };
+
+  const resolveFullscreenTarget = (): GmPanel => {
+    const viewportPreferred = getViewportPreferredPanel(activeBundle);
+    if (viewportPreferred) return viewportPreferred;
+
+    const hovered = hoveredGmPanelRef.current;
+    if (hovered) return hovered;
+
+    if (lastInteractedGmPanel) {
+      if (activeBundle === 'SPACE_TIME' && (lastInteractedGmPanel === 'HEATMAP' || lastInteractedGmPanel === 'TEMPORAL')) return lastInteractedGmPanel;
+      if (activeBundle === 'ACCOUNT_AUDIT' && (lastInteractedGmPanel === 'FLEET_YIELD' || lastInteractedGmPanel === 'ACCOUNTING')) return lastInteractedGmPanel;
+      if (activeBundle === 'SYNTHESIS' && lastInteractedGmPanel === 'SYNTHESIS') return lastInteractedGmPanel;
+    }
+
+    return getDefaultBundlePanel(activeBundle);
+  };
+
   useEffect(() => {
     const isTypingTarget = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return false;
@@ -1489,6 +1569,7 @@ export const GMBriefPage: React.FC = () => {
 
     const handleBundleArrowKeys = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target)) return;
+      if (fullscreenGmPanel) return;
 
       if (event.key === 'ArrowLeft') {
         event.preventDefault();
@@ -1501,7 +1582,60 @@ export const GMBriefPage: React.FC = () => {
 
     window.addEventListener('keydown', handleBundleArrowKeys);
     return () => window.removeEventListener('keydown', handleBundleArrowKeys);
-  }, [moveBundle]);
+  }, [moveBundle, fullscreenGmPanel]);
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(target.closest('[contenteditable="true"]'));
+    };
+
+    const handleGmFullscreenHotkeys = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return;
+      if (event.repeat) return;
+
+      if (event.key === 'Escape') {
+        if (fullscreenGmPanelRef.current) {
+          event.preventDefault();
+          setFullscreenGmPanel(null);
+        }
+        return;
+      }
+
+      if (event.key.toLowerCase() === 'f' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (fullscreenGmPanelRef.current) {
+          event.preventDefault();
+          setFullscreenGmPanel(null);
+          return;
+        }
+
+        event.preventDefault();
+        setFullscreenGmPanel(resolveFullscreenTarget());
+      }
+    };
+
+    window.addEventListener('keydown', handleGmFullscreenHotkeys);
+    return () => window.removeEventListener('keydown', handleGmFullscreenHotkeys);
+  }, [lastInteractedGmPanel, activeBundle]);
+
+  useEffect(() => {
+    if (fullscreenGmPanel) {
+      document.body.classList.add('gm-brief-fullview');
+    } else {
+      document.body.classList.remove('gm-brief-fullview');
+    }
+
+    return () => {
+      document.body.classList.remove('gm-brief-fullview');
+    };
+  }, [fullscreenGmPanel]);
+
+  useEffect(() => {
+    if (fullscreenGmPanel) {
+      setHoveredGmPanel(null);
+    }
+  }, [fullscreenGmPanel]);
 
   const stats = useMemo(() => {
     const todayTrips = trips.filter(t => isToday(parseISO(t.tripDate || t.createdAt)));
@@ -2049,6 +2183,77 @@ export const GMBriefPage: React.FC = () => {
     },
   ];
 
+  const renderSynthesisCard = (isFullscreen = false) => (
+    <div className={`bg-brand-900 rounded-[2.5rem] p-8 text-white shadow-2xl border border-brand-800 flex flex-col ${isFullscreen ? 'h-full min-h-0 overflow-hidden' : 'h-full min-h-[400px] lg:overflow-hidden'}`}>
+      <div className="inline-flex items-center px-4 py-1.5 bg-gold-600 rounded-full text-[9px] font-black uppercase tracking-widest text-brand-950 shadow-lg shadow-gold-600/20 w-fit mb-8"><Sparkles size={14} className="mr-2" />System Synthesis</div>
+
+      <div className="flex-1 flex flex-col justify-center lg:justify-start lg:min-h-0 lg:overflow-hidden">
+        {isGeneratingAi ? (
+          <div className="space-y-4">
+            <p className="text-xl font-black uppercase tracking-tighter animate-pulse">Computing Yield...</p>
+            <div className="h-1.5 w-full bg-brand-950 rounded-full overflow-hidden border border-white/5">
+              <div className="h-full bg-gold-500 transition-all duration-300" style={{ width: `${aiProgress}%` }} />
+            </div>
+          </div>
+        ) : aiInsightBullets ? (
+          <div className="space-y-4 lg:min-h-0 lg:flex lg:flex-col">
+            <ul className="space-y-3 lg:overflow-y-auto lg:pr-1">
+              {aiInsightBullets.map((line, index) => {
+                const visual = getInsightVisual(line);
+                return (
+                  <li key={`insight-${index}`} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-bold leading-tight text-slate-50 break-words">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      {visual.icon}
+                      <span className={`inline-flex items-center h-5 px-2 rounded-md border text-[8px] font-black uppercase tracking-widest ${visual.badgeClass}`}>
+                        {visual.category}
+                      </span>
+                    </div>
+                    <span className="block break-words whitespace-pre-wrap">{line}</span>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="grid grid-cols-2 gap-2">
+              <Button type="button" variant="outline" onClick={handleCopyInsight} className="h-9 text-[9px] border-white/20 bg-white/5 text-white hover:bg-white/10">
+                {copiedInsight ? <Check size={12} className="mr-1.5" /> : <Copy size={12} className="mr-1.5" />}
+                {copiedInsight ? 'Done' : 'Copy'}
+              </Button>
+              <Button type="button" variant="gold" onClick={handleSendInsightToOperator} className="h-9 text-[9px]">
+                <MessageCircle size={12} className="mr-1.5" />
+                Send WA
+              </Button>
+            </div>
+            {insightActionStatus && (
+              <p role="status" aria-live="polite" className="text-[9px] font-black uppercase tracking-widest text-slate-300">
+                {insightActionStatus}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <h3 className="text-2xl font-black tracking-tighter">Mission Intel</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {missionIntelCards.map(card => (
+                <div key={card.id} className="rounded-2xl border border-white/10 bg-brand-950/90 p-3.5 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`inline-flex items-center h-6 px-2 rounded-lg border text-[8px] font-black uppercase tracking-widest ${card.tone}`}>
+                      {card.icon}
+                      <span className="ml-1.5">{card.label}</span>
+                    </span>
+                    <span className="text-lg font-black text-white leading-none">{card.value}</span>
+                  </div>
+                  <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">{card.sub}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <Button variant="gold" onClick={generateAiSummary} isLoading={isGeneratingAi} className="h-14 w-full shadow-2xl mt-8">Generate Synthesis</Button>
+    </div>
+  );
+
   return (
     <div className="app-page-shell gmb-shell p-4 md:p-8 w-full space-y-8 animate-fade-in pb-24 lg:pb-8">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -2121,7 +2326,12 @@ export const GMBriefPage: React.FC = () => {
         {/* Geographic Layer */}
         {activeBundle === 'SPACE_TIME' && (
           <div id="gm-stage-space-time" className="space-y-8 animate-in fade-in slide-in-from-right-2 duration-200">
-            <div id="gm-stage-map">
+            <div
+              id="gm-stage-map"
+              onMouseEnter={() => { setHoveredGmPanel('HEATMAP'); setLastInteractedGmPanel('HEATMAP'); }}
+              onFocusCapture={() => setLastInteractedGmPanel('HEATMAP')}
+              onMouseLeave={() => setHoveredGmPanel(prev => (prev === 'HEATMAP' ? null : prev))}
+            >
               <FleetHeatmap
                 trips={stats.todayTripsList}
                 apiKey={settings.googleMapsApiKey}
@@ -2130,7 +2340,12 @@ export const GMBriefPage: React.FC = () => {
                 mapIdDark={settings.googleMapsMapIdDark}
               />
             </div>
-            <div id="gm-stage-temporal">
+            <div
+              id="gm-stage-temporal"
+              onMouseEnter={() => { setHoveredGmPanel('TEMPORAL'); setLastInteractedGmPanel('TEMPORAL'); }}
+              onFocusCapture={() => setLastInteractedGmPanel('TEMPORAL')}
+              onMouseLeave={() => setHoveredGmPanel(prev => (prev === 'TEMPORAL' ? null : prev))}
+            >
               <TemporalPulse trips={trips} />
             </div>
           </div>
@@ -2138,98 +2353,102 @@ export const GMBriefPage: React.FC = () => {
 
         {activeBundle === 'ACCOUNT_AUDIT' && (
           <div id="gm-stage-account-audit" className="space-y-8 animate-in fade-in slide-in-from-right-2 duration-200">
-            <FleetYieldPulse rows={fleetYieldMetrics.rows} summary={fleetYieldMetrics.summary} />
-            <AccountingPulse
-              grossRevenue={accountingMetrics.grossCompletedRevenue}
-              companyOwed={accountingMetrics.companyOwedToday}
-              netAfterCompany={accountingMetrics.netAfterCompany}
-              openBacklogUsd={accountingMetrics.openBacklogUsd}
-              openBacklogCount={accountingMetrics.openBacklogCount}
-              overdueOpenCount={accountingMetrics.overdueOpenCount}
-              weeklyOpenUsd={accountingMetrics.weeklyOpenUsd}
-              monthlyOpenUsd={accountingMetrics.monthlyOpenUsd}
-              collectedTodayUsd={accountingMetrics.collectedTodayUsd}
-              cashSettledTodayUsd={accountingMetrics.cashSettledTodayUsd}
-              openCreditTripTodayUsd={accountingMetrics.openCreditTripTodayUsd}
-              receiptedTripTodayUsd={accountingMetrics.receiptedTripTodayUsd}
-            />
+            <div id="gm-stage-fleet-yield" onMouseEnter={() => { setHoveredGmPanel('FLEET_YIELD'); setLastInteractedGmPanel('FLEET_YIELD'); }} onFocusCapture={() => setLastInteractedGmPanel('FLEET_YIELD')} onMouseLeave={() => setHoveredGmPanel(prev => (prev === 'FLEET_YIELD' ? null : prev))}>
+              <FleetYieldPulse rows={fleetYieldMetrics.rows} summary={fleetYieldMetrics.summary} />
+            </div>
+            <div id="gm-stage-accounting" onMouseEnter={() => { setHoveredGmPanel('ACCOUNTING'); setLastInteractedGmPanel('ACCOUNTING'); }} onFocusCapture={() => setLastInteractedGmPanel('ACCOUNTING')} onMouseLeave={() => setHoveredGmPanel(prev => (prev === 'ACCOUNTING' ? null : prev))}>
+              <AccountingPulse
+                grossRevenue={accountingMetrics.grossCompletedRevenue}
+                companyOwed={accountingMetrics.companyOwedToday}
+                netAfterCompany={accountingMetrics.netAfterCompany}
+                openBacklogUsd={accountingMetrics.openBacklogUsd}
+                openBacklogCount={accountingMetrics.openBacklogCount}
+                overdueOpenCount={accountingMetrics.overdueOpenCount}
+                weeklyOpenUsd={accountingMetrics.weeklyOpenUsd}
+                monthlyOpenUsd={accountingMetrics.monthlyOpenUsd}
+                collectedTodayUsd={accountingMetrics.collectedTodayUsd}
+                cashSettledTodayUsd={accountingMetrics.cashSettledTodayUsd}
+                openCreditTripTodayUsd={accountingMetrics.openCreditTripTodayUsd}
+                receiptedTripTodayUsd={accountingMetrics.receiptedTripTodayUsd}
+              />
+            </div>
           </div>
         )}
 
         {/* Intelligence Layer */}
         {activeBundle === 'SYNTHESIS' && (
-        <div id="gm-stage-synthesis" className="space-y-8 animate-in fade-in slide-in-from-right-2 duration-200">
-          <div className="bg-brand-900 rounded-[2.5rem] p-8 text-white shadow-2xl border border-brand-800 flex flex-col h-full min-h-[400px] lg:overflow-hidden">
-            <div className="inline-flex items-center px-4 py-1.5 bg-gold-600 rounded-full text-[9px] font-black uppercase tracking-widest text-brand-950 shadow-lg shadow-gold-600/20 w-fit mb-8"><Sparkles size={14} className="mr-2" />System Synthesis</div>
-            
-            <div className="flex-1 flex flex-col justify-center lg:justify-start lg:min-h-0 lg:overflow-hidden">
-              {isGeneratingAi ? (
-                <div className="space-y-4">
-                  <p className="text-xl font-black uppercase tracking-tighter animate-pulse">Computing Yield...</p>
-                  <div className="h-1.5 w-full bg-brand-950 rounded-full overflow-hidden border border-white/5">
-                    <div className="h-full bg-gold-500 transition-all duration-300" style={{ width: `${aiProgress}%` }} />
-                  </div>
-                </div>
-              ) : aiInsightBullets ? (
-                <div className="space-y-4 lg:min-h-0 lg:flex lg:flex-col">
-                  <ul className="space-y-3 lg:overflow-y-auto lg:pr-1">
-                    {aiInsightBullets.map((line, index) => {
-                      const visual = getInsightVisual(line);
-                      return (
-                        <li key={`insight-${index}`} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm font-bold leading-tight text-slate-50 break-words">
-                          <div className="flex items-center gap-2 mb-1.5">
-                            {visual.icon}
-                            <span className={`inline-flex items-center h-5 px-2 rounded-md border text-[8px] font-black uppercase tracking-widest ${visual.badgeClass}`}>
-                              {visual.category}
-                            </span>
-                          </div>
-                          <span className="block break-words whitespace-pre-wrap">{line}</span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button type="button" variant="outline" onClick={handleCopyInsight} className="h-9 text-[9px] border-white/20 bg-white/5 text-white hover:bg-white/10">
-                      {copiedInsight ? <Check size={12} className="mr-1.5" /> : <Copy size={12} className="mr-1.5" />}
-                      {copiedInsight ? 'Done' : 'Copy'}
-                    </Button>
-                    <Button type="button" variant="gold" onClick={handleSendInsightToOperator} className="h-9 text-[9px]">
-                      <MessageCircle size={12} className="mr-1.5" />
-                      Send WA
-                    </Button>
-                  </div>
-                  {insightActionStatus && (
-                    <p role="status" aria-live="polite" className="text-[9px] font-black uppercase tracking-widest text-slate-300">
-                      {insightActionStatus}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <h3 className="text-2xl font-black tracking-tighter">Mission Intel</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {missionIntelCards.map(card => (
-                      <div key={card.id} className="rounded-2xl border border-white/10 bg-brand-950/90 p-3.5 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className={`inline-flex items-center h-6 px-2 rounded-lg border text-[8px] font-black uppercase tracking-widest ${card.tone}`}>
-                            {card.icon}
-                            <span className="ml-1.5">{card.label}</span>
-                          </span>
-                          <span className="text-lg font-black text-white leading-none">{card.value}</span>
-                        </div>
-                        <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">{card.sub}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            
-            <Button variant="gold" onClick={generateAiSummary} isLoading={isGeneratingAi} className="h-14 w-full shadow-2xl mt-8">Generate Synthesis</Button>
-          </div>
+        <div id="gm-stage-synthesis" className="space-y-8 animate-in fade-in slide-in-from-right-2 duration-200" onMouseEnter={() => { setHoveredGmPanel('SYNTHESIS'); setLastInteractedGmPanel('SYNTHESIS'); }} onFocusCapture={() => setLastInteractedGmPanel('SYNTHESIS')} onMouseLeave={() => setHoveredGmPanel(prev => (prev === 'SYNTHESIS' ? null : prev))}>
+          {renderSynthesisCard()}
         </div>
         )}
       </div>
+
+      {fullscreenGmPanel && (
+        <div className="fixed inset-0 z-[10000] bg-slate-50 dark:bg-brand-950 p-2 md:p-4 flex flex-col overflow-hidden">
+          <div className="rounded-2xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-2xl flex flex-col min-h-0 h-full overflow-hidden">
+            <div className="px-4 md:px-5 py-3 border-b border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 flex items-center justify-between gap-3 shrink-0">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-300">
+                  {fullscreenGmPanel === 'HEATMAP'
+                    ? 'Spatial Density · Full View'
+                    : fullscreenGmPanel === 'TEMPORAL'
+                      ? 'Temporal Matrix · Full View'
+                      : fullscreenGmPanel === 'FLEET_YIELD'
+                        ? 'Fleet Yield · Full View'
+                        : fullscreenGmPanel === 'ACCOUNTING'
+                          ? 'Accounting Visualizer · Full View'
+                          : 'System Synthesis · Full View'}
+                </p>
+                <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mt-1">F or Esc to exit</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFullscreenGmPanel(null)}
+                className="h-8 px-3 rounded-lg border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+              >
+                Exit Full View
+              </button>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-auto p-2 md:p-3">
+              {fullscreenGmPanel === 'HEATMAP' ? (
+                <div className="h-full min-h-[420px]">
+                  <FleetHeatmap
+                    trips={stats.todayTripsList}
+                    apiKey={settings.googleMapsApiKey}
+                    theme={theme}
+                    mapIdLight={settings.googleMapsMapId}
+                    mapIdDark={settings.googleMapsMapIdDark}
+                  />
+                </div>
+              ) : fullscreenGmPanel === 'TEMPORAL' ? (
+                <TemporalPulse trips={trips} isFullscreen />
+              ) : fullscreenGmPanel === 'FLEET_YIELD' ? (
+                <FleetYieldPulse rows={fleetYieldMetrics.rows} summary={fleetYieldMetrics.summary} />
+              ) : fullscreenGmPanel === 'ACCOUNTING' ? (
+                <AccountingPulse
+                  grossRevenue={accountingMetrics.grossCompletedRevenue}
+                  companyOwed={accountingMetrics.companyOwedToday}
+                  netAfterCompany={accountingMetrics.netAfterCompany}
+                  openBacklogUsd={accountingMetrics.openBacklogUsd}
+                  openBacklogCount={accountingMetrics.openBacklogCount}
+                  overdueOpenCount={accountingMetrics.overdueOpenCount}
+                  weeklyOpenUsd={accountingMetrics.weeklyOpenUsd}
+                  monthlyOpenUsd={accountingMetrics.monthlyOpenUsd}
+                  collectedTodayUsd={accountingMetrics.collectedTodayUsd}
+                  cashSettledTodayUsd={accountingMetrics.cashSettledTodayUsd}
+                  openCreditTripTodayUsd={accountingMetrics.openCreditTripTodayUsd}
+                  receiptedTripTodayUsd={accountingMetrics.receiptedTripTodayUsd}
+                />
+              ) : (
+                <div className="h-full min-h-[480px]">
+                  {renderSynthesisCard(true)}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        )}
 
     </div>
   );
