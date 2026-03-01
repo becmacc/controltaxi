@@ -193,7 +193,7 @@ const getLoyaltyTierTone = (tier?: 'VIP' | 'VVIP' | 'REGULAR' | 'NEW') => {
 };
 
 export const CRMPage: React.FC = () => {
-  const { trips, drivers, customers, alerts, settings, editDriver, addDriver, addCustomers, refreshData, forceCloudSyncPublish } = useStore();
+  const { trips, drivers, customers, alerts, settings, editDriver, addDriver, addCustomers, refreshData, hardResetCloudSync } = useStore();
   const [activeView, setActiveView] = useState<ViewMode>('CUSTOMERS');
   const [metricsWindow, setMetricsWindow] = useState<'TODAY' | '7D' | '30D' | 'ALL'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
@@ -561,8 +561,8 @@ export const CRMPage: React.FC = () => {
       },
       {
         id: 'CLEAR',
-        title: 'Clear Operations',
-        subtitle: 'Erase trips, fleet, alerts, and contacts',
+        title: 'Hard Reset Sync',
+        subtitle: 'Clear data and rotate sync channel',
         tone: 'DANGER',
       },
     ];
@@ -715,39 +715,31 @@ export const CRMPage: React.FC = () => {
   const handleVaultClear = async () => {
     if (!vaultClearArmed) {
       setVaultClearArmed(true);
-      setVaultStatusMessage('Click Clear Ops + Fleet + Contacts again to confirm, or press Cancel Clear.');
+      setVaultStatusMessage('Click Hard Reset again to confirm. This clears data and rotates to a brand-new sync channel.');
       return;
     }
 
     setVaultBusyAction('CLEAR');
     try {
-      const syncAudit = await runVaultSyncAudit();
-      Storage.clearOperationalData();
-      refreshData();
-
-      const forcePublish = await forceCloudSyncPublish();
-
-      const postClearAudit = await runVaultSyncAudit();
-      if (postClearAudit.ok) {
-        setVaultSyncStatus('VERIFIED');
-        setVaultSyncDetail('Vault sync verified across cloud and local state.');
-      } else {
-        setVaultSyncStatus('NOT_VERIFIED');
-        setVaultSyncDetail(postClearAudit.reason || 'Vault sync verification failed.');
-      }
+      const result = await hardResetCloudSync();
 
       setVaultClearArmed(false);
       setPendingVaultImport(null);
-      if (!forcePublish.ok) {
-        setVaultStatusMessage(`Operational data, fleet, and contacts cleared locally. Immediate cloud publish failed: ${forcePublish.reason || 'unknown reason'}`);
-      } else if (syncAudit.ok) {
-        setVaultStatusMessage('Operational data, fleet, and contacts cleared successfully.');
+      if (!result.ok) {
+        setVaultStatusMessage(`Hard reset failed: ${result.reason || 'unknown reason'}`);
+        setVaultSyncStatus('NOT_VERIFIED');
+        setVaultSyncDetail(result.reason || 'Hard reset failed.');
       } else {
-        setVaultStatusMessage(`Operational data, fleet, and contacts cleared locally. Cloud sync not verified: ${syncAudit.reason || 'unknown reason'}`);
+        setVaultStatusMessage(`Hard reset complete. New sync channel: ${result.nextDocId || 'unknown'}. Reloading...`);
+        setVaultSyncStatus('CHECKING');
+        setVaultSyncDetail(`Switching to ${result.nextDocId || 'new channel'}...`);
+        window.setTimeout(() => {
+          window.location.reload();
+        }, 500);
       }
     } catch {
       setVaultClearArmed(false);
-      setVaultStatusMessage('Failed to clear operational data, fleet, and contacts.');
+      setVaultStatusMessage('Hard reset failed.');
     } finally {
       setVaultBusyAction(null);
     }
@@ -2787,7 +2779,7 @@ const VaultConsoleView: React.FC<{
     STATUS: 'System Status',
     EXPORT: 'Export Backup',
     IMPORT: 'Import Backup',
-    CLEAR: 'Clear Operations',
+    CLEAR: 'Hard Reset Sync',
   };
   const selectedLabel = selectedActionId ? `Selected: ${actionLabels[selectedActionId] || selectedActionId}` : 'Select a vault module from feed';
   const canClear = busyAction === null;
@@ -2848,7 +2840,7 @@ const VaultConsoleView: React.FC<{
       <div className="bg-white dark:bg-brand-900 border border-slate-200 dark:border-white/10 rounded-[2rem] p-6 md:p-8 space-y-6">
         {isStatusFocus ? (
           <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-4 py-4">
-            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Vault status selected. Use left feed to choose Export, Import, or Clear actions.</p>
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Vault status selected. Use left feed to choose Export, Import, or Hard Reset actions.</p>
           </div>
         ) : (
           <>
@@ -2860,7 +2852,7 @@ const VaultConsoleView: React.FC<{
                 <button onClick={onImport} disabled={busyAction !== null} className="h-12 rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[10px] font-black uppercase tracking-widest text-blue-700 hover:bg-blue-100 dark:hover:bg-blue-900/20 disabled:opacity-50">{busyAction === 'IMPORT' ? 'Importing...' : 'Import Backup'}</button>
               )}
               {showClear && (
-                <button onClick={onClear} disabled={!canClear} className="h-12 rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 text-[10px] font-black uppercase tracking-widest text-red-600 hover:bg-red-100 dark:hover:bg-red-900/20 disabled:opacity-50">{busyAction === 'CLEAR' ? 'Clearing...' : clearArmed ? 'Confirm Clear Ops Data' : 'Clear Ops Data'}</button>
+                <button onClick={onClear} disabled={!canClear} className="h-12 rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 text-[10px] font-black uppercase tracking-widest text-red-600 hover:bg-red-100 dark:hover:bg-red-900/20 disabled:opacity-50">{busyAction === 'CLEAR' ? 'Resetting...' : clearArmed ? 'Confirm Hard Reset' : 'Hard Reset Sync'}</button>
               )}
             </div>
 

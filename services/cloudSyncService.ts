@@ -27,8 +27,9 @@ export interface CloudSyncSignatureFetchResult {
 }
 
 const SYNC_CLIENT_ID_KEY = '__control_sync_client_id__';
+const SYNC_DOC_ID_OVERRIDE_KEY = '__control_sync_doc_id__';
 const CLOUD_COLLECTION = import.meta.env.VITE_FIREBASE_SYNC_COLLECTION || 'control-sync';
-const CLOUD_DOC_ID = import.meta.env.VITE_FIREBASE_SYNC_DOC_ID || 'shared';
+const DEFAULT_CLOUD_DOC_ID = import.meta.env.VITE_FIREBASE_SYNC_DOC_ID || 'shared';
 const POLL_INTERVAL_MS = 3000;
 
 const getFirebaseConfig = () => ({
@@ -62,7 +63,28 @@ const isPermissionDeniedError = (error: unknown) => {
 const buildPermissionHint = (path: string) =>
   `permission-denied path=${path} (Check Firestore rules on /control-sync/{docId}, Anonymous Auth enabled, and Firestore App Check enforcement).`;
 
-export const isCloudSyncConfigured = () => hasRequiredFirebaseConfig() && Boolean(CLOUD_DOC_ID);
+export const getCloudSyncDocId = () => {
+  const override = String(localStorage.getItem(SYNC_DOC_ID_OVERRIDE_KEY) || '').trim();
+  return override || DEFAULT_CLOUD_DOC_ID || 'shared';
+};
+
+export const setCloudSyncDocIdOverride = (docId: string) => {
+  const normalized = String(docId || '').trim();
+  if (!normalized) {
+    localStorage.removeItem(SYNC_DOC_ID_OVERRIDE_KEY);
+    return;
+  }
+  localStorage.setItem(SYNC_DOC_ID_OVERRIDE_KEY, normalized);
+};
+
+export const rotateCloudSyncDocId = (baseDocId: string) => {
+  const normalizedBase = String(baseDocId || '').trim() || 'shared';
+  const next = `${normalizedBase}-${Date.now()}`;
+  setCloudSyncDocIdOverride(next);
+  return next;
+};
+
+export const isCloudSyncConfigured = () => hasRequiredFirebaseConfig() && Boolean(getCloudSyncDocId());
 
 export const getOrCreateCloudSyncClientId = () => {
   const existing = localStorage.getItem(SYNC_CLIENT_ID_KEY);
@@ -99,6 +121,7 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
   }
 
   try {
+    const activeDocId = getCloudSyncDocId();
     const app = getApps().length ? getApp() : initializeApp(getFirebaseConfig());
     const auth = getAuth(app);
 
@@ -115,7 +138,7 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
     }
 
     const firestore = getFirestore(app);
-    const syncRef = doc(firestore, CLOUD_COLLECTION, CLOUD_DOC_ID);
+    const syncRef = doc(firestore, CLOUD_COLLECTION, activeDocId);
     const snapshot = await getDoc(syncRef);
     const data = snapshot.data();
 
@@ -150,7 +173,7 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
 
     return { ok: true, signature, syncEpoch, resetToken };
   } catch (error) {
-    const path = `${CLOUD_COLLECTION}/${CLOUD_DOC_ID}`;
+    const path = `${CLOUD_COLLECTION}/${getCloudSyncDocId()}`;
     if (isPermissionDeniedError(error)) {
       return { ok: false, code: 'permission-denied', reason: buildPermissionHint(path) };
     }
@@ -173,6 +196,7 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
   options.onStatusChange?.('connecting');
 
   try {
+    const activeDocId = getCloudSyncDocId();
     const app = getApps().length ? getApp() : initializeApp(getFirebaseConfig());
     const auth = getAuth(app);
     try {
@@ -199,7 +223,7 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
     }
 
     const firestore = getFirestore(app);
-    const legacyRef = doc(firestore, CLOUD_COLLECTION, CLOUD_DOC_ID);
+    const legacyRef = doc(firestore, CLOUD_COLLECTION, activeDocId);
 
     let ready = false;
     let stopped = false;

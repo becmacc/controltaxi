@@ -8,7 +8,9 @@ import {
   CloudSyncSession,
   createSyncSignature,
   fetchCloudSyncSignature,
+  getCloudSyncDocId,
   getOrCreateCloudSyncClientId,
+  rotateCloudSyncDocId,
   startCloudSync,
 } from '../services/cloudSyncService';
 
@@ -43,6 +45,7 @@ interface StoreContextType {
   updateSettings: (newSettings: Settings) => void;
   refreshData: () => void;
   forceCloudSyncPublish: () => Promise<{ ok: boolean; reason?: string }>;
+  hardResetCloudSync: () => Promise<{ ok: boolean; nextDocId?: string; reason?: string }>;
 }
 
 declare global {
@@ -752,11 +755,37 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return { ok: true };
   };
 
+  const hardResetCloudSync = async (): Promise<{ ok: boolean; nextDocId?: string; reason?: string }> => {
+    try {
+      if (publishDebounceRef.current !== null) {
+        clearTimeout(publishDebounceRef.current);
+        publishDebounceRef.current = null;
+      }
+
+      cloudSyncSessionRef.current?.stop();
+      cloudSyncSessionRef.current = null;
+      setCloudSyncReady(false);
+
+      const currentDocId = getCloudSyncDocId();
+      const baseDocId = currentDocId.replace(/-\d+$/, '') || 'shared';
+      const nextDocId = rotateCloudSyncDocId(baseDocId);
+
+      Storage.clearOperationalData();
+      refreshData();
+      lastSyncedSignatureRef.current = null;
+
+      return { ok: true, nextDocId };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Hard reset failed.';
+      return { ok: false, reason };
+    }
+  };
+
   return (
     <StoreContext.Provider value={{ 
       trips, deletedTrips, drivers, customers, settings, alerts, theme, toggleTheme,
       addTrip, updateTripField, updateFullTrip, deleteCancelledTrip, restoreDeletedTrip, dismissAlert, snoozeAlert, resolveAlert,
-      addCustomers, addDriver, editDriver, removeDriver, updateSettings, refreshData, forceCloudSyncPublish 
+      addCustomers, addDriver, editDriver, removeDriver, updateSettings, refreshData, forceCloudSyncPublish, hardResetCloudSync 
     }}>
       {children}
     </StoreContext.Provider>
