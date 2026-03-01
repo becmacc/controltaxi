@@ -522,6 +522,7 @@ export const getTrips = (): Trip[] => {
 export const saveTrip = (trip: Trip): Trip[] => {
   const trips = getTrips();
   const newTrips = [trip, ...trips];
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify(newTrips));
   return newTrips;
 };
@@ -546,6 +547,7 @@ export const saveDispatch = (
 export const updateTrip = (updatedTrip: Trip): Trip[] => {
   const trips = getTrips();
   const newTrips = trips.map(t => t.id === updatedTrip.id ? updatedTrip : t);
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify(newTrips));
   return newTrips;
 };
@@ -561,6 +563,7 @@ export const getDeletedTrips = (): DeletedTripRecord[] => {
 };
 
 export const saveDeletedTrips = (deletedTrips: DeletedTripRecord[]): DeletedTripRecord[] => {
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.DELETED_TRIPS, JSON.stringify(deletedTrips));
   return deletedTrips;
 };
@@ -573,6 +576,7 @@ export const archiveCancelledTrip = (tripId: number): { trips: Trip[]; deletedTr
   }
 
   const nextTrips = trips.filter(entry => entry.id !== tripId);
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify(nextTrips));
 
   const archiveRecord: DeletedTripRecord = {
@@ -599,6 +603,7 @@ export const restoreDeletedTrip = (archiveId: string): { trips: Trip[]; deletedT
   const restoredTrip = target.trip;
   const alreadyExists = currentTrips.some(entry => entry.id === restoredTrip.id);
   const nextTrips = alreadyExists ? currentTrips : [restoredTrip, ...currentTrips];
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.TRIPS, JSON.stringify(nextTrips));
 
   const nextDeletedTrips = deletedTrips.filter(record => record.archiveId !== archiveId);
@@ -619,6 +624,7 @@ export const getCustomers = (): Customer[] => {
 };
 
 export const saveCustomers = (customers: Customer[]): void => {
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.CUSTOMERS, JSON.stringify(customers));
 };
 
@@ -728,6 +734,7 @@ export const saveDriver = (driver: Driver): Driver[] => {
     newDrivers = [driver, ...drivers];
   }
   
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify(newDrivers));
   return newDrivers;
 };
@@ -735,6 +742,7 @@ export const saveDriver = (driver: Driver): Driver[] => {
 export const deleteDriver = (id: string): Driver[] => {
   const drivers = getDrivers();
   const newDrivers = drivers.filter(d => d.id !== id);
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.DRIVERS, JSON.stringify(newDrivers));
   return newDrivers;
 };
@@ -766,6 +774,7 @@ export const getSettings = (): Settings => {
         googleMapsApiKey: ENV_GOOGLE_MAPS_API_KEY || parsed.googleMapsApiKey || '',
         googleMapsMapId: ENV_GOOGLE_MAPS_MAP_ID || parsed.googleMapsMapId || '',
         googleMapsMapIdDark: ENV_GOOGLE_MAPS_MAP_ID_DARK || parsed.googleMapsMapIdDark || '',
+        googleBusinessReviewUrl: parsed.googleBusinessReviewUrl ?? '',
         operatorWhatsApp: parsed.operatorWhatsApp ?? '',
         hourlyWaitRate: parsed.hourlyWaitRate ?? DEFAULT_HOURLY_WAIT_RATE,
         ratePerKm: parsed.ratePerKm ?? DEFAULT_RATE_USD_PER_KM,
@@ -785,6 +794,7 @@ export const getSettings = (): Settings => {
     googleMapsApiKey: ENV_GOOGLE_MAPS_API_KEY,
     googleMapsMapId: ENV_GOOGLE_MAPS_MAP_ID,
     googleMapsMapIdDark: ENV_GOOGLE_MAPS_MAP_ID_DARK,
+    googleBusinessReviewUrl: '',
     operatorWhatsApp: '',
     hourlyWaitRate: DEFAULT_HOURLY_WAIT_RATE,
     ratePerKm: DEFAULT_RATE_USD_PER_KM,

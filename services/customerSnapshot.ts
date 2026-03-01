@@ -104,6 +104,57 @@ const deriveTier = (customer: Customer | undefined, completedTrips: number, tota
   return 'NEW';
 };
 
+const derivePreferredDriverId = (relatedTrips: Trip[]): string | undefined => {
+  const nowMs = Date.now();
+  const byDriver = new Map<string, { score: number; completed: number; lastTs: number }>();
+
+  relatedTrips.forEach(trip => {
+    if (!trip.driverId) return;
+
+    const tripTs = toTimestamp(trip.tripDate || trip.createdAt);
+    const ageDays = tripTs > 0 ? Math.max(0, (nowMs - tripTs) / (1000 * 60 * 60 * 24)) : 365;
+    const recencyBoost = Math.max(0.4, 1.6 - Math.min(ageDays, 120) / 100);
+
+    let delta = 0;
+    if (trip.status === TripStatus.COMPLETED) {
+      delta += 3.5;
+      const rating = Number(trip.rating || 0);
+      if (Number.isFinite(rating) && rating > 0) {
+        delta += (rating - 3) * 0.6;
+      }
+      const surplusMin = Number(trip.surplusMin || 0);
+      if (Number.isFinite(surplusMin)) {
+        if (surplusMin <= 5) delta += 0.4;
+        if (surplusMin > 15) delta -= 0.35;
+      }
+    } else if (trip.status === TripStatus.CANCELLED) {
+      delta -= 2.2;
+    } else if (trip.status === TripStatus.CONFIRMED) {
+      delta += 0.6;
+    }
+
+    const weightedDelta = delta * recencyBoost;
+    const current = byDriver.get(trip.driverId) || { score: 0, completed: 0, lastTs: 0 };
+
+    byDriver.set(trip.driverId, {
+      score: current.score + weightedDelta,
+      completed: current.completed + (trip.status === TripStatus.COMPLETED ? 1 : 0),
+      lastTs: Math.max(current.lastTs, tripTs),
+    });
+  });
+
+  const ranked = Array.from(byDriver.entries()).sort((a, b) => {
+    if (b[1].score !== a[1].score) return b[1].score - a[1].score;
+    if (b[1].completed !== a[1].completed) return b[1].completed - a[1].completed;
+    return b[1].lastTs - a[1].lastTs;
+  });
+
+  const top = ranked[0];
+  if (!top) return undefined;
+  if (top[1].completed === 0 && top[1].score <= 0) return undefined;
+  return top[0];
+};
+
 export const buildCustomerSnapshotForTrip = (
   trip: Trip,
   customers: Customer[],
@@ -137,13 +188,7 @@ export const buildCustomerSnapshot = (
   const totalSpend = completedTrips.reduce((sum, entry) => sum + entry.fareUsd, 0);
   const reliabilityScore = totalTrips > 0 ? Math.round((completedTrips.length / totalTrips) * 100) : 0;
 
-  const driverFrequency: Record<string, number> = {};
-  completedTrips.forEach(entry => {
-    if (entry.driverId) {
-      driverFrequency[entry.driverId] = (driverFrequency[entry.driverId] || 0) + 1;
-    }
-  });
-  const preferredDriverId = Object.entries(driverFrequency).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const preferredDriverId = derivePreferredDriverId(relatedTrips);
   const preferredDriverName = preferredDriverId
     ? drivers.find(driver => driver.id === preferredDriverId)?.name
     : undefined;

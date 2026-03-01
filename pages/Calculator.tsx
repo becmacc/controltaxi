@@ -2,15 +2,24 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useStore } from '../context/StoreContext';
 import { loadGoogleMapsScript } from '../services/googleMapsLoader';
 import { parseGoogleMapsLink, parseGpsOrLatLngInput, ParsedLocation } from '../services/locationParser';
-import { SPECIAL_REQUIREMENTS, MIN_RIDE_FARE_USD } from '../constants';
+import {
+  SPECIAL_REQUIREMENTS,
+  MIN_RIDE_FARE_USD,
+  DISPATCH_NOW_MIN_MINUTES,
+  DISPATCH_NOW_MAX_MINUTES,
+  DISPATCH_NOW_DEFAULT_MINUTES,
+} from '../constants';
 import { RouteResult, TripStatus, Customer, CustomerLocation, Trip, TripStop, TripPaymentMode } from '../types';
 import { Button } from '../components/ui/Button';
 import { 
   MapPin, Navigation, Copy, Check, Save, Calculator as CalcIcon, 
-  Clock, Link as LinkIcon, User, Phone, FileText, DollarSign, 
-  Repeat, Hourglass, ChevronDown, ChevronUp, AlertCircle, 
+  Clock, Timer, Link as LinkIcon, User, Phone, FileText, DollarSign, 
+  Repeat, Hourglass, ChevronDown, ChevronUp, AlertCircle,
   Calendar, Settings, Car, Crosshair, RefreshCcw, Info, InfoIcon,
-  Layers, Search, X, Star, Loader2, Radar, ShieldCheck, Zap, UserX, MessageCircle
+  Layers, Search, X, Star, Loader2, Radar, ShieldCheck, Zap, UserX, MessageCircle,
+  House, Building2, ArrowRightLeft,
+  VolumeX, Moon, Briefcase, Users, Baby, Bus, PawPrint, Accessibility, Cigarette, CigaretteOff,
+  Smartphone, KeyRound
 } from 'lucide-react';
 import { format, addMinutes } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
@@ -29,10 +38,12 @@ import {
 import { buildCustomerSnapshot, buildCustomerSnapshotForTrip } from '../services/customerSnapshot';
 import { customerPhoneKey } from '../services/customerProfile';
 import { clampTrafficIndex, computeTrafficIndex } from '../services/trafficMetrics';
+import { truncateUiText, UI_TAG_MAX_CHARS, UI_LOCATION_MAX_CHARS } from '../services/uiText';
 
 declare var google: any;
 
 const CALCULATOR_DRAFT_KEY = 'calculator_draft_v1';
+const DEFAULT_ADVANCED_MARKER_MAP_ID = 'DEMO_MAP_ID';
 
 interface LocationDraft {
   place_id?: string;
@@ -63,6 +74,14 @@ interface CalculatorDraft {
   destPlace?: LocationDraft;
   result?: RouteResult;
 }
+
+interface ContactPickerEntry {
+  name?: string[];
+  tel?: string[];
+}
+
+type CalculatorNavigationMode = 'SCROLL' | 'SEQUENCE';
+type CalculatorSequenceStage = 'ROUTE' | 'CUSTOMER' | 'OUTPUT';
 
 const TrafficGauge: React.FC<{ index: number }> = ({ index }) => {
   const safeIndex = clampTrafficIndex(index);
@@ -102,6 +121,7 @@ export const CalculatorPage: React.FC = () => {
   
   const pickupInputRef = useRef<HTMLInputElement>(null);
   const destInputRef = useRef<HTMLInputElement>(null);
+  const searchDirectoryInputRef = useRef<HTMLInputElement>(null);
   const mapRef = useRef<HTMLDivElement>(null);
   
   // Maps Objects Refs
@@ -110,14 +130,9 @@ export const CalculatorPage: React.FC = () => {
   const stopMarkers = useRef<any[]>([]);
   const routePolyline = useRef<any>(null);
   const geocoder = useRef<any>(null);
-  const usingAdvancedMarkers = useRef(false);
   const inputResolveTokenRef = useRef(0);
   
-  // Autocomplete Refs
-  const pickupAcRef = useRef<any>(null);
-  const destAcRef = useRef<any>(null);
   const stopInputRefs = useRef<Array<HTMLInputElement | null>>([]);
-  const stopAutocompleteRefs = useRef<any[]>([]);
 
   // Data State
   const [pickupPlace, setPickupPlace] = useState<any>(null);
@@ -132,6 +147,9 @@ export const CalculatorPage: React.FC = () => {
   // Time State
   const [tripDate, setTripDate] = useState<string>('');
   const [dateRequiredError, setDateRequiredError] = useState(false);
+  const [todayTimeQuickInput, setTodayTimeQuickInput] = useState('');
+  const [navigationMode, setNavigationMode] = useState<CalculatorNavigationMode>('SEQUENCE');
+  const [activeSequenceStage, setActiveSequenceStage] = useState<CalculatorSequenceStage>('ROUTE');
 
   // Directory / Customer State
   const [searchDirectory, setSearchDirectory] = useState('');
@@ -142,8 +160,10 @@ export const CalculatorPage: React.FC = () => {
   const [customerPhoneDialCode, setCustomerPhoneDialCode] = useState(DEFAULT_PHONE_DIAL_CODE);
   const [customerPhoneUseCustomDialCode, setCustomerPhoneUseCustomDialCode] = useState(false);
   const [customerPhoneCustomDialCode, setCustomerPhoneCustomDialCode] = useState('');
+  const [canUseMobileContactPicker, setCanUseMobileContactPicker] = useState(false);
   const [selectedDriverId, setSelectedDriverId] = useState('');
   const [paymentMode, setPaymentMode] = useState<TripPaymentMode>('CASH');
+  const [result, setResult] = useState<RouteResult | null>(null);
 
   const customerPhonePopularPresets = PHONE_COUNTRY_PRESETS;
   const resolvedCustomerCustomDialCode = customerPhoneCustomDialCode.replace(/\D/g, '');
@@ -151,6 +171,58 @@ export const CalculatorPage: React.FC = () => {
     ? (resolvedCustomerCustomDialCode || customerPhoneDialCode || DEFAULT_PHONE_DIAL_CODE)
     : customerPhoneDialCode;
   const customerPhoneEffectiveDialCode = customerPhoneIntlEnabled ? selectedCustomerIntlDialCode : DEFAULT_PHONE_DIAL_CODE;
+
+  const syncCustomerPhoneDialState = (nextPhone: string) => {
+    const detectedDialCode = detectPhoneDialCode(nextPhone);
+    if (!detectedDialCode) return;
+
+    const isKnownPreset = customerPhonePopularPresets.some(option => option.dialCode === detectedDialCode);
+    setCustomerPhoneIntlEnabled(detectedDialCode !== DEFAULT_PHONE_DIAL_CODE);
+    if (isKnownPreset) {
+      setCustomerPhoneUseCustomDialCode(false);
+      setCustomerPhoneDialCode(detectedDialCode);
+      setCustomerPhoneCustomDialCode('');
+    } else {
+      setCustomerPhoneUseCustomDialCode(true);
+      setCustomerPhoneCustomDialCode(detectedDialCode);
+    }
+  };
+
+  const importContactFromPhone = async () => {
+    const contactsApi = (navigator as Navigator & {
+      contacts?: {
+        select: (properties: string[], options?: { multiple?: boolean }) => Promise<ContactPickerEntry[]>;
+      };
+    }).contacts;
+
+    if (!contactsApi?.select) {
+      showCalculatorActionToast('Phone contact picker is unavailable on this device.');
+      return;
+    }
+
+    try {
+      const selection = await contactsApi.select(['name', 'tel'], { multiple: false });
+      const picked = selection?.[0];
+      const nextName = Array.isArray(picked?.name) ? String(picked?.name?.[0] || '').trim() : '';
+      const nextPhone = Array.isArray(picked?.tel) ? String(picked?.tel?.[0] || '').trim() : '';
+
+      if (!nextName && !nextPhone) {
+        showCalculatorActionToast('No contact details were imported.');
+        return;
+      }
+
+      if (nextName) setCustomerName(nextName);
+      if (nextPhone) {
+        setCustomerPhone(nextPhone);
+        syncCustomerPhoneDialState(nextPhone);
+      }
+
+      showCalculatorActionToast('Contact imported. You can share quote immediately without saving.');
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return;
+      showCalculatorActionToast('Could not import contact from phone.');
+    }
+  };
 
   const activeDrivers = useMemo(
     () => drivers.filter(d => d.status === 'ACTIVE'),
@@ -171,6 +243,14 @@ export const CalculatorPage: React.FC = () => {
       setSelectedDriverId('');
     }
   }, [drivers, selectedDriverId]);
+
+  useEffect(() => {
+    const contactsApi = (navigator as Navigator & { contacts?: { select?: unknown } }).contacts;
+    const hasContactPicker = typeof contactsApi?.select === 'function';
+    const mobileMediaMatch = window.matchMedia('(max-width: 1024px), (pointer: coarse)').matches;
+    const mobileUserAgent = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+    setCanUseMobileContactPicker(Boolean(window.isSecureContext && hasContactPicker && (mobileMediaMatch || mobileUserAgent)));
+  }, []);
 
   const customerTripSearchIndex = useMemo(() => {
     const index = new Map<string, string>();
@@ -194,6 +274,103 @@ export const CalculatorPage: React.FC = () => {
     }).slice(0, 5);
   }, [searchDirectory, customers, customerTripSearchIndex]);
 
+  const quickCustomerPicks = useMemo(() => {
+    const normalizeLocationText = (value?: string) =>
+      String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const pickupContext = normalizeLocationText(pickupPlace?.formatted_address || '');
+    const destinationContext = normalizeLocationText(destPlace?.formatted_address || '');
+
+    const routeAffinityScore = (customer?: Customer): number => {
+      if (!customer) return 0;
+      const candidateTexts: string[] = [
+        customer.homeLocation?.address || '',
+        customer.homeLocation?.mapsLink || '',
+        customer.businessLocation?.address || '',
+        customer.businessLocation?.mapsLink || '',
+        ...(Array.isArray(customer.frequentLocations)
+          ? customer.frequentLocations.flatMap(location => [location.address || '', location.mapsLink || ''])
+          : []),
+      ].map(normalizeLocationText).filter(Boolean);
+
+      if (candidateTexts.length === 0) return 0;
+
+      const matchesContext = (context: string) => {
+        if (!context) return false;
+        return candidateTexts.some(candidate =>
+          candidate.includes(context) || context.includes(candidate)
+        );
+      };
+
+      const pickupMatch = matchesContext(pickupContext);
+      const destinationMatch = matchesContext(destinationContext);
+      if (pickupMatch && destinationMatch) return 2;
+      if (pickupMatch || destinationMatch) return 1;
+      return 0;
+    };
+
+    const byPhone = new Map<string, Customer>();
+    customers.forEach(customer => {
+      const key = customerPhoneKey(customer.phone);
+      if (!key) return;
+      byPhone.set(key, customer);
+    });
+
+    const seen = new Set<string>();
+    const ranked = [...trips].sort((a, b) => {
+      const dateA = new Date(a.tripDate || a.createdAt).getTime();
+      const dateB = new Date(b.tripDate || b.createdAt).getTime();
+      return dateB - dateA;
+    });
+
+    const priorityFromNotes = (notes?: string): number => {
+      const text = String(notes || '').toUpperCase();
+      if (text.includes('[VVIP]')) return 0;
+      if (text.includes('[VIP]')) return 1;
+      return 2;
+    };
+
+    const picks: Array<{ id: string; name: string; phone: string; fromDirectory: boolean; priority: number; affinity: number; recencyRank: number; tier: 'VVIP' | 'VIP' | null }> = [];
+    let recencyRank = 0;
+    for (const trip of ranked) {
+      const key = customerPhoneKey(trip.customerPhone) || trip.customerPhone.trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+
+      const directoryCustomer = byPhone.get(customerPhoneKey(trip.customerPhone) || '');
+      picks.push({
+        id: key,
+        name: directoryCustomer?.name || trip.customerName || 'Client',
+        phone: directoryCustomer?.phone || trip.customerPhone,
+        fromDirectory: Boolean(directoryCustomer),
+        priority: priorityFromNotes(directoryCustomer?.notes),
+        affinity: routeAffinityScore(directoryCustomer),
+        recencyRank,
+        tier: priorityFromNotes(directoryCustomer?.notes) === 0
+          ? 'VVIP'
+          : priorityFromNotes(directoryCustomer?.notes) === 1
+            ? 'VIP'
+            : null,
+      });
+      recencyRank += 1;
+
+      if (picks.length >= 8) break;
+    }
+
+    return picks
+      .sort((a, b) => {
+        if (a.priority !== b.priority) return a.priority - b.priority;
+        if (a.affinity !== b.affinity) return b.affinity - a.affinity;
+        return a.recencyRank - b.recencyRank;
+      })
+      .slice(0, 4)
+      .map(({ id, name, phone, fromDirectory, tier, affinity }) => ({ id, name, phone, fromDirectory, tier, affinity }));
+  }, [trips, customers, pickupPlace, destPlace]);
+
   const quoteCustomerSnapshot = useMemo(() => {
     const name = customerName.trim();
     const phone = customerPhone.trim();
@@ -213,7 +390,7 @@ export const CalculatorPage: React.FC = () => {
     return customers.find(c => c.name.trim().toLowerCase() === normalizedName) || null;
   }, [customerPhone, customerName, customers]);
 
-  const operatorIndexMarkers = ['NEW', 'CORP', 'AIRPORT', 'PRIORITY', 'FOLLOWUP'] as const;
+  const operatorIndexMarkers = ['NEW', 'CORP', 'AIRPORT', 'PRIORITY', 'FOLLOWUP', 'VIP', 'VVIP'] as const;
 
   const hasOperatorMarker = (marker: string) => {
     return new RegExp(`\\[${marker}\\](?:\\s|$)`, 'i').test(notes);
@@ -263,35 +440,54 @@ export const CalculatorPage: React.FC = () => {
   const frequentPlaceSuggestions = useMemo(() => {
     if (!quoteDirectoryCustomer) return [];
 
-    const combined: CustomerLocation[] = [];
+    const combined: Array<CustomerLocation & { quickTagOrder: number; helperText: string }> = [];
     if (quoteDirectoryCustomer.homeLocation) {
-      combined.push({ ...quoteDirectoryCustomer.homeLocation, label: 'Home' });
+      combined.push({
+        ...quoteDirectoryCustomer.homeLocation,
+        label: 'Home',
+        quickTagOrder: 1,
+        helperText: 'Saved Home location from CRM directory.',
+      });
     }
     if (quoteDirectoryCustomer.businessLocation) {
-      combined.push({ ...quoteDirectoryCustomer.businessLocation, label: 'Business' });
+      combined.push({
+        ...quoteDirectoryCustomer.businessLocation,
+        label: 'Business',
+        quickTagOrder: 2,
+        helperText: 'Saved Business location from CRM directory.',
+      });
     }
     if (Array.isArray(quoteDirectoryCustomer.frequentLocations)) {
-      combined.push(...quoteDirectoryCustomer.frequentLocations);
+      quoteDirectoryCustomer.frequentLocations.forEach((location, index) => {
+        combined.push({
+          ...location,
+          label: (location.label || '').trim() || `Frequent ${index + 1}`,
+          quickTagOrder: 3,
+          helperText: `Saved frequent place #${index + 1} from CRM directory.`,
+        });
+      });
     }
 
     const seen = new Set<string>();
-    return combined.filter(location => {
+    const deduped = combined.filter(location => {
       const key = `${(location.address || '').toLowerCase()}|${String(location.mapsLink || '').toLowerCase()}|${location.lat ?? ''}|${location.lng ?? ''}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
+
+    return deduped.sort((a, b) => a.quickTagOrder - b.quickTagOrder);
   }, [quoteDirectoryCustomer]);
 
   // Options State
   const [isRoundTrip, setIsRoundTrip] = useState(false);
   const [addWaitTime, setAddWaitTime] = useState(false);
   const [waitTimeHours, setWaitTimeHours] = useState(0);
+  const [waitTimeInput, setWaitTimeInput] = useState('');
   const [selectedRequirements, setSelectedRequirements] = useState<string[]>([]);
 
   // Calculation State
   const [calculating, setCalculating] = useState(false);
-  const [result, setResult] = useState<RouteResult | null>(null);
   const [fareUsd, setFareUsd] = useState(0);
   const [fareLbp, setFareLbp] = useState(0);
   const [showBreakdown, setShowBreakdown] = useState(false);
@@ -349,55 +545,26 @@ export const CalculatorPage: React.FC = () => {
   const createMapMarker = (label: string, color: string, position: any, draggable = false, onDragEnd?: () => void) => {
     if (!mapInstance.current) return null;
 
-    if (usingAdvancedMarkers.current && google.maps.marker?.AdvancedMarkerElement && google.maps.marker?.PinElement) {
+    if (google.maps.marker?.AdvancedMarkerElement && google.maps.marker?.PinElement) {
       const marker = new google.maps.marker.AdvancedMarkerElement({
         map: mapInstance.current,
         position,
-        content: new google.maps.marker.PinElement({ glyph: label, background: color, borderColor: 'white' }).element,
+        content: new google.maps.marker.PinElement({ glyphText: label, background: color, borderColor: 'white' }),
         gmpDraggable: draggable,
       });
       if (onDragEnd) marker.addListener('dragend', onDragEnd);
       return marker;
     }
 
-    const marker = new google.maps.Marker({
-      map: mapInstance.current,
-      position,
-      draggable,
-      label: { text: label, color: '#ffffff', fontWeight: '700' },
-      icon: {
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: 10,
-        fillColor: color,
-        fillOpacity: 1,
-        strokeColor: '#ffffff',
-        strokeWeight: 2,
-      },
-    });
-    if (onDragEnd) marker.addListener('dragend', onDragEnd);
-    return marker;
+    return null;
   };
 
   const styleMapMarker = (marker: any, label: string, color: string) => {
     if (!marker) return;
 
-    if (usingAdvancedMarkers.current && google.maps.marker?.PinElement && marker.content !== undefined) {
-      marker.content = new google.maps.marker.PinElement({ glyph: label, background: color, borderColor: 'white' }).element;
+    if (google.maps.marker?.PinElement && marker.content !== undefined) {
+      marker.content = new google.maps.marker.PinElement({ glyphText: label, background: color, borderColor: 'white' });
       return;
-    }
-
-    if (typeof marker.setLabel === 'function') {
-      marker.setLabel({ text: label, color: '#ffffff', fontWeight: '700' });
-    }
-    if (typeof marker.setIcon === 'function') {
-      marker.setIcon({
-        path: google.maps.SymbolPath.CIRCLE,
-        scale: 10,
-        fillColor: color,
-        fillOpacity: 1,
-        strokeColor: '#ffffff',
-        strokeWeight: 2,
-      });
     }
   };
 
@@ -615,7 +782,7 @@ export const CalculatorPage: React.FC = () => {
 
   const buildSafeDepartureTime = () => {
     const now = new Date();
-    const minimumFutureMs = 2 * 60 * 1000;
+    const minimumFutureMs = DISPATCH_NOW_MIN_MINUTES * 60 * 1000;
     const minimumFutureTime = new Date(now.getTime() + minimumFutureMs);
     const requested = tripDate ? new Date(tripDate) : now;
 
@@ -752,7 +919,10 @@ export const CalculatorPage: React.FC = () => {
       if (draft.paymentMode === 'CASH' || draft.paymentMode === 'CREDIT') setPaymentMode(draft.paymentMode);
       if (typeof draft.isRoundTrip === 'boolean') setIsRoundTrip(draft.isRoundTrip);
       if (typeof draft.addWaitTime === 'boolean') setAddWaitTime(draft.addWaitTime);
-      if (typeof draft.waitTimeHours === 'number') setWaitTimeHours(draft.waitTimeHours);
+      if (typeof draft.waitTimeHours === 'number') {
+        setWaitTimeHours(draft.waitTimeHours);
+        setWaitTimeInput(draft.waitTimeHours > 0 ? String(draft.waitTimeHours) : '');
+      }
       if (Array.isArray(draft.selectedRequirements)) setSelectedRequirements(draft.selectedRequirements.filter((x): x is string => typeof x === 'string'));
       if (typeof draft.notes === 'string') setNotes(draft.notes);
       if (typeof draft.fareUsd === 'number') setFareUsd(draft.fareUsd);
@@ -868,19 +1038,19 @@ export const CalculatorPage: React.FC = () => {
 
   useEffect(() => {
     if (mapsLoaded && window.google?.maps?.Map && mapRef.current && !mapInstance.current) {
-        const selectedMapId = (theme === 'dark' ? settings.googleMapsMapIdDark : settings.googleMapsMapId) || settings.googleMapsMapId;
+        const selectedMapId = ((theme === 'dark' ? settings.googleMapsMapIdDark : settings.googleMapsMapId) || settings.googleMapsMapId || '').trim();
+        const activeMapId = selectedMapId || DEFAULT_ADVANCED_MARKER_MAP_ID;
         const mapOptions: any = {
           center: { lat: 33.8938, lng: 35.5018 },
           zoom: 12,
-          disableDefaultUI: true
+          disableDefaultUI: true,
+          zoomControl: true,
+          gestureHandling: 'none',
+          scrollwheel: false,
+          disableDoubleClickZoom: true,
+          keyboardShortcuts: false
         };
-        if (selectedMapId) {
-          mapOptions.mapId = selectedMapId;
-        }
-
-        usingAdvancedMarkers.current = Boolean(
-          mapOptions.mapId && google.maps.marker?.AdvancedMarkerElement && google.maps.marker?.PinElement
-        );
+        mapOptions.mapId = activeMapId;
 
         mapInstance.current = new google.maps.Map(mapRef.current, {
           ...mapOptions
@@ -890,37 +1060,6 @@ export const CalculatorPage: React.FC = () => {
         
         markers.current.pickup = createMapMarker('A', '#d4a017', { lat: 33.8938, lng: 35.5018 }, true, () => handleMarkerDrag('pickup'));
         markers.current.dest = createMapMarker('B', '#2563eb', { lat: 33.8938, lng: 35.5018 }, true, () => handleMarkerDrag('dest'));
-
-        if (pickupInputRef.current) {
-          pickupAcRef.current = new google.maps.places.Autocomplete(pickupInputRef.current, {
-            componentRestrictions: { country: 'lb' },
-            fields: ['place_id', 'geometry', 'formatted_address', 'name'],
-          });
-          pickupAcRef.current.addListener('place_changed', () => {
-            const place = pickupAcRef.current.getPlace();
-            if (place.geometry) {
-              setPickupPlace(place);
-              setPickupOriginalLink(undefined);
-              setMarkerPosition(markers.current.pickup, place.geometry.location);
-              mapInstance.current.panTo(place.geometry.location);
-            }
-          });
-        }
-        if (destInputRef.current) {
-          destAcRef.current = new google.maps.places.Autocomplete(destInputRef.current, {
-            componentRestrictions: { country: 'lb' },
-            fields: ['place_id', 'geometry', 'formatted_address', 'name'],
-          });
-          destAcRef.current.addListener('place_changed', () => {
-            const place = destAcRef.current.getPlace();
-            if (place.geometry) {
-              setDestPlace(place);
-              setDestinationOriginalLink(undefined);
-              setMarkerPosition(markers.current.dest, place.geometry.location);
-              mapInstance.current.panTo(place.geometry.location);
-            }
-          });
-        }
     }
   }, [mapsLoaded, theme, settings.googleMapsMapId, settings.googleMapsMapIdDark]);
 
@@ -952,63 +1091,6 @@ export const CalculatorPage: React.FC = () => {
 
     if (pickupPlace && destPlace && !routesApiBlocked) fetchRoute(pickupPlace, destPlace, stopsDraft);
   }, [pickupPlace, destPlace, stopsDraft, stopCandidates, tripDate, routesApiBlocked]);
-
-  useEffect(() => {
-    if (!mapsLoaded || !google?.maps?.places?.Autocomplete) return;
-
-    setStopCandidates(prev => {
-      const next = prev.slice(0, stopsDraft.length);
-      while (next.length < stopsDraft.length) next.push(null);
-      return next;
-    });
-
-    stopAutocompleteRefs.current.forEach(instance => {
-      if (instance && google?.maps?.event?.clearInstanceListeners) {
-        google.maps.event.clearInstanceListeners(instance);
-      }
-    });
-    stopAutocompleteRefs.current = [];
-
-    stopInputRefs.current = stopInputRefs.current.slice(0, stopsDraft.length);
-
-    stopInputRefs.current.forEach((input, index) => {
-      if (!input) return;
-      const autocomplete = new google.maps.places.Autocomplete(input, {
-        componentRestrictions: { country: 'lb' },
-        fields: ['place_id', 'geometry', 'formatted_address', 'name'],
-      });
-
-      autocomplete.addListener('place_changed', () => {
-        const place = autocomplete.getPlace();
-        const nextValue = place?.formatted_address || place?.name;
-        if (!nextValue) return;
-        setStopsDraft(prev => prev.map((entry, i) => (i === index ? nextValue : entry)));
-
-        const lat = Number(place?.geometry?.location?.lat?.() ?? place?.geometry?.location?.lat);
-        const lng = Number(place?.geometry?.location?.lng?.() ?? place?.geometry?.location?.lng);
-        if (Number.isFinite(lat) && Number.isFinite(lng)) {
-          const candidate: TripStop = {
-            text: nextValue,
-            placeId: place?.place_id || 'GEOCODED_STOP',
-            lat,
-            lng,
-          };
-          setStopCandidates(prev => prev.map((entry, i) => (i === index ? candidate : entry)));
-        }
-      });
-
-      stopAutocompleteRefs.current[index] = autocomplete;
-    });
-
-    return () => {
-      stopAutocompleteRefs.current.forEach(instance => {
-        if (instance && google?.maps?.event?.clearInstanceListeners) {
-          google.maps.event.clearInstanceListeners(instance);
-        }
-      });
-      stopAutocompleteRefs.current = [];
-    };
-  }, [mapsLoaded, stopsDraft.length]);
 
   useEffect(() => {
     if (!mapsLoaded || !mapInstance.current) return;
@@ -1243,20 +1325,18 @@ export const CalculatorPage: React.FC = () => {
   const handleSelectCustomer = (c: Customer) => {
     setCustomerName(c.name);
     setCustomerPhone(c.phone);
-    const detectedDialCode = detectPhoneDialCode(c.phone) || DEFAULT_PHONE_DIAL_CODE;
-    const isKnownPreset = customerPhonePopularPresets.some(option => option.dialCode === detectedDialCode);
-    setCustomerPhoneIntlEnabled(detectedDialCode !== DEFAULT_PHONE_DIAL_CODE);
-    if (isKnownPreset) {
-      setCustomerPhoneDialCode(detectedDialCode);
-      setCustomerPhoneUseCustomDialCode(false);
-      setCustomerPhoneCustomDialCode('');
-    } else {
-      setCustomerPhoneDialCode(DEFAULT_PHONE_DIAL_CODE);
-      setCustomerPhoneUseCustomDialCode(true);
-      setCustomerPhoneCustomDialCode(detectedDialCode);
-    }
+    syncCustomerPhoneDialState(c.phone);
     setSearchDirectory('');
     setShowDirectoryResults(false);
+  };
+
+  const handleQuickPickCustomer = (pick: { name: string; phone: string }) => {
+    setCustomerName(pick.name);
+    setCustomerPhone(pick.phone);
+    syncCustomerPhoneDialState(pick.phone);
+    setSearchDirectory('');
+    setShowDirectoryResults(false);
+    showCalculatorActionToast('Customer loaded from quick picks.');
   };
 
   const handleResetPreQuoteCustomer = () => {
@@ -1401,7 +1481,6 @@ export const CalculatorPage: React.FC = () => {
           return collection.findIndex(candidate => `${candidate.address.toLowerCase()}|${String(candidate.mapsLink || '').toLowerCase()}|${candidate.lat ?? ''}|${candidate.lng ?? ''}` === key) === index;
         })
       : existingFrequent;
-    const shouldSetHomeOnSmart = target === 'SMART_PICKUP' && !existing?.homeLocation?.address;
 
     const patch: Customer = {
       id: existing?.id || `${Date.now()}-${Math.random()}`,
@@ -1417,7 +1496,7 @@ export const CalculatorPage: React.FC = () => {
       ...(existing?.gender ? { gender: existing.gender } : {}),
       ...(existing?.entityType ? { entityType: existing.entityType } : {}),
       ...(existing?.profession ? { profession: existing.profession } : {}),
-      ...((target === 'HOME' || shouldSetHomeOnSmart) ? { homeLocation: nextLocation } : (existing?.homeLocation ? { homeLocation: existing.homeLocation } : {})),
+      ...(target === 'HOME' ? { homeLocation: nextLocation } : (existing?.homeLocation ? { homeLocation: existing.homeLocation } : {})),
       ...(target === 'BUSINESS' ? { businessLocation: nextLocation } : (existing?.businessLocation ? { businessLocation: existing.businessLocation } : {})),
       frequentLocations: nextFrequent,
     };
@@ -1429,12 +1508,13 @@ export const CalculatorPage: React.FC = () => {
         : target === 'BUSINESS'
           ? 'Destination saved as Business.'
           : target === 'SMART_PICKUP'
-            ? (shouldSetHomeOnSmart ? 'Pickup added to Frequent and set as Home.' : 'Pickup added to Frequent (Home kept).')
+            ? 'Pickup added to Frequent places.'
             : 'Location added to Frequent places.'
     );
   };
 
-  const buildCurrentTripData = (): Trip => {
+  const buildCurrentTripData = (resolvedStopsOverride?: TripStop[]): Trip => {
+    const effectiveResolvedStops = resolvedStopsOverride ?? resolvedStops;
     const normalizedCustomerPhone = normalizePhoneForWhatsApp(customerPhone, { defaultDialCode: customerPhoneEffectiveDialCode });
     const pickupLat = readCoordinateFromLocation(pickupPlace?.geometry?.location, 'lat');
     const pickupLng = readCoordinateFromLocation(pickupPlace?.geometry?.location, 'lng');
@@ -1459,7 +1539,7 @@ export const CalculatorPage: React.FC = () => {
       destinationOriginalLink,
       destLat: Number.isFinite(destLat) ? destLat : undefined,
       destLng: Number.isFinite(destLng) ? destLng : undefined,
-      ...(resolvedStops.length > 0 ? { stops: resolvedStops } : {}),
+      ...(effectiveResolvedStops.length > 0 ? { stops: effectiveResolvedStops } : {}),
       distanceKm: result!.distanceKm,
       distanceText: result!.distanceText, 
       durationMin: result!.durationMin,
@@ -1480,7 +1560,36 @@ export const CalculatorPage: React.FC = () => {
     };
   };
 
-  const handleSaveTrip = () => {
+  const resolveStopsForSubmission = async (): Promise<TripStop[] | null> => {
+    const trimmedStops = stopsDraft.map(value => value.trim()).filter(Boolean);
+    if (trimmedStops.length === 0) return [];
+
+    const nextResolvedStops: TripStop[] = [];
+
+    for (let index = 0; index < stopsDraft.length; index += 1) {
+      const stopInput = stopsDraft[index]?.trim();
+      if (!stopInput) continue;
+
+      const candidate = stopCandidates[index];
+      const useCandidate = Boolean(
+        candidate &&
+        Number.isFinite(candidate.lat) &&
+        Number.isFinite(candidate.lng) &&
+        candidate.text.trim().toLowerCase() === stopInput.toLowerCase()
+      );
+
+      const resolvedStop = useCandidate ? candidate : await resolveStopInput(stopInput);
+      if (!resolvedStop || !Number.isFinite(resolvedStop.lat) || !Number.isFinite(resolvedStop.lng)) {
+        return null;
+      }
+
+      nextResolvedStops.push(resolvedStop);
+    }
+
+    return nextResolvedStops;
+  };
+
+  const handleSaveTrip = async () => {
     if (!result) {
       setError('Please compute a route first before saving dispatch.');
       return;
@@ -1497,14 +1606,19 @@ export const CalculatorPage: React.FC = () => {
       }
     }
 
-    const trimmedStops = stopsDraft.map(value => value.trim()).filter(Boolean);
-    if (trimmedStops.length > 0 && resolvedStops.length !== trimmedStops.length) {
-      setError('Resolve all stops from autocomplete before saving dispatch.');
+    const resolvedStopsForSave = await resolveStopsForSubmission();
+    if (!resolvedStopsForSave) {
+      setError('Resolve all stops before saving dispatch.');
       return;
     }
 
     try {
-      const tripData = buildCurrentTripData();
+      setResolvedStops(resolvedStopsForSave);
+      const resolvedTexts = resolvedStopsForSave.map(stop => stop.text);
+      setStopsDraft(resolvedTexts);
+      setStopCandidates(resolvedStopsForSave);
+
+      const tripData = buildCurrentTripData(resolvedStopsForSave);
       addTrip(tripData);
       setLastSavedTrip(tripData);
       setShowMessageModal(true);
@@ -1606,6 +1720,39 @@ export const CalculatorPage: React.FC = () => {
 
   const canPinStopsFromMap = Boolean(pickupPlace && destPlace);
 
+  const requirementIcon = (requirementId: string) => {
+    switch (requirementId) {
+      case 'quiet':
+        return <VolumeX size={11} aria-hidden="true" />;
+      case 'rest':
+        return <Moon size={11} aria-hidden="true" />;
+      case 'luggage':
+        return <Briefcase size={11} aria-hidden="true" />;
+      case 'passenger4':
+        return <Users size={11} aria-hidden="true" />;
+      case 'child_seat':
+        return <Baby size={11} aria-hidden="true" />;
+      case 'suv':
+        return <Car size={11} aria-hidden="true" />;
+      case 'van':
+        return <Bus size={11} aria-hidden="true" />;
+      case 'pet':
+        return <PawPrint size={11} aria-hidden="true" />;
+      case 'wheelchair':
+        return <Accessibility size={11} aria-hidden="true" />;
+      case 'compound_access':
+        return <KeyRound size={11} aria-hidden="true" />;
+      case 'smoking':
+        return <Cigarette size={11} aria-hidden="true" />;
+      case 'no_smoking':
+        return <CigaretteOff size={11} aria-hidden="true" />;
+      case 'stops':
+        return <MapPin size={11} aria-hidden="true" />;
+      default:
+        return <AlertCircle size={11} aria-hidden="true" />;
+    }
+  };
+
   const fareComputation = useMemo(() => {
     if (!result) {
       return {
@@ -1638,9 +1785,124 @@ export const CalculatorPage: React.FC = () => {
     });
   };
 
+  const setMissionTimePreset = (minutesFromNow: number) => {
+    const normalizedMinutes = minutesFromNow <= 0 ? DISPATCH_NOW_DEFAULT_MINUTES : minutesFromNow;
+    const nextDate = format(addMinutes(new Date(), normalizedMinutes), "yyyy-MM-dd'T'HH:mm");
+    setTripDate(nextDate);
+    setTodayTimeQuickInput('');
+    setDateRequiredError(false);
+  };
+
+  const applyTodayTimeQuickInput = () => {
+    const raw = todayTimeQuickInput.trim().toLowerCase();
+    if (!raw) return;
+
+    let parsedHour: number | null = null;
+    let parsedMinute = 0;
+    let meridiem: 'am' | 'pm' | null = null;
+
+    const meridiemMatch = raw.match(/(am|pm|a|p)$/i);
+    if (meridiemMatch) {
+      meridiem = meridiemMatch[1].toLowerCase().startsWith('p') ? 'pm' : 'am';
+    }
+
+    const cleaned = raw.replace(/\s+/g, '').replace(/(am|pm|a|p)$/i, '').replace('.', ':');
+    const colonMatch = cleaned.match(/^(\d{1,2}):(\d{1,2})$/);
+    const compactMatch = cleaned.match(/^(\d{3,4})$/);
+    const hourOnlyMatch = cleaned.match(/^(\d{1,2})$/);
+
+    if (colonMatch) {
+      parsedHour = Number(colonMatch[1]);
+      parsedMinute = Number(colonMatch[2]);
+    } else if (compactMatch) {
+      const digits = compactMatch[1];
+      parsedHour = Number(digits.slice(0, digits.length - 2));
+      parsedMinute = Number(digits.slice(-2));
+    } else if (hourOnlyMatch) {
+      parsedHour = Number(hourOnlyMatch[1]);
+      parsedMinute = 0;
+    }
+
+    if (parsedHour === null || !Number.isFinite(parsedHour) || !Number.isFinite(parsedMinute) || parsedMinute < 0 || parsedMinute > 59) {
+      showCalculatorActionToast('Time format not recognized. Try 14:30 or 2:30pm.');
+      return;
+    }
+
+    if (meridiem) {
+      if (parsedHour < 1 || parsedHour > 12) {
+        showCalculatorActionToast('12h time should be between 1 and 12.');
+        return;
+      }
+      if (meridiem === 'pm' && parsedHour < 12) parsedHour += 12;
+      if (meridiem === 'am' && parsedHour === 12) parsedHour = 0;
+    }
+
+    if (parsedHour < 0 || parsedHour > 23) {
+      showCalculatorActionToast('Hour should be between 0 and 23.');
+      return;
+    }
+
+    const now = new Date();
+    const minimumToday = addMinutes(now, DISPATCH_NOW_MIN_MINUTES);
+    const nextDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parsedHour, parsedMinute, 0, 0);
+
+    const normalizedDate = nextDate < minimumToday ? minimumToday : nextDate;
+    setTripDate(format(normalizedDate, "yyyy-MM-dd'T'HH:mm"));
+    setTodayTimeQuickInput('');
+    setDateRequiredError(false);
+    if (nextDate < minimumToday) {
+      showCalculatorActionToast(`Time adjusted to minimum dispatch window (+${DISPATCH_NOW_MIN_MINUTES}m).`);
+      return;
+    }
+    showCalculatorActionToast('Today time applied to schedule.');
+  };
+
+  const sequenceStages = useMemo(() => ([
+    { key: 'ROUTE' as const, label: 'Route + Map' },
+    { key: 'CUSTOMER' as const, label: 'Customer' },
+    { key: 'OUTPUT' as const, label: 'Output' },
+  ]), []);
+
+  const activeSequenceIndex = useMemo(() => {
+    const index = sequenceStages.findIndex(stage => stage.key === activeSequenceStage);
+    return index >= 0 ? index : 0;
+  }, [activeSequenceStage, sequenceStages]);
+
+  const moveSequenceStage = (direction: 'next' | 'prev') => {
+    const offset = direction === 'next' ? 1 : -1;
+    const nextIndex = Math.max(0, Math.min(sequenceStages.length - 1, activeSequenceIndex + offset));
+    setActiveSequenceStage(sequenceStages[nextIndex].key);
+  };
+
+  const isRouteStageVisible = navigationMode !== 'SEQUENCE' || activeSequenceStage === 'ROUTE';
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(target.closest('[contenteditable="true"]'));
+    };
+
+    const handleSequenceArrowKeys = (event: KeyboardEvent) => {
+      if (navigationMode !== 'SEQUENCE') return;
+      if (isTypingTarget(event.target)) return;
+
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        moveSequenceStage('prev');
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        moveSequenceStage('next');
+      }
+    };
+
+    window.addEventListener('keydown', handleSequenceArrowKeys);
+    return () => window.removeEventListener('keydown', handleSequenceArrowKeys);
+  }, [navigationMode, moveSequenceStage]);
+
   return (
-    <div className="flex flex-col lg:flex-row min-h-screen lg:h-full bg-slate-50 dark:bg-brand-950">
-      <div className="lg:w-96 flex flex-col h-auto lg:h-full bg-white dark:bg-brand-900 border-r border-slate-200 dark:border-brand-800 z-10 shadow-xl overflow-y-auto">
+    <div className="flex flex-col lg:flex-row min-h-screen lg:h-full bg-slate-50 dark:bg-brand-950 transition-all duration-300">
+      <div className={`${isRouteStageVisible ? 'lg:w-96 border-r border-slate-200 dark:border-brand-800' : 'lg:flex-1 border-r-0'} flex flex-col h-auto lg:h-full bg-white dark:bg-brand-900 z-10 shadow-xl overflow-y-auto transition-all duration-300`}>
         <div className="bg-brand-950 px-4 py-2 flex justify-between items-center border-b border-brand-800">
            <div className="flex items-center space-x-2">
              <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
@@ -1660,8 +1922,72 @@ export const CalculatorPage: React.FC = () => {
                {locationStatusMessage}
              </div>
            )}
+           <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-2.5 space-y-2">
+             <div className="flex items-center justify-between gap-2">
+               <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 p-0.5">
+                 <button
+                   type="button"
+                   onClick={() => setNavigationMode('SCROLL')}
+                   className={`h-7 px-2.5 rounded-md text-[8px] font-black uppercase tracking-widest transition-colors ${navigationMode === 'SCROLL' ? 'bg-brand-900 text-gold-400' : 'text-slate-500 dark:text-slate-300'}`}
+                 >
+                   Scroll
+                 </button>
+                 <button
+                   type="button"
+                   onClick={() => setNavigationMode('SEQUENCE')}
+                   className={`h-7 px-2.5 rounded-md text-[8px] font-black uppercase tracking-widest transition-colors ${navigationMode === 'SEQUENCE' ? 'bg-brand-900 text-gold-400' : 'text-slate-500 dark:text-slate-300'}`}
+                 >
+                   Sequence
+                 </button>
+               </div>
+
+               {navigationMode === 'SEQUENCE' && (
+                 <div className="inline-flex items-center gap-1">
+                   <button
+                     type="button"
+                     onClick={() => moveSequenceStage('prev')}
+                     disabled={activeSequenceIndex === 0}
+                     className="h-7 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                     title="Previous step (←)"
+                   >
+                     ← Prev
+                   </button>
+                   <button
+                     type="button"
+                     onClick={() => moveSequenceStage('next')}
+                     disabled={activeSequenceIndex >= sequenceStages.length - 1}
+                     className="h-7 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                     title="Next step (→)"
+                   >
+                     Next →
+                   </button>
+                 </div>
+               )}
+             </div>
+
+             {navigationMode === 'SEQUENCE' && (
+               <div className="flex flex-wrap gap-1">
+                 {sequenceStages.map(stage => {
+                   const isActive = stage.key === activeSequenceStage;
+                   return (
+                     <button
+                       key={stage.key}
+                       type="button"
+                       onClick={() => setActiveSequenceStage(stage.key)}
+                       className={`h-7 px-2 rounded-md border text-[7px] font-black uppercase tracking-widest transition-colors ${isActive ? 'border-gold-400 bg-gold-500/15 text-gold-700 dark:text-gold-300' : 'border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-500 dark:text-slate-300'}`}
+                     >
+                       {stage.label}
+                     </button>
+                   );
+                 })}
+               </div>
+             )}
+           </div>
+
            <div className="space-y-4">
-              <div className="space-y-3">
+             {(navigationMode === 'SCROLL' || activeSequenceStage === 'ROUTE') && (
+             <div className={`space-y-4 ${navigationMode === 'SEQUENCE' ? 'animate-in fade-in slide-in-from-right-2 duration-200' : ''}`}>
+              <div id="calc-stage-route" className="space-y-3">
                  <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gold-600"><MapPin size={14} /></div>
                     <input
@@ -1700,19 +2026,28 @@ export const CalculatorPage: React.FC = () => {
                  </div>
                  <div className="space-y-2 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-3">
                    <div className="flex items-center justify-between">
-                     <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Stops (Optional)</label>
+                     <label className="inline-flex items-center gap-1 text-[9px] font-black text-slate-500 uppercase tracking-widest">
+                       <MapPin size={11} />
+                       Stops (Optional)
+                     </label>
                      <button
                        type="button"
                        onClick={addStopField}
-                       className="h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 text-[7px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+                       className="h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 text-[7px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center gap-1"
                      >
+                       <MapPin size={10} />
                        Add Stop
                      </button>
                    </div>
                    {stopsDraft.length > 0 ? (
                      <div className="space-y-2">
-                       {stopsDraft.map((stopValue, index) => (
+                       {stopsDraft.map((stopValue, index) => {
+                         const isResolved = Boolean(stopCandidates[index] && Number.isFinite(stopCandidates[index]?.lat) && Number.isFinite(stopCandidates[index]?.lng));
+                         return (
                          <div key={`stop-${index}`} className="flex items-center gap-2">
+                           <div className="h-9 w-9 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-500 dark:text-slate-300 inline-flex items-center justify-center">
+                             <MapPin size={11} />
+                           </div>
                            <input
                              type="text"
                              ref={element => {
@@ -1742,6 +2077,15 @@ export const CalculatorPage: React.FC = () => {
                              placeholder={`Stop ${index + 1} address or maps link`}
                              className="flex-1 h-9 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-bold"
                            />
+                           <span
+                             title={isResolved ? 'Resolved from map data' : 'Pending resolution'}
+                             className={`h-9 px-2 rounded-lg border text-[7px] font-black uppercase tracking-widest inline-flex items-center gap-1 ${isResolved
+                               ? 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'
+                               : 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10'}`}
+                           >
+                             {isResolved ? <Check size={10} /> : <Hourglass size={10} />}
+                             {isResolved ? 'OK' : 'Pending'}
+                           </span>
                            <button
                              type="button"
                              onClick={() => removeStopField(index)}
@@ -1750,10 +2094,14 @@ export const CalculatorPage: React.FC = () => {
                              <X size={12} />
                            </button>
                          </div>
-                       ))}
+                         );
+                       })}
                      </div>
                    ) : (
-                     <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">No stops added.</p>
+                     <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1">
+                       <AlertCircle size={10} />
+                       No stops added.
+                     </p>
                    )}
                  </div>
                  <div className="flex justify-end">
@@ -1768,9 +2116,95 @@ export const CalculatorPage: React.FC = () => {
                  </div>
               </div>
 
-                  <div className="space-y-2">
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">Scheduled Mission</label>
-                    <input type="datetime-local" value={tripDate} onChange={e => {setTripDate(e.target.value); setDateRequiredError(false);}} className={`w-full h-11 px-4 rounded-xl border bg-slate-50 dark:bg-brand-950 text-xs font-bold transition-all ${dateRequiredError ? 'border-red-500' : 'border-slate-200 dark:border-brand-800'}`} />
+                  <div id="calc-stage-schedule" className="space-y-2">
+                    <div className="flex items-center justify-between gap-2 px-1">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest inline-flex items-center gap-1">
+                        <Calendar size={11} />
+                        Scheduled Mission
+                      </label>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setMissionTimePreset(0)}
+                          className="h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 text-[7px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+                          title={`Set to now window (+${DISPATCH_NOW_MIN_MINUTES} to +${DISPATCH_NOW_MAX_MINUTES} min)`}
+                        >
+                          Now
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMissionTimePreset(30)}
+                          className="h-6 px-2 rounded-md border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[7px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300"
+                          title="Set to 30 minutes from now"
+                        >
+                          +30m
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMissionTimePreset(60)}
+                          className="h-6 px-2 rounded-md border border-indigo-300 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-900/10 text-[7px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300"
+                          title="Set to 1 hour from now"
+                        >
+                          +1h
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMissionTimePreset(120)}
+                          className="h-6 px-2 rounded-md border border-violet-300 dark:border-violet-900/40 bg-violet-50 dark:bg-violet-900/10 text-[7px] font-black uppercase tracking-widest text-violet-700 dark:text-violet-300"
+                          title="Set to 2 hours from now"
+                        >
+                          +2h
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMissionTimePreset(90)}
+                          className="h-6 px-2 rounded-md border border-fuchsia-300 dark:border-fuchsia-900/40 bg-fuchsia-50 dark:bg-fuchsia-900/10 text-[7px] font-black uppercase tracking-widest text-fuchsia-700 dark:text-fuchsia-300"
+                          title="Set to 1 hour 30 minutes from now"
+                        >
+                          +1.5h
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMissionTimePreset(180)}
+                          className="h-6 px-2 rounded-md border border-purple-300 dark:border-purple-900/40 bg-purple-50 dark:bg-purple-900/10 text-[7px] font-black uppercase tracking-widest text-purple-700 dark:text-purple-300"
+                          title="Set to 3 hours from now"
+                        >
+                          +3h
+                        </button>
+                      </div>
+                    </div>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500"><Clock size={13} /></div>
+                      <input type="datetime-local" value={tripDate} onChange={e => {setTripDate(e.target.value); setDateRequiredError(false);}} className={`w-full h-11 pl-9 pr-3 rounded-xl border bg-slate-50 dark:bg-brand-950 text-xs font-bold transition-all ${dateRequiredError ? 'border-red-500' : 'border-slate-200 dark:border-brand-800'}`} />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500"><Timer size={12} /></div>
+                        <input
+                          type="text"
+                          value={todayTimeQuickInput}
+                          onChange={e => setTodayTimeQuickInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              applyTodayTimeQuickInput();
+                            }
+                          }}
+                          placeholder="Today time (e.g. 14:30 or 2:30pm)"
+                          className="w-full h-9 pl-9 pr-3 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[9px] font-bold"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={applyTodayTimeQuickInput}
+                        className="h-9 px-3 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1"
+                        title="Apply typed time for today"
+                      >
+                        <Check size={10} />
+                        Apply
+                      </button>
+                    </div>
+                    <p className="text-[7px] font-black uppercase tracking-widest text-slate-400 px-1">Now uses a {DISPATCH_NOW_MIN_MINUTES}-{DISPATCH_NOW_MAX_MINUTES} minute operational window.</p>
                   </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1778,17 +2212,96 @@ export const CalculatorPage: React.FC = () => {
                    <Repeat size={14} className="mr-2"/> {isRoundTrip ? 'Round Trip' : 'One Way'}
                  </button>
                  <div className="flex bg-slate-50 rounded-xl p-0.5 border-2 border-slate-100 dark:bg-brand-950 dark:border-brand-800">
-                    <button onClick={() => setAddWaitTime(!addWaitTime)} className={`h-9 w-9 rounded-lg flex items-center justify-center ${addWaitTime ? 'bg-gold-600 text-brand-950' : 'text-slate-300'}`}><Clock size={14}/></button>
-                    <input type="number" disabled={!addWaitTime} value={waitTimeHours} onChange={e => setWaitTimeHours(parseFloat(e.target.value) || 0)} className="flex-1 bg-transparent text-center text-[10px] font-black border-none focus:ring-0" placeholder="Hrs" />
+                    <button
+                      onClick={() => {
+                        setAddWaitTime(prev => {
+                          const next = !prev;
+                          if (!next) {
+                            setWaitTimeHours(0);
+                            setWaitTimeInput('');
+                          }
+                          if (next && waitTimeHours > 0) {
+                            setWaitTimeInput(String(waitTimeHours));
+                          }
+                          return next;
+                        });
+                      }}
+                      className={`h-9 w-9 rounded-lg flex items-center justify-center ${addWaitTime ? 'bg-gold-600 text-brand-950' : 'text-slate-300'}`}
+                    ><Clock size={14}/></button>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      disabled={!addWaitTime}
+                      value={waitTimeInput}
+                      onChange={e => {
+                        const raw = e.target.value;
+                        if (!/^\d*(\.\d{0,2})?$/.test(raw)) return;
+                        setWaitTimeInput(raw);
+                        const parsed = Number(raw);
+                        setWaitTimeHours(Number.isFinite(parsed) ? Math.max(0, parsed) : 0);
+                      }}
+                      onBlur={() => {
+                        if (!waitTimeInput.trim()) {
+                          setWaitTimeHours(0);
+                          setWaitTimeInput('');
+                          return;
+                        }
+                        const parsed = Number(waitTimeInput);
+                        if (!Number.isFinite(parsed) || parsed <= 0) {
+                          setWaitTimeHours(0);
+                          setWaitTimeInput('');
+                          return;
+                        }
+                        const normalized = Math.round(parsed * 100) / 100;
+                        setWaitTimeHours(normalized);
+                        setWaitTimeInput(String(normalized));
+                      }}
+                      className="flex-1 bg-transparent text-center text-[10px] font-black border-none focus:ring-0"
+                      placeholder="Hrs"
+                    />
                  </div>
               </div>
 
-              <div className="space-y-2 rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 p-3">
-                <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">Customer Profile (Quote + WhatsApp)</label>
+                  </div>
+                  )}
+
+                  {(navigationMode === 'SCROLL' || activeSequenceStage === 'CUSTOMER') && (
+                  <div className={`${navigationMode === 'SEQUENCE' ? 'animate-in fade-in slide-in-from-right-2 duration-200' : ''}`}>
+              <div id="calc-stage-customer" className="space-y-2 rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 p-3">
+                <div className="flex items-center justify-between gap-2 px-1">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest inline-flex items-center gap-1">
+                    <User size={11} />
+                    Customer Profile (Quote + WhatsApp)
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        searchDirectoryInputRef.current?.focus();
+                        setShowDirectoryResults(true);
+                      }}
+                      className="h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 text-[7px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center gap-1"
+                      title="Focus customer search"
+                    >
+                      <Search size={9} />
+                      Search
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleResetPreQuoteCustomer}
+                      className="h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 text-[7px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center gap-1"
+                      title="Clear customer fields"
+                    >
+                      <X size={9} />
+                      Clear
+                    </button>
+                  </div>
+                </div>
                 <div className="grid grid-cols-1 gap-2">
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500"><Search size={13} /></div>
                     <input
+                      ref={searchDirectoryInputRef}
                       type="text"
                       placeholder="Select customer from Directory..."
                       value={searchDirectory}
@@ -1826,6 +2339,44 @@ export const CalculatorPage: React.FC = () => {
                       </div>
                     )}
                   </div>
+                  {quickCustomerPicks.length > 0 && (
+                    <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-2">
+                      <p className="text-[7px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300 px-1 inline-flex items-center gap-1">
+                        <Zap size={10} />
+                        Quick Picks
+                      </p>
+                      <div className={`mt-1.5 ${navigationMode === 'SEQUENCE' ? 'grid grid-cols-2 lg:grid-cols-4 gap-1.5' : 'flex flex-wrap gap-1.5'}`}>
+                        {quickCustomerPicks.map(pick => (
+                          <button
+                            key={pick.id}
+                            type="button"
+                            onClick={() => handleQuickPickCustomer(pick)}
+                            title={`${pick.name} · ${pick.phone}`}
+                            className={`h-7 px-2 rounded-lg border text-[7px] font-black uppercase tracking-widest inline-flex items-center ${navigationMode === 'SEQUENCE' ? 'justify-center gap-0.5 min-w-0' : 'gap-1'} ${pick.fromDirectory
+                              ? 'border-gold-300 bg-gold-50 text-gold-700 dark:border-gold-700/40 dark:bg-gold-900/10 dark:text-gold-300'
+                              : 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/10 dark:text-blue-300'}`}
+                          >
+                            <User size={10} />
+                            {pick.affinity > 0 && (
+                              <span className="inline-flex items-center px-1 rounded border text-[6px] tracking-widest border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10">
+                                Route
+                              </span>
+                            )}
+                            {pick.tier && (
+                              <span className={`inline-flex items-center px-1 rounded border text-[6px] tracking-widest ${pick.tier === 'VVIP'
+                                ? 'border-pink-300 text-pink-700 bg-pink-50 dark:border-pink-900/40 dark:text-pink-300 dark:bg-pink-900/10'
+                                : 'border-violet-300 text-violet-700 bg-violet-50 dark:border-violet-900/40 dark:text-violet-300 dark:bg-violet-900/10'}`}
+                              >
+                                {pick.tier === 'VVIP' ? <ShieldCheck size={8} className="mr-0.5" /> : <Star size={8} className="mr-0.5" />}
+                                {pick.tier}
+                              </span>
+                            )}
+                            <span className="truncate">{truncateUiText(pick.name, 14)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div className="flex items-center bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-10">
                     <User size={13} className="text-gold-600 mr-2.5" />
                     <input type="text" placeholder="Client Name" value={customerName} onChange={e => setCustomerName(e.target.value)} className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-[10px] flex-1 h-full" />
@@ -1839,28 +2390,30 @@ export const CalculatorPage: React.FC = () => {
                       onChange={e => {
                         const nextPhone = e.target.value;
                         setCustomerPhone(nextPhone);
-                        const detectedDialCode = detectPhoneDialCode(nextPhone);
-                        if (detectedDialCode) {
-                          const isKnownPreset = customerPhonePopularPresets.some(option => option.dialCode === detectedDialCode);
-                          setCustomerPhoneIntlEnabled(detectedDialCode !== DEFAULT_PHONE_DIAL_CODE);
-                          if (isKnownPreset) {
-                            setCustomerPhoneUseCustomDialCode(false);
-                            setCustomerPhoneDialCode(detectedDialCode);
-                          } else {
-                            setCustomerPhoneUseCustomDialCode(true);
-                            setCustomerPhoneCustomDialCode(detectedDialCode);
-                          }
-                        }
+                        syncCustomerPhoneDialState(nextPhone);
                       }}
                       className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-[10px] flex-1 h-full"
                     />
                   </div>
+                  {canUseMobileContactPicker && (
+                    <button
+                      type="button"
+                      onClick={importContactFromPhone}
+                      className="md:hidden h-9 rounded-xl border border-violet-300 dark:border-violet-900/40 bg-violet-50 dark:bg-violet-900/10 text-[8px] font-black uppercase tracking-widest text-violet-700 dark:text-violet-300 inline-flex items-center justify-center gap-1"
+                      title="Import contact from your phone"
+                      aria-label="Import contact from phone"
+                    >
+                      <Smartphone size={11} />
+                      Phone Contact
+                    </button>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={() => setCustomerPhoneIntlEnabled(prev => !prev)}
-                      className={`h-8 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-colors ${customerPhoneIntlEnabled ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10' : 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'}`}
+                      className={`h-8 rounded-lg border text-[8px] font-black uppercase tracking-widest transition-colors inline-flex items-center justify-center gap-1 ${customerPhoneIntlEnabled ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10' : 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'}`}
                     >
+                      <Phone size={10} />
                       {customerPhoneIntlEnabled ? 'INTL ON' : 'INTL OFF (LB)'}
                     </button>
                     {customerPhoneIntlEnabled ? (
@@ -1886,26 +2439,30 @@ export const CalculatorPage: React.FC = () => {
                         <option value="OTHER">Other code...</option>
                       </select>
                     ) : (
-                      <div className="h-8 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-2 flex items-center text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">
+                      <div className="h-8 rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-2 flex items-center gap-1 text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">
+                        <Phone size={10} />
                         Default +961
                       </div>
                     )}
                   </div>
                   {customerPhoneIntlEnabled && customerPhoneUseCustomDialCode && (
-                    <input
-                      type="text"
-                      value={customerPhoneCustomDialCode}
-                      onChange={event => {
-                        const digits = event.target.value.replace(/\D/g, '').slice(0, 4);
-                        setCustomerPhoneCustomDialCode(digits);
-                        if (digits.length > 0) {
-                          setCustomerPhone(prev => applyPhoneDialCode(prev, digits));
-                        }
-                      }}
-                      className="w-full border border-slate-200 dark:border-brand-800 rounded-xl p-3 h-11 bg-slate-50 dark:bg-brand-950 font-bold"
-                      placeholder="Other country code (e.g. 1, 61)"
-                      aria-label="Custom country code"
-                    />
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500"><Settings size={13} /></div>
+                      <input
+                        type="text"
+                        value={customerPhoneCustomDialCode}
+                        onChange={event => {
+                          const digits = event.target.value.replace(/\D/g, '').slice(0, 4);
+                          setCustomerPhoneCustomDialCode(digits);
+                          if (digits.length > 0) {
+                            setCustomerPhone(prev => applyPhoneDialCode(prev, digits));
+                          }
+                        }}
+                        className="w-full border border-slate-200 dark:border-brand-800 rounded-xl pl-9 pr-3 h-11 bg-slate-50 dark:bg-brand-950 font-bold"
+                        placeholder="Other country code (e.g. 1, 61)"
+                        aria-label="Custom country code"
+                      />
+                    </div>
                   )}
                 </div>
                 <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-3 py-2">
@@ -1927,48 +2484,88 @@ export const CalculatorPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => handleSetCustomerPriority('VIP')}
-                    className="h-8 rounded-lg border border-slate-300 dark:border-violet-700/40 bg-slate-50 dark:bg-violet-900/10 text-[8px] font-black uppercase tracking-widest text-violet-700 dark:text-violet-300"
+                    aria-label="Mark customer as VIP"
+                    className="h-8 rounded-lg border border-slate-300 dark:border-violet-700/40 bg-slate-50 dark:bg-violet-900/10 text-[8px] font-black uppercase tracking-widest text-violet-700 dark:text-violet-300 inline-flex items-center justify-center gap-1"
                   >
-                    ★ Mark VIP
+                    <Star size={11} aria-hidden="true" />
+                    Mark VIP
                   </button>
                   <button
                     type="button"
                     onClick={() => handleSetCustomerPriority('VVIP')}
-                    className="h-8 rounded-lg border border-amber-300 dark:border-pink-700/40 bg-amber-50 dark:bg-pink-900/10 text-[8px] font-black uppercase tracking-widest text-pink-700 dark:text-pink-300"
+                    aria-label="Mark customer as VVIP"
+                    className="h-8 rounded-lg border border-amber-300 dark:border-pink-700/40 bg-amber-50 dark:bg-pink-900/10 text-[8px] font-black uppercase tracking-widest text-pink-700 dark:text-pink-300 inline-flex items-center justify-center gap-1"
                   >
-                    ★★ Mark VVIP
+                    <ShieldCheck size={11} aria-hidden="true" />
+                    Mark VVIP
                   </button>
                 </div>
                 {frequentPlaceSuggestions.length > 0 && (
                   <div className="space-y-2">
-                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300 px-1">Frequent Place Suggestions</p>
+                    <div className="flex items-center gap-2 px-1">
+                      <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Frequent Place Suggestions</p>
+                      <span
+                        title="Saved places from CRM appear in order: Home, Business, then Frequent places. Use Set Pickup or Set Dropoff to apply instantly."
+                        className="inline-flex items-center text-slate-400"
+                      >
+                        <Info size={11} />
+                      </span>
+                    </div>
                     <div className="space-y-2 max-h-32 overflow-auto pr-1">
-                      {frequentPlaceSuggestions.slice(0, 8).map((location, index) => (
-                        <div key={`${location.address}-${location.mapsLink || ''}-${index}`} className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-3 py-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-[10px] font-bold text-brand-900 dark:text-white truncate">{location.address}</p>
-                            <span className="text-[7px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300">
-                              {(location.label || 'Frequent').toUpperCase()}
-                            </span>
+                      {frequentPlaceSuggestions.slice(0, 8).map((location, index) => {
+                        const normalizedLabel = (location.label || '').trim().toLowerCase();
+                        const isHome = normalizedLabel === 'home';
+                        const isBusiness = normalizedLabel === 'business';
+                        const TagIcon = isHome ? House : isBusiness ? Building2 : MapPin;
+                        const visualLabel = isHome ? 'Home' : isBusiness ? 'Business' : 'Frequent';
+
+                        return (
+                          <div
+                            key={`${location.address}-${location.mapsLink || ''}-${index}`}
+                            title={`${location.helperText} ${location.address}`}
+                            className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-3 py-2"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p
+                                title={location.address}
+                                className="text-[10px] font-bold text-brand-900 dark:text-white truncate"
+                              >
+                                {truncateUiText(location.address || '', UI_LOCATION_MAX_CHARS)}
+                              </p>
+                              <span
+                                title={location.label || visualLabel}
+                                aria-label={`${visualLabel} saved location`}
+                                className="inline-flex items-center gap-1 text-[7px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                              >
+                                <TagIcon size={10} aria-hidden="true" />
+                                {truncateUiText(location.label || visualLabel, UI_TAG_MAX_CHARS)}
+                              </span>
+                            </div>
+                            <div className="mt-2 flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => applyFrequentPlaceToRoute('pickup', location)}
+                                title="Apply this saved place to Pickup field."
+                                aria-label="Set as pickup"
+                                className="h-7 px-2 rounded-lg border border-gold-500/30 bg-gold-500/10 text-[8px] font-black uppercase tracking-widest text-gold-700 dark:text-gold-400 inline-flex items-center gap-1"
+                              >
+                                <MapPin size={10} aria-hidden="true" />
+                                Set Pickup
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => applyFrequentPlaceToRoute('dest', location)}
+                                title="Apply this saved place to Dropoff field."
+                                aria-label="Set as dropoff"
+                                className="h-7 px-2 rounded-lg border border-blue-500/30 bg-blue-500/10 text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 inline-flex items-center gap-1"
+                              >
+                                <Navigation size={10} aria-hidden="true" />
+                                Set Dropoff
+                              </button>
+                            </div>
                           </div>
-                          <div className="mt-2 flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => applyFrequentPlaceToRoute('pickup', location)}
-                              className="h-7 px-2 rounded-lg border border-gold-500/30 bg-gold-500/10 text-[8px] font-black uppercase tracking-widest text-gold-700 dark:text-gold-400"
-                            >
-                              Set Pickup
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => applyFrequentPlaceToRoute('dest', location)}
-                              className="h-7 px-2 rounded-lg border border-blue-500/30 bg-blue-500/10 text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300"
-                            >
-                              Set Dropoff
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1979,20 +2576,38 @@ export const CalculatorPage: React.FC = () => {
 
                 {shouldShowQuickMarkers && (
                   <div className="rounded-2xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-3 space-y-2">
-                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Quick Operator Markers</p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1">
+                      <Layers size={10} aria-hidden="true" />
+                      Quick Operator Markers
+                    </p>
                     <p className="text-[9px] font-bold text-slate-500 dark:text-slate-300">New customer detected. Tag quickly for indexing.</p>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className={`${navigationMode === 'SEQUENCE' ? 'grid grid-cols-2 lg:grid-cols-4 gap-1.5' : 'flex flex-wrap gap-1.5'}`}>
                       {operatorIndexMarkers.map(marker => {
                         const active = hasOperatorMarker(marker);
+                        const markerIcon = marker === 'NEW'
+                          ? <Star size={10} aria-hidden="true" />
+                          : marker === 'CORP'
+                            ? <Building2 size={10} aria-hidden="true" />
+                            : marker === 'AIRPORT'
+                              ? <Navigation size={10} aria-hidden="true" />
+                              : marker === 'PRIORITY'
+                                ? <AlertCircle size={10} aria-hidden="true" />
+                                : marker === 'VIP'
+                                  ? <Star size={10} aria-hidden="true" />
+                                  : marker === 'VVIP'
+                                    ? <ShieldCheck size={10} aria-hidden="true" />
+                                : <RefreshCcw size={10} aria-hidden="true" />;
                         return (
                           <button
                             key={marker}
                             type="button"
                             onClick={() => toggleOperatorMarker(marker)}
-                            className={`h-7 px-2.5 rounded-lg border text-[8px] font-black uppercase tracking-widest ${active
+                            aria-label={`${marker} marker`}
+                            className={`h-7 px-2.5 rounded-lg border text-[8px] font-black uppercase tracking-widest inline-flex items-center justify-center gap-1 ${active
                               ? 'bg-brand-900 text-gold-400 border-brand-900 dark:bg-gold-600 dark:text-brand-950 dark:border-gold-600'
                               : 'bg-slate-50 dark:bg-brand-950 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-brand-700'}`}
                           >
+                            {markerIcon}
                             {marker}
                           </button>
                         );
@@ -2001,10 +2616,15 @@ export const CalculatorPage: React.FC = () => {
                   </div>
                 )}
               </div>
+              </div>
+              )}
            </div>
-
-           {result ? (
-              <div className="bg-brand-900 rounded-2xl shadow-2xl p-5 border-t-4 border-gold-600 animate-fade-in relative overflow-visible">
+        <div
+          id="calc-stage-dispatch"
+          className={`${navigationMode === 'SEQUENCE' && activeSequenceStage !== 'OUTPUT' ? 'hidden' : 'block'} ${navigationMode === 'SEQUENCE' ? 'animate-in fade-in slide-in-from-right-2 duration-200' : ''}`}
+        >
+        {result ? (
+          <div className="bg-brand-900 rounded-2xl shadow-2xl p-5 border-t-4 border-gold-600 animate-fade-in relative overflow-visible">
                  <div className="flex justify-between items-start mb-6">
                     <div>
                        <div className="flex items-baseline space-x-1 text-white">
@@ -2102,13 +2722,16 @@ export const CalculatorPage: React.FC = () => {
                  {/* Special Requirements Selection */}
                  <div className="py-5 border-b border-brand-800">
                     <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-3 px-1">Passenger Requirements</label>
-                    <div className="flex flex-wrap gap-1.5">
+                    <div className={`${navigationMode === 'SEQUENCE' ? 'grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-1.5' : 'flex flex-wrap gap-1.5'}`}>
                        {SPECIAL_REQUIREMENTS.map(req => (
                          <button 
                            key={req.id} 
                            onClick={() => toggleRequirement(req.id)}
-                           className={`px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-tight transition-all border ${selectedRequirements.includes(req.id) ? 'bg-gold-600 border-gold-600 text-brand-900 shadow-lg shadow-gold-600/10' : 'bg-brand-950 border-brand-800 text-slate-500 hover:border-slate-600'}`}
+                           title={req.label}
+                           aria-label={req.label}
+                           className={`px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-tight transition-all border inline-flex items-center justify-center gap-1.5 ${selectedRequirements.includes(req.id) ? 'bg-gold-600 border-gold-600 text-brand-900 shadow-lg shadow-gold-600/10' : 'bg-brand-950 border-brand-800 text-slate-500 hover:border-slate-600'}`}
                          >
+                           {requirementIcon(req.id)}
                            {req.short}
                          </button>
                        ))}
@@ -2129,15 +2752,19 @@ export const CalculatorPage: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => setPaymentMode('CASH')}
-                            className={`h-8 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors ${paymentMode === 'CASH' ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
+                            aria-label="Cash payment mode"
+                            className={`h-8 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors inline-flex items-center justify-center gap-1 ${paymentMode === 'CASH' ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
                           >
+                            <DollarSign size={10} aria-hidden="true" />
                             Cash
                           </button>
                           <button
                             type="button"
                             onClick={() => setPaymentMode('CREDIT')}
-                            className={`h-8 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors ${paymentMode === 'CREDIT' ? 'bg-blue-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
+                            aria-label="Credit payment mode"
+                            className={`h-8 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors inline-flex items-center justify-center gap-1 ${paymentMode === 'CREDIT' ? 'bg-blue-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
                           >
+                            <ArrowRightLeft size={10} aria-hidden="true" />
                             Credit
                           </button>
                         </div>
@@ -2161,7 +2788,17 @@ export const CalculatorPage: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Quick Save to CRM</p>
+                        <span
+                          title="Save current pickup/dropoff into CRM: Home, Business, or Frequent places."
+                          className="inline-flex items-center text-slate-400"
+                        >
+                          <Info size={11} />
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <button
                         type="button"
                         onClick={() => upsertCustomerLocation('HOME', {
@@ -2170,21 +2807,27 @@ export const CalculatorPage: React.FC = () => {
                           lat: typeof pickupPlace?.geometry?.location?.lat === 'function' ? pickupPlace.geometry.location.lat() : pickupPlace?.geometry?.location?.lat,
                           lng: typeof pickupPlace?.geometry?.location?.lng === 'function' ? pickupPlace.geometry.location.lng() : pickupPlace?.geometry?.location?.lng,
                         })}
-                        className="h-10 rounded-xl border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300"
+                        title="Save current pickup as Home location in CRM."
+                        aria-label="Save pickup as home"
+                        className="h-10 rounded-xl border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 inline-flex items-center justify-center gap-1"
                       >
+                        <House size={12} aria-hidden="true" />
                         Pickup → Home
                       </button>
                       <button
                         type="button"
-                        onClick={() => upsertCustomerLocation('SMART_PICKUP', {
+                        onClick={() => upsertCustomerLocation('FREQUENT', {
                           address: result?.pickupAddress,
                           mapsLink: pickupOriginalLink,
                           lat: typeof pickupPlace?.geometry?.location?.lat === 'function' ? pickupPlace.geometry.location.lat() : pickupPlace?.geometry?.location?.lat,
                           lng: typeof pickupPlace?.geometry?.location?.lng === 'function' ? pickupPlace.geometry.location.lng() : pickupPlace?.geometry?.location?.lng,
                         })}
-                        className="h-10 rounded-xl border border-cyan-300 dark:border-cyan-900/40 bg-cyan-50 dark:bg-cyan-900/10 text-[9px] font-black uppercase tracking-widest text-cyan-700 dark:text-cyan-300"
+                        title="Save current pickup to Frequent places in CRM."
+                        aria-label="Save pickup as frequent place"
+                        className="h-10 rounded-xl border border-cyan-300 dark:border-cyan-900/40 bg-cyan-50 dark:bg-cyan-900/10 text-[9px] font-black uppercase tracking-widest text-cyan-700 dark:text-cyan-300 inline-flex items-center justify-center gap-1"
                       >
-                        Pickup Smart
+                        <MapPin size={12} aria-hidden="true" />
+                        Pickup → Frequent
                       </button>
                       <button
                         type="button"
@@ -2194,8 +2837,11 @@ export const CalculatorPage: React.FC = () => {
                           lat: typeof destPlace?.geometry?.location?.lat === 'function' ? destPlace.geometry.location.lat() : destPlace?.geometry?.location?.lat,
                           lng: typeof destPlace?.geometry?.location?.lng === 'function' ? destPlace.geometry.location.lng() : destPlace?.geometry?.location?.lng,
                         })}
-                        className="h-10 rounded-xl border border-amber-300 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[9px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300"
+                        title="Save current dropoff as Business location in CRM."
+                        aria-label="Save dropoff as business"
+                        className="h-10 rounded-xl border border-amber-300 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[9px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300 inline-flex items-center justify-center gap-1"
                       >
+                        <Building2 size={12} aria-hidden="true" />
                         Dropoff → Business
                       </button>
                       <button
@@ -2206,13 +2852,18 @@ export const CalculatorPage: React.FC = () => {
                           lat: typeof destPlace?.geometry?.location?.lat === 'function' ? destPlace.geometry.location.lat() : destPlace?.geometry?.location?.lat,
                           lng: typeof destPlace?.geometry?.location?.lng === 'function' ? destPlace.geometry.location.lng() : destPlace?.geometry?.location?.lng,
                         })}
-                        className="h-10 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[9px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300"
+                        title="Save current dropoff to Frequent places in CRM."
+                        aria-label="Save dropoff as frequent place"
+                        className="h-10 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[9px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center justify-center gap-1"
                       >
-                        Dropoff + Frequent
+                        <Navigation size={12} aria-hidden="true" />
+                        Dropoff → Frequent
                       </button>
                     </div>
+                    </div>
 
-                    <Button onClick={handleSaveTrip} className="w-full h-12 shadow-xl" variant={tripSaved ? 'secondary' : 'gold'}>
+                    <Button onClick={handleSaveTrip} className="w-full h-12 shadow-xl inline-flex items-center justify-center gap-2" variant={tripSaved ? 'secondary' : 'gold'}>
+                      {tripSaved ? <Check size={14} /> : <Save size={14} />}
                       {tripSaved ? 'Committed to Log' : 'Save Dispatch'}
                     </Button>
                  </div>
@@ -2225,10 +2876,11 @@ export const CalculatorPage: React.FC = () => {
                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Ready for Calculation</p>
               </div>
            )}
+           </div>
         </div>
       </div>
 
-      <div className="relative bg-slate-200 dark:bg-brand-950 h-[45vh] min-h-[300px] lg:h-auto lg:min-h-0 lg:flex-1">
+         <div id="calc-stage-map" className={`relative bg-slate-200 dark:bg-brand-950 h-[45vh] min-h-[300px] lg:h-auto lg:min-h-0 lg:flex-1 transition-all duration-300 ${isRouteStageVisible ? 'opacity-100' : 'hidden opacity-0'}`}>
          <div ref={mapRef} className="w-full h-full" />
          
          {calculating && (
@@ -2293,6 +2945,7 @@ export const CalculatorPage: React.FC = () => {
           {calcActionToast}
         </div>
       )}
+
     </div>
   );
 };

@@ -1,8 +1,9 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { Trip, Settings, Driver, Customer, MissionAlert, TripStatus, DeletedTripRecord, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle, TripPaymentMode, TripSettlementStatus } from '../types';
+import { Trip, Settings, Driver, Customer, MissionAlert, TripStatus, DeletedTripRecord, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle, TripPaymentMode, TripSettlementStatus, CustomerProfileEvent } from '../types';
 import * as Storage from '../services/storageService';
 import { addMinutes, parseISO, isAfter } from 'date-fns';
+import { LOCAL_STORAGE_KEYS } from '../constants';
 import { buildCustomerFromTrip, customerPhoneKey, mergeCustomerCollections } from '../services/customerProfile';
 import {
   CloudSyncSession,
@@ -133,6 +134,36 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
   }, [theme, refreshData]);
+
+  useEffect(() => {
+    const syncKeys = new Set<string>([
+      LOCAL_STORAGE_KEYS.TRIPS,
+      LOCAL_STORAGE_KEYS.DELETED_TRIPS,
+      LOCAL_STORAGE_KEYS.DRIVERS,
+      LOCAL_STORAGE_KEYS.CUSTOMERS,
+      LOCAL_STORAGE_KEYS.ALERTS,
+      LOCAL_STORAGE_KEYS.CREDIT_LEDGER,
+      LOCAL_STORAGE_KEYS.RECEIPTS,
+      LOCAL_STORAGE_KEYS.SETTINGS,
+      LOCAL_STORAGE_KEYS.SYNC_EPOCH,
+      LOCAL_STORAGE_KEYS.SYNC_RESET_TOKEN,
+      'theme',
+    ]);
+
+    const handleStorageSync = (event: StorageEvent) => {
+      if (!event.key || !syncKeys.has(event.key)) return;
+
+      if (event.key === 'theme') {
+        const nextTheme = (localStorage.getItem('theme') as 'light' | 'dark') || 'light';
+        setTheme(nextTheme);
+      }
+
+      refreshData();
+    };
+
+    window.addEventListener('storage', handleStorageSync);
+    return () => window.removeEventListener('storage', handleStorageSync);
+  }, [refreshData]);
 
   useEffect(() => {
     let stopped = false;
@@ -647,6 +678,72 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }));
   };
 
+  type FinanceEnrichmentPayload = {
+    partyType: CreditPartyType;
+    partyId?: string;
+    partyName: string;
+    timestamp: string;
+    note: string;
+    eventId: string;
+    tripId?: number;
+  };
+
+  const appendProfileEvent = (existing: CustomerProfileEvent[] | undefined, event: CustomerProfileEvent): CustomerProfileEvent[] => {
+    const timeline = Array.isArray(existing) ? [...existing] : [];
+    const duplicate = timeline.some(item => item.id === event.id);
+    if (duplicate) return timeline;
+    return [event, ...timeline].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  };
+
+  const enrichFinanceContext = ({ partyType, partyId, partyName, timestamp, note, eventId, tripId }: FinanceEnrichmentPayload) => {
+    const event: CustomerProfileEvent = {
+      id: eventId,
+      timestamp,
+      source: 'MANUAL',
+      note,
+      ...(typeof tripId === 'number' ? { tripId } : {}),
+    };
+
+    if (partyType === 'CLIENT') {
+      const normalizedPartyId = customerPhoneKey(partyId || '');
+      const target = customers.find(entry => {
+        if (normalizedPartyId && customerPhoneKey(entry.phone) === normalizedPartyId) return true;
+        return entry.name.trim().toLowerCase() === partyName.trim().toLowerCase();
+      });
+
+      if (!target) return;
+
+      addCustomers([
+        {
+          id: target.id,
+          name: target.name,
+          phone: target.phone,
+          source: target.source,
+          createdAt: target.createdAt,
+          profileTimeline: appendProfileEvent(target.profileTimeline, event),
+          lastEnrichedAt: timestamp,
+        },
+      ]);
+      return;
+    }
+
+    const targetDriver = drivers.find(entry => {
+      if (partyId && entry.id === partyId) return true;
+      return entry.name.trim().toLowerCase() === partyName.trim().toLowerCase();
+    });
+
+    if (!targetDriver) return;
+
+    const updatedDriver: Driver = {
+      ...targetDriver,
+      profileTimeline: appendProfileEvent(targetDriver.profileTimeline, event),
+      lastEnrichedAt: timestamp,
+    };
+
+    const nextDrivers = Storage.saveDriver(updatedDriver);
+    setDrivers(nextDrivers);
+  };
+
   const addTrip = (tripData: Omit<Trip, 'id' | 'createdAt'>) => {
     const normalizedPaymentMode: TripPaymentMode = tripData.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH';
     const normalizedSettlementStatus: TripSettlementStatus = tripData.settlementStatus || 'PENDING';
@@ -711,6 +808,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     let nextLedger = creditLedger;
     let nextReceipts = receipts;
+    const financeEnrichmentQueue: FinanceEnrichmentPayload[] = [];
 
     const buildReceiptNumber = (partyType: CreditPartyType, cycle: CreditCycle, issuedAtIso: string): string => {
       const issuedAt = new Date(issuedAtIso);
@@ -756,6 +854,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         ...nextTrip,
         creditLedgerEntryId: entry.id,
       };
+
+      financeEnrichmentQueue.push({
+        partyType: 'CLIENT',
+        partyId: entry.partyId,
+        partyName: entry.partyName,
+        timestamp: entry.createdAt,
+        note: `Credit opened: $${entry.amountUsd.toFixed(2)} (${entry.cycle}) · Trip #${nextTrip.id}`,
+        eventId: `finance-credit-open-${entry.id}`,
+        tripId: nextTrip.id,
+      });
     }
 
     if (nextTrip.status === TripStatus.COMPLETED && normalizedPaymentMode === 'CASH' && nextTrip.settlementStatus === 'PENDING') {
@@ -764,6 +872,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         settlementStatus: 'SETTLED',
         settledAt: nextTrip.settledAt || nowIso,
       };
+
+      financeEnrichmentQueue.push({
+        partyType: 'CLIENT',
+        partyId: customerPhoneKey(nextTrip.customerPhone),
+        partyName: nextTrip.customerName,
+        timestamp: nextTrip.settledAt || nowIso,
+        note: `Cash settled: $${Math.max(0, Number(nextTrip.fareUsd) || 0).toFixed(2)} · Trip #${nextTrip.id}`,
+        eventId: `finance-cash-settled-trip-${nextTrip.id}`,
+        tripId: nextTrip.id,
+      });
     }
 
     if (nextTrip.settlementStatus === 'SETTLED' && !nextTrip.settledAt) {
@@ -792,6 +910,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               ledgerEntryId: linkedEntry.id,
               issuedAt: issueAtIso,
               partyType: linkedEntry.partyType,
+              ...(linkedEntry.partyId ? { partyId: linkedEntry.partyId } : {}),
               partyName: linkedEntry.partyName,
               cycle: linkedEntry.cycle,
               amountUsd: linkedEntry.amountUsd,
@@ -814,6 +933,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               receiptId: receipt.id,
               settledAt: receipt.issuedAt,
             };
+
+            financeEnrichmentQueue.push({
+              partyType: linkedEntry.partyType,
+              partyId: linkedEntry.partyId,
+              partyName: linkedEntry.partyName,
+              timestamp: receipt.issuedAt,
+              note: `Receipt issued: #${receipt.receiptNumber} · $${receipt.amountUsd.toFixed(2)} (${receipt.cycle})`,
+              eventId: `finance-receipt-${receipt.id}`,
+              tripId: nextTrip.id,
+            });
           }
         }
       }
@@ -825,6 +954,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           ledgerEntryId: nextTrip.creditLedgerEntryId || `trip-${nextTrip.id}-cash`,
           issuedAt: issueAtIso,
           partyType: 'CLIENT',
+          partyId: customerPhoneKey(nextTrip.customerPhone),
           partyName: nextTrip.customerName,
           cycle: 'WEEKLY',
           amountUsd: Math.max(0, Number(nextTrip.fareUsd) || 0),
@@ -836,7 +966,33 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           receiptId: receipt.id,
           settledAt: receipt.issuedAt,
         };
+
+        financeEnrichmentQueue.push({
+          partyType: 'CLIENT',
+          partyId: receipt.partyId,
+          partyName: receipt.partyName,
+          timestamp: receipt.issuedAt,
+          note: `Receipt issued: #${receipt.receiptNumber} · $${receipt.amountUsd.toFixed(2)} (${receipt.cycle})`,
+          eventId: `finance-receipt-${receipt.id}`,
+          tripId: nextTrip.id,
+        });
       }
+    }
+
+    if (
+      nextTrip.settlementStatus === 'SETTLED' &&
+      previousTrip?.settlementStatus !== 'SETTLED' &&
+      normalizedPaymentMode === 'CASH'
+    ) {
+      financeEnrichmentQueue.push({
+        partyType: 'CLIENT',
+        partyId: customerPhoneKey(nextTrip.customerPhone),
+        partyName: nextTrip.customerName,
+        timestamp: nextTrip.settledAt || nowIso,
+        note: `Cash settled: $${Math.max(0, Number(nextTrip.fareUsd) || 0).toFixed(2)} · Trip #${nextTrip.id}`,
+        eventId: `finance-cash-settled-trip-${nextTrip.id}`,
+        tripId: nextTrip.id,
+      });
     }
 
     if (nextLedger !== creditLedger) {
@@ -857,6 +1013,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const includeTimelineEvent = currentNote.length > 0 && currentNote !== previousNote;
     const customerPatch = buildCustomerFromTrip(nextTrip, { includeTimelineEvent });
     addCustomers([customerPatch]);
+
+    financeEnrichmentQueue.forEach(enrichment => {
+      enrichFinanceContext(enrichment);
+    });
 
     scheduleMissionAlerts(nextTrip);
   };
@@ -933,6 +1093,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const nextLedger = [entry, ...creditLedger];
     Storage.saveCreditLedger(nextLedger);
     setCreditLedger(nextLedger);
+
+    enrichFinanceContext({
+      partyType: entry.partyType,
+      partyId: entry.partyId,
+      partyName: entry.partyName,
+      timestamp: entry.createdAt,
+      note: `Credit opened: $${entry.amountUsd.toFixed(2)} (${entry.cycle})`,
+      eventId: `finance-credit-open-${entry.id}`,
+    });
+
     return { ok: true, entry };
   };
 
@@ -969,6 +1139,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       ledgerEntryId: current.id,
       issuedAt: issuedAt.toISOString(),
       partyType: current.partyType,
+      ...(current.partyId ? { partyId: current.partyId } : {}),
       partyName: current.partyName,
       cycle: current.cycle,
       amountUsd: current.amountUsd,
@@ -991,6 +1162,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     Storage.saveReceipts(nextReceipts);
     setCreditLedger(nextLedger);
     setReceipts(nextReceipts);
+
+    enrichFinanceContext({
+      partyType: current.partyType,
+      partyId: current.partyId,
+      partyName: current.partyName,
+      timestamp: receipt.issuedAt,
+      note: `Receipt issued: #${receipt.receiptNumber} · $${receipt.amountUsd.toFixed(2)} (${receipt.cycle})`,
+      eventId: `finance-receipt-${receipt.id}`,
+    });
 
     return { ok: true, receipt };
   };

@@ -7,6 +7,7 @@ import { TripsPage } from './pages/Trips';
 import { DriversPage } from './pages/Drivers';
 import { SettingsPage } from './pages/Settings';
 import { GMBriefPage } from './pages/GMBrief';
+import { MissionWatchPage } from './pages/MissionWatch';
 import { StoreProvider } from './context/StoreContext';
 
 const CRMPage = React.lazy(() => import('./pages/CRM').then(module => ({ default: module.CRMPage })));
@@ -22,6 +23,7 @@ function App() {
             <Route path="/trips" element={<TripsPage />} />
             <Route path="/drivers" element={<DriversPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/watch" element={<MissionWatchPage />} />
             <Route
               path="/crm"
               element={(

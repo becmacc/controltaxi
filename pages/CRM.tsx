@@ -23,6 +23,8 @@ import { parseGoogleMapsLink, parseGpsOrLatLngInput } from '../services/location
 import { createSyncSignature, fetchCloudSyncSignature, getCloudSyncDocId } from '../services/cloudSyncService';
 import { DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 import { exportReceiptPdfFriendly } from '../services/receiptExport';
+import { truncateUiText, UI_TAG_MAX_CHARS } from '../services/uiText';
+import { buildDriverSearchText, matchesFleetQuery } from '../services/fleetDirectory';
 
 type ViewMode = 'CUSTOMERS' | 'FLEET' | 'FINANCE' | 'VAULT';
 type CustomerSort = 'SPEND' | 'RECENCY' | 'FREQUENCY';
@@ -49,6 +51,14 @@ interface FleetUnitStats {
   isFuelLow: boolean;
   avgRating: number;
   ratingCount: number;
+  openCreditCount: number;
+  openCreditUsd: number;
+  paidCreditCount: number;
+  paidCreditUsd: number;
+  receiptCount: number;
+  receiptUsd: number;
+  cashSettledUsd: number;
+  recentFinanceEvents: CustomerProfileEvent[];
 }
 
 interface EnhancedCustomerProfile {
@@ -79,6 +89,14 @@ interface EnhancedCustomerProfile {
   preferredDriverName?: string;
   commonDestinations: string[];
   requirementTrends: string[];
+  openCreditCount: number;
+  openCreditUsd: number;
+  paidCreditCount: number;
+  paidCreditUsd: number;
+  receiptCount: number;
+  receiptUsd: number;
+  cashSettledUsd: number;
+  recentFinanceEvents: CustomerProfileEvent[];
 }
 
 interface FinanceDriverProfile {
@@ -488,6 +506,65 @@ export const CRMPage: React.FC = () => {
       const prefDriverName = drivers.find(d => d.id === prefDriverId)?.name;
       const commonDests = Object.entries(p.destFrequency).sort((a: any, b: any) => b[1] - a[1]).slice(0, 2).map(e => e[0]);
       const reqTrends = Object.entries(p.reqFrequency).sort((a: any, b: any) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
+      const normalizedName = String(p.name || '').trim().toLowerCase();
+      const clientOpenCredits = creditLedger.filter(entry =>
+        entry.partyType === 'CLIENT' &&
+        entry.status === 'OPEN' &&
+        (
+          (entry.partyId && customerPhoneKey(entry.partyId) === p.phone) ||
+          (!entry.partyId && entry.partyName.trim().toLowerCase() === normalizedName)
+        )
+      );
+      const clientPaidCredits = creditLedger.filter(entry =>
+        entry.partyType === 'CLIENT' &&
+        entry.status === 'PAID' &&
+        (
+          (entry.partyId && customerPhoneKey(entry.partyId) === p.phone) ||
+          (!entry.partyId && entry.partyName.trim().toLowerCase() === normalizedName)
+        )
+      );
+      const clientReceipts = receipts.filter(receipt =>
+        receipt.partyType === 'CLIENT' &&
+        (
+          (receipt.partyId && customerPhoneKey(receipt.partyId) === p.phone) ||
+          (!receipt.partyId && receipt.partyName.trim().toLowerCase() === normalizedName)
+        )
+      );
+      const cashSettledUsd = p.history
+        .filter((trip: Trip) =>
+          trip.status === TripStatus.COMPLETED &&
+          getTripPaymentMode(trip) === 'CASH' &&
+          getTripSettlementStatus(trip) !== 'PENDING'
+        )
+        .reduce((sum: number, trip: Trip) => sum + (Number(trip.fareUsd) || 0), 0);
+      const timelineFinanceEvents = (Array.isArray(p.profileTimeline) ? p.profileTimeline : [])
+        .filter((event: CustomerProfileEvent) =>
+          /credit opened|receipt issued|cash settled/i.test(String(event.note || ''))
+        );
+      const ledgerFinanceEvents: CustomerProfileEvent[] = [
+        ...clientOpenCredits.map(entry => ({
+          id: `finance-credit-open-${entry.id}`,
+          timestamp: entry.createdAt,
+          source: 'MANUAL' as const,
+          note: `Credit opened: $${Number(entry.amountUsd || 0).toFixed(2)} (${entry.cycle})`,
+        })),
+        ...clientPaidCredits.map(entry => ({
+          id: `finance-credit-paid-${entry.id}`,
+          timestamp: entry.paidAt || entry.createdAt,
+          source: 'MANUAL' as const,
+          note: `Credit paid: $${Number(entry.amountUsd || 0).toFixed(2)} (${entry.cycle})`,
+        })),
+        ...clientReceipts.map(receipt => ({
+          id: `finance-receipt-${receipt.id}`,
+          timestamp: receipt.issuedAt,
+          source: 'MANUAL' as const,
+          note: `Receipt issued: #${receipt.receiptNumber} · $${Number(receipt.amountUsd || 0).toFixed(2)} (${receipt.cycle})`,
+        })),
+      ];
+      const recentFinanceEvents = [...timelineFinanceEvents, ...ledgerFinanceEvents]
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .filter((event, index, array) => array.findIndex(candidate => candidate.id === event.id) === index)
+        .slice(0, 6);
 
       return {
         ...p,
@@ -498,6 +575,14 @@ export const CRMPage: React.FC = () => {
         preferredDriverName: prefDriverName,
         commonDestinations: commonDests,
         requirementTrends: reqTrends,
+        openCreditCount: clientOpenCredits.length,
+        openCreditUsd: clientOpenCredits.reduce((sum, entry) => sum + (Number(entry.amountUsd) || 0), 0),
+        paidCreditCount: clientPaidCredits.length,
+        paidCreditUsd: clientPaidCredits.reduce((sum, entry) => sum + (Number(entry.amountUsd) || 0), 0),
+        receiptCount: clientReceipts.length,
+        receiptUsd: clientReceipts.reduce((sum, receipt) => sum + (Number(receipt.amountUsd) || 0), 0),
+        cashSettledUsd,
+        recentFinanceEvents,
         history: p.history.sort((a: Trip, b: Trip) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       };
     }).sort((a, b) => {
@@ -505,7 +590,7 @@ export const CRMPage: React.FC = () => {
       if (customerSort === 'FREQUENCY') return b.completedTrips - a.completedTrips;
       return a.recencyDays - b.recencyDays;
     });
-  }, [trips, customers, drivers, customerSort]);
+  }, [trips, customers, drivers, customerSort, creditLedger, receipts]);
 
   const fleetHealth = useMemo((): FleetUnitStats[] => {
     return drivers.map(d => {
@@ -532,6 +617,38 @@ export const CRMPage: React.FC = () => {
       const revenue = dTrips.reduce((acc, t) => acc + t.fareUsd, 0);
       const fuelSpendForWindow = getDriverFuelUsdForWindow(d, missionDistance);
       const accountableFuelSpend = fuelSpendForWindow * getFuelCostWeight(d.fuelCostResponsibility);
+      const openDriverCredits = creditLedger.filter(entry => entry.partyType === 'DRIVER' && entry.status === 'OPEN' && (entry.partyId === d.id || entry.partyName.trim().toLowerCase() === d.name.trim().toLowerCase()));
+      const paidDriverCredits = creditLedger.filter(entry => entry.partyType === 'DRIVER' && entry.status === 'PAID' && (entry.partyId === d.id || entry.partyName.trim().toLowerCase() === d.name.trim().toLowerCase()));
+      const driverReceipts = receipts.filter(receipt => receipt.partyType === 'DRIVER' && (receipt.partyId === d.id || receipt.partyName.trim().toLowerCase() === d.name.trim().toLowerCase()));
+      const cashSettledUsd = dTrips
+        .filter(trip => getTripPaymentMode(trip) === 'CASH' && getTripSettlementStatus(trip) !== 'PENDING')
+        .reduce((sum, trip) => sum + (Number(trip.fareUsd) || 0), 0);
+      const timelineFinanceEvents = (Array.isArray(d.profileTimeline) ? d.profileTimeline : [])
+        .filter(event => /credit opened|receipt issued|cash settled/i.test(String(event.note || '')));
+      const ledgerFinanceEvents: CustomerProfileEvent[] = [
+        ...openDriverCredits.map(entry => ({
+          id: `finance-credit-open-${entry.id}`,
+          timestamp: entry.createdAt,
+          source: 'MANUAL' as const,
+          note: `Credit opened: $${Number(entry.amountUsd || 0).toFixed(2)} (${entry.cycle})`,
+        })),
+        ...paidDriverCredits.map(entry => ({
+          id: `finance-credit-paid-${entry.id}`,
+          timestamp: entry.paidAt || entry.createdAt,
+          source: 'MANUAL' as const,
+          note: `Credit paid: $${Number(entry.amountUsd || 0).toFixed(2)} (${entry.cycle})`,
+        })),
+        ...driverReceipts.map(receipt => ({
+          id: `finance-receipt-${receipt.id}`,
+          timestamp: receipt.issuedAt,
+          source: 'MANUAL' as const,
+          note: `Receipt issued: #${receipt.receiptNumber} · $${Number(receipt.amountUsd || 0).toFixed(2)} (${receipt.cycle})`,
+        })),
+      ];
+      const recentFinanceEvents = [...timelineFinanceEvents, ...ledgerFinanceEvents]
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .filter((event, index, array) => array.findIndex(candidate => candidate.id === event.id) === index)
+        .slice(0, 6);
       return {
         driver: d, completedTrips, feedbackCount, totalOdometer, missionDistance, revenue, gasSpent: accountableFuelSpend,
         efficiency: missionDistance > 0 ? (revenue / missionDistance) : 0,
@@ -547,10 +664,18 @@ export const CRMPage: React.FC = () => {
         isCheckupUrgent: checkupStatus < 15,
         isFuelLow: fuelStatus < 15,
         avgRating,
-        ratingCount
+        ratingCount,
+        openCreditCount: openDriverCredits.length,
+        openCreditUsd: openDriverCredits.reduce((sum, entry) => sum + (Number(entry.amountUsd) || 0), 0),
+        paidCreditCount: paidDriverCredits.length,
+        paidCreditUsd: paidDriverCredits.reduce((sum, entry) => sum + (Number(entry.amountUsd) || 0), 0),
+        receiptCount: driverReceipts.length,
+        receiptUsd: driverReceipts.reduce((sum, receipt) => sum + (Number(receipt.amountUsd) || 0), 0),
+        cashSettledUsd,
+        recentFinanceEvents,
       };
     });
-  }, [trips, drivers, metricsWindow, settings.exchangeRate, settings.fuelPriceUsdPerLiter]);
+  }, [trips, drivers, metricsWindow, settings.exchangeRate, settings.fuelPriceUsdPerLiter, creditLedger, receipts]);
 
   const financeRows = useMemo((): FinanceDriverProfile[] => {
     const completedTrips = trips.filter(t => t.status === TripStatus.COMPLETED && isTripInMetricsWindow(t));
@@ -1205,72 +1330,80 @@ export const CRMPage: React.FC = () => {
   const handleConfirmContactsImport = () => {
     if (!pendingContactsImport) return;
 
-    const shouldRouteToFleet = (name: string, notes?: string) => {
-      return /\b(driver|delivery|taxi|cab)\b/i.test(`${name || ''} ${notes || ''}`);
-    };
+    try {
+      const shouldRouteToFleet = (name: string, notes?: string) => {
+        return /\b(driver|delivery|taxi|cab)\b/i.test(`${name || ''} ${notes || ''}`);
+      };
 
-    const existingDriverPhones = new Set(
-      drivers.map(driver => normalizePhoneForWhatsApp(driver.phone) || driver.phone.trim())
-    );
-    const existingPlates = new Set(drivers.map(driver => driver.plateNumber.toUpperCase()));
+      const existingDriverPhones = new Set(
+        drivers.map(driver => normalizePhoneForWhatsApp(driver.phone) || driver.phone.trim())
+      );
+      const existingPlates = new Set(drivers.map(driver => driver.plateNumber.toUpperCase()));
 
-    const allocatePlate = (seed: number) => {
-      let suffix = String(seed).padStart(4, '0').slice(-4);
-      let plate = `IMP-${suffix}`;
-      while (existingPlates.has(plate)) {
-        seed += 1;
-        suffix = String(seed).padStart(4, '0').slice(-4);
-        plate = `IMP-${suffix}`;
-      }
-      existingPlates.add(plate);
-      return plate;
-    };
+      const allocatePlate = (seed: number) => {
+        let suffix = String(seed).padStart(4, '0').slice(-4);
+        let plate = `IMP-${suffix}`;
+        while (existingPlates.has(plate)) {
+          seed += 1;
+          suffix = String(seed).padStart(4, '0').slice(-4);
+          plate = `IMP-${suffix}`;
+        }
+        existingPlates.add(plate);
+        return plate;
+      };
 
-    let fleetAdded = 0;
-    let fleetSkipped = 0;
-    const customerCandidates = pendingContactsImport.contacts.filter((contact, index) => {
-      if (!shouldRouteToFleet(contact.name, contact.notes)) return true;
+      let fleetAdded = 0;
+      let fleetSkipped = 0;
+      const customerCandidates = pendingContactsImport.contacts.filter((contact, index) => {
+        if (!shouldRouteToFleet(contact.name, contact.notes)) return true;
 
-      const normalizedPhone = normalizePhoneForWhatsApp(contact.phone) || contact.phone.trim();
-      if (!normalizedPhone || existingDriverPhones.has(normalizedPhone)) {
-        fleetSkipped += 1;
+        const normalizedPhone = normalizePhoneForWhatsApp(contact.phone) || contact.phone.trim();
+        if (!normalizedPhone || existingDriverPhones.has(normalizedPhone)) {
+          fleetSkipped += 1;
+          return false;
+        }
+
+        existingDriverPhones.add(normalizedPhone);
+        addDriver({
+          id: `imp-driver-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+          name: contact.name,
+          phone: normalizedPhone,
+          carModel: 'Imported Unit',
+          plateNumber: allocatePlate(Date.now() + index),
+          status: 'ACTIVE',
+          currentStatus: 'OFF_DUTY',
+          vehicleOwnership: 'COMPANY_FLEET',
+          fuelCostResponsibility: 'COMPANY',
+          maintenanceResponsibility: 'COMPANY',
+          joinedAt: new Date().toISOString(),
+          baseMileage: 0,
+          lastOilChangeKm: 0,
+          lastCheckupKm: 0,
+          totalGasSpent: 0,
+          lastRefuelKm: 0,
+          fuelRangeKm: 500,
+          fuelLogs: [],
+        });
+        fleetAdded += 1;
         return false;
+      });
+
+      const incomingBatch: Customer[] = customerCandidates.map(buildCustomerFromImportedContact);
+      const mergePreview = mergeCustomerCollections(customers, incomingBatch);
+
+      if (incomingBatch.length > 0) {
+        addCustomers(incomingBatch);
       }
 
-      existingDriverPhones.add(normalizedPhone);
-      addDriver({
-        id: `imp-driver-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
-        name: contact.name,
-        phone: normalizedPhone,
-        carModel: 'Imported Unit',
-        plateNumber: allocatePlate(Date.now() + index),
-        status: 'ACTIVE',
-        currentStatus: 'OFF_DUTY',
-        vehicleOwnership: 'COMPANY_FLEET',
-        fuelCostResponsibility: 'COMPANY',
-        maintenanceResponsibility: 'COMPANY',
-        joinedAt: new Date().toISOString(),
-        baseMileage: 0,
-        lastOilChangeKm: 0,
-        lastCheckupKm: 0,
-        totalGasSpent: 0,
-        lastRefuelKm: 0,
-        fuelRangeKm: 500,
-        fuelLogs: [],
-      });
-      fleetAdded += 1;
-      return false;
-    });
-
-    const incomingBatch: Customer[] = customerCandidates.map(buildCustomerFromImportedContact);
-    const mergePreview = mergeCustomerCollections(customers, incomingBatch);
-
-    if (incomingBatch.length > 0) {
-      addCustomers(incomingBatch);
+      showCoreStatus(`Contacts import complete: ${mergePreview.added} added, ${mergePreview.merged} merged, ${mergePreview.unchanged} unchanged, ${fleetAdded} moved to fleet, ${fleetSkipped} fleet duplicates skipped, ${pendingContactsImport.rejectedRows} invalid rows.`);
+      setPendingContactsImport(null);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+        showCoreStatus('Contacts import failed: local storage limit reached. Export backup and clear old records, then retry.');
+        return;
+      }
+      showCoreStatus('Contacts import failed during merge. Please retry with the same file.');
     }
-
-    showCoreStatus(`Contacts import complete: ${mergePreview.added} added, ${mergePreview.merged} merged, ${mergePreview.unchanged} unchanged, ${fleetAdded} moved to fleet, ${fleetSkipped} fleet duplicates skipped, ${pendingContactsImport.rejectedRows} invalid rows.`);
-    setPendingContactsImport(null);
   };
 
   const handleCancelContactsImport = () => {
@@ -1952,6 +2085,23 @@ export const CRMPage: React.FC = () => {
                 const hasHomeLocation = Boolean(profile.homeLocation?.address);
                 const hasBusinessLocation = Boolean(profile.businessLocation?.address);
                 const frequentLocationCount = Array.isArray(profile.frequentLocations) ? profile.frequentLocations.length : 0;
+                const locationQuickTags = [
+                  ...(hasHomeLocation ? ['Home'] : []),
+                  ...(hasBusinessLocation ? ['Business'] : []),
+                  ...(frequentLocationCount > 0 ? [`Frequent ${frequentLocationCount}`] : []),
+                ];
+                const locationQuickTagsHelp = [
+                  hasHomeLocation ? `Home: ${profile.homeLocation?.address || 'Saved'}` : null,
+                  hasBusinessLocation ? `Business: ${profile.businessLocation?.address || 'Saved'}` : null,
+                  frequentLocationCount > 0
+                    ? `Frequent places: ${
+                        (profile.frequentLocations || [])
+                          .slice(0, 2)
+                          .map(location => location.label || location.address)
+                          .join(' • ') || `${frequentLocationCount} saved`
+                      }${frequentLocationCount > 2 ? ' • …' : ''}`
+                    : null,
+                ].filter((entry): entry is string => Boolean(entry)).join(' | ');
                 const phoneKey = customerPhoneKey(profile.phone);
                 const callHref = phoneKey ? `tel:+${phoneKey}` : '';
                 const whatsappHref = buildWhatsAppLink(phoneKey) || '';
@@ -2027,22 +2177,25 @@ export const CRMPage: React.FC = () => {
                         <span className="text-[7px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10">BIZ</span>
                       )}
                       {professionLabel && (
-                        <span className="text-[7px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-teal-300 text-teal-700 bg-teal-50 dark:border-teal-900/40 dark:text-teal-300 dark:bg-teal-900/10">{professionLabel}</span>
+                        <span
+                          title={professionLabel}
+                          className="text-[7px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-teal-300 text-teal-700 bg-teal-50 dark:border-teal-900/40 dark:text-teal-300 dark:bg-teal-900/10"
+                        >
+                          {truncateUiText(professionLabel, UI_TAG_MAX_CHARS)}
+                        </span>
                       )}
-                      {(hasHomeLocation || hasBusinessLocation || frequentLocationCount > 0) && (
+                      {locationQuickTags.length > 0 && (
                         <button
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
                             jumpToSavedPlaces(id);
                           }}
+                          title={`Saved places quick tags. ${locationQuickTagsHelp}. Click to open Saved Places.`}
                           className="text-[7px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-slate-300 text-slate-500 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20 inline-flex items-center gap-1"
                         >
                           <MapPin size={9} />
-                          {hasHomeLocation ? 'H' : ''}
-                          {hasHomeLocation && hasBusinessLocation ? '/' : ''}
-                          {hasBusinessLocation ? 'B' : ''}
-                          {frequentLocationCount > 0 ? `+${frequentLocationCount}` : ''}
+                          {locationQuickTags.join(' · ')}
                         </button>
                       )}
                     </div>
@@ -2099,11 +2252,17 @@ export const CRMPage: React.FC = () => {
                       <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10">
                         Rate {feedbackRate}%
                       </span>
-                      <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20">
-                        {ownershipLabelMap[profile.driver.vehicleOwnership || 'COMPANY_FLEET']}
+                      <span
+                        title={ownershipLabelMap[profile.driver.vehicleOwnership || 'COMPANY_FLEET']}
+                        className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20"
+                      >
+                        {truncateUiText(ownershipLabelMap[profile.driver.vehicleOwnership || 'COMPANY_FLEET'], UI_TAG_MAX_CHARS)}
                       </span>
-                      <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10">
-                        Fuel {responsibilityLabelMap[profile.driver.fuelCostResponsibility || 'COMPANY']}
+                      <span
+                        title={`Fuel ${responsibilityLabelMap[profile.driver.fuelCostResponsibility || 'COMPANY']}`}
+                        className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10"
+                      >
+                        {truncateUiText(`Fuel ${responsibilityLabelMap[profile.driver.fuelCostResponsibility || 'COMPANY']}`, UI_TAG_MAX_CHARS)}
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
@@ -2299,6 +2458,51 @@ const CustomerIntelligenceView: React.FC<{
     onUpdateSegments(profile, [segment]);
   };
 
+  const exportCustomerAccountingCsv = () => {
+    const escapeCsvCell = (value: unknown): string => {
+      const raw = String(value ?? '');
+      if (!/[",\n]/.test(raw)) return raw;
+      return `"${raw.replace(/"/g, '""')}"`;
+    };
+
+    const summaryRows = [
+      ['customer_name', profile.name],
+      ['customer_phone', profile.phone],
+      ['open_credit_usd', profile.openCreditUsd.toFixed(2)],
+      ['open_credit_count', profile.openCreditCount],
+      ['paid_credit_usd', profile.paidCreditUsd.toFixed(2)],
+      ['paid_credit_count', profile.paidCreditCount],
+      ['receipt_usd', profile.receiptUsd.toFixed(2)],
+      ['receipt_count', profile.receiptCount],
+      ['cash_settled_usd', profile.cashSettledUsd.toFixed(2)],
+      ['generated_at', new Date().toISOString()],
+    ];
+
+    const eventHeaders = ['event_id', 'timestamp', 'source', 'note'];
+    const eventRows = profile.recentFinanceEvents.map(event => [
+      event.id,
+      event.timestamp,
+      event.source,
+      event.note,
+    ]);
+
+    const csv = [
+      ['metric', 'value'].map(escapeCsvCell).join(','),
+      ...summaryRows.map(row => row.map(escapeCsvCell).join(',')),
+      '',
+      eventHeaders.map(escapeCsvCell).join(','),
+      ...eventRows.map(row => row.map(escapeCsvCell).join(',')),
+    ].join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `customer-accounting-${customerPhoneKey(profile.phone)}-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
   <div className="space-y-8 md:space-y-12 animate-in fade-in duration-700">
     <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-slate-200 dark:border-white/10 pb-8 gap-6">
@@ -2366,6 +2570,63 @@ const CustomerIntelligenceView: React.FC<{
             <p className={`text-2xl font-black tracking-tighter ${box.color}`}>{box.val}</p>
          </div>
        ))}
+    </div>
+
+    <div className="bg-white dark:bg-brand-900 border border-slate-200 dark:border-white/10 rounded-[2rem] p-6 md:p-8 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h4 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Accounting & Transactions</h4>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={exportCustomerAccountingCsv}
+            className="h-8 px-3 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center"
+          >
+            <Download size={12} className="mr-1.5" />
+            Export CSV
+          </button>
+          <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">CRM Attributed</span>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 px-4 py-3">
+          <p className="text-[8px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300">Open Credit</p>
+          <p className="text-lg font-black text-amber-700 dark:text-amber-300 mt-1">${profile.openCreditUsd.toFixed(0)}</p>
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">{profile.openCreditCount} entries</p>
+        </div>
+        <div className="rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 px-4 py-3">
+          <p className="text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300">Paid Credits</p>
+          <p className="text-lg font-black text-blue-700 dark:text-blue-300 mt-1">${profile.paidCreditUsd.toFixed(0)}</p>
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">{profile.paidCreditCount} entries</p>
+        </div>
+        <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-900/10 px-4 py-3">
+          <p className="text-[8px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300">Receipts</p>
+          <p className="text-lg font-black text-indigo-700 dark:text-indigo-300 mt-1">${profile.receiptUsd.toFixed(0)}</p>
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">{profile.receiptCount} issued</p>
+        </div>
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 px-4 py-3">
+          <p className="text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">Cash Settled</p>
+          <p className="text-lg font-black text-emerald-700 dark:text-emerald-300 mt-1">${profile.cashSettledUsd.toFixed(0)}</p>
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Trip-settled</p>
+        </div>
+      </div>
+      <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
+        <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Recent Financial Events</p>
+        {profile.recentFinanceEvents.length > 0 ? (
+          <div className="space-y-2">
+            {profile.recentFinanceEvents.map(event => (
+              <div key={event.id} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-900 px-3 py-2">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300">{event.source}</span>
+                  <span className="text-[8px] font-bold uppercase tracking-wider text-slate-400">{format(parseISO(event.timestamp), 'MMM d, h:mm a')}</span>
+                </div>
+                <p className="text-[10px] font-bold text-brand-900 dark:text-slate-200 break-words">{event.note}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">No financial events recorded yet.</p>
+        )}
+      </div>
     </div>
 
     <div className="bg-white dark:bg-brand-900 border border-slate-200 dark:border-white/10 rounded-[2rem] p-6 md:p-8 space-y-4">
@@ -2487,7 +2748,16 @@ const CustomerIntelligenceView: React.FC<{
     </div>
 
     <div id={`saved-places-${customerPhoneKey(profile.phone)}`} className="bg-white dark:bg-brand-900 border border-slate-200 dark:border-white/10 rounded-[2rem] p-6 md:p-8 space-y-4">
-      <h4 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Saved Places</h4>
+      <div className="flex items-center justify-between gap-3">
+        <h4 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Saved Places</h4>
+        <span
+          title="Saved Places enrich CRM memory and quick routing. Add Home, Business, and one frequent place per line. You can use address text, Google Maps links, or lat,lng coordinates."
+          className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-slate-400"
+        >
+          <Info size={11} />
+          How it works
+        </span>
+      </div>
       <div className="space-y-2">
         <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Home Address</p>
         <input
@@ -2523,12 +2793,21 @@ const CustomerIntelligenceView: React.FC<{
         />
       </div>
       <div className="space-y-2">
-        <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Frequent Places (one per line)</p>
+        <div className="flex items-center gap-2">
+          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Frequent Places (one per line)</p>
+          <span
+            title="Each line becomes one quick tag in CRM. Example: Hamra Main St, https://maps.google.com/... or 33.8938,35.5018"
+            className="inline-flex items-center text-slate-400"
+          >
+            <Info size={11} />
+          </span>
+        </div>
         <textarea
           value={frequentLocationsDraft}
           onChange={(event) => setFrequentLocationsDraft(event.target.value)}
-          placeholder="Google Maps links, geocodes, or plain place text"
+          placeholder="One line = one place (address, maps link, or lat,lng)"
           rows={4}
+          title="Each line becomes one quick location tag in CRM."
           className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-950 text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200 outline-none"
         />
       </div>
@@ -2847,6 +3126,54 @@ const FleetReadinessView: React.FC<{
     URL.revokeObjectURL(url);
   };
 
+  const handleExportDriverAccountingCsv = () => {
+    const escapeCsv = (value: unknown): string => {
+      const text = String(value ?? '');
+      if (text.includes('"') || text.includes(',') || text.includes('\n')) {
+        return `"${text.replace(/"/g, '""')}"`;
+      }
+      return text;
+    };
+
+    const summaryRows = [
+      ['driver_id', stats.driver.id],
+      ['driver_name', stats.driver.name],
+      ['plate_number', stats.driver.plateNumber],
+      ['open_credit_usd', stats.openCreditUsd.toFixed(2)],
+      ['open_credit_count', stats.openCreditCount],
+      ['paid_credit_usd', stats.paidCreditUsd.toFixed(2)],
+      ['paid_credit_count', stats.paidCreditCount],
+      ['receipt_usd', stats.receiptUsd.toFixed(2)],
+      ['receipt_count', stats.receiptCount],
+      ['cash_settled_usd', stats.cashSettledUsd.toFixed(2)],
+      ['generated_at', new Date().toISOString()],
+    ];
+
+    const eventHeaders = ['event_id', 'timestamp', 'source', 'note'];
+    const eventRows = stats.recentFinanceEvents.map(event => [
+      event.id,
+      event.timestamp,
+      event.source,
+      event.note,
+    ]);
+
+    const csv = [
+      ['metric', 'value'].map(escapeCsv).join(','),
+      ...summaryRows.map(row => row.map(escapeCsv).join(',')),
+      '',
+      eventHeaders.map(escapeCsv).join(','),
+      ...eventRows.map(row => row.map(escapeCsv).join(',')),
+    ].join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `driver-accounting-${stats.driver.plateNumber}-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-8 md:space-y-12 animate-in fade-in duration-700">
       <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-slate-200 dark:border-white/10 pb-6 gap-4">
@@ -2858,15 +3185,30 @@ const FleetReadinessView: React.FC<{
             </div>
             <div className="flex items-center space-x-2 bg-slate-100 dark:bg-white/5 px-3 py-1 rounded-full border border-slate-200 dark:border-white/10">
               <Car size={14} className="text-slate-400" />
-              <span className="text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300">{ownershipLabelMap[stats.driver.vehicleOwnership || 'COMPANY_FLEET']}</span>
+              <span
+                title={ownershipLabelMap[stats.driver.vehicleOwnership || 'COMPANY_FLEET']}
+                className="text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+              >
+                {truncateUiText(ownershipLabelMap[stats.driver.vehicleOwnership || 'COMPANY_FLEET'], UI_TAG_MAX_CHARS)}
+              </span>
             </div>
             <div className="flex items-center space-x-2 bg-amber-50 dark:bg-amber-900/10 px-3 py-1 rounded-full border border-amber-200 dark:border-amber-900/30">
               <Fuel size={14} className="text-amber-600" />
-              <span className="text-[9px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300">Fuel {responsibilityLabelMap[stats.driver.fuelCostResponsibility || 'COMPANY']}</span>
+              <span
+                title={`Fuel ${responsibilityLabelMap[stats.driver.fuelCostResponsibility || 'COMPANY']}`}
+                className="text-[9px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300"
+              >
+                {truncateUiText(`Fuel ${responsibilityLabelMap[stats.driver.fuelCostResponsibility || 'COMPANY']}`, UI_TAG_MAX_CHARS)}
+              </span>
             </div>
             <div className="flex items-center space-x-2 bg-blue-50 dark:bg-blue-900/10 px-3 py-1 rounded-full border border-blue-200 dark:border-blue-900/30">
               <ShieldCheck size={14} className="text-blue-600" />
-              <span className="text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300">Maint {responsibilityLabelMap[stats.driver.maintenanceResponsibility || 'COMPANY']}</span>
+              <span
+                title={`Maint ${responsibilityLabelMap[stats.driver.maintenanceResponsibility || 'COMPANY']}`}
+                className="text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300"
+              >
+                {truncateUiText(`Maint ${responsibilityLabelMap[stats.driver.maintenanceResponsibility || 'COMPANY']}`, UI_TAG_MAX_CHARS)}
+              </span>
             </div>
             <div className="flex items-center space-x-2 bg-slate-100 dark:bg-white/5 px-3 py-1 rounded-full border border-slate-200 dark:border-white/10">
               <Star size={14} className="text-gold-500 fill-gold-500" />
@@ -2921,6 +3263,63 @@ const FleetReadinessView: React.FC<{
             <p className={`text-lg font-black tracking-tighter ${box.color}`}>{box.val}</p>
           </div>
         ))}
+      </div>
+
+      <div className="bg-white dark:bg-brand-900 p-8 rounded-[2rem] border border-slate-200 dark:border-white/10 shadow-sm space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h4 className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Accounting & Transactions</h4>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportDriverAccountingCsv}
+              className="h-8 px-3 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center"
+            >
+              <Download size={12} className="mr-1.5" />
+              Export CSV
+            </button>
+            <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">CRM Attributed</span>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 px-4 py-3">
+            <p className="text-[8px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300">Open Credit</p>
+            <p className="text-lg font-black text-amber-700 dark:text-amber-300 mt-1">${stats.openCreditUsd.toFixed(0)}</p>
+            <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">{stats.openCreditCount} entries</p>
+          </div>
+          <div className="rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 px-4 py-3">
+            <p className="text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300">Paid Credits</p>
+            <p className="text-lg font-black text-blue-700 dark:text-blue-300 mt-1">${stats.paidCreditUsd.toFixed(0)}</p>
+            <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">{stats.paidCreditCount} entries</p>
+          </div>
+          <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-900/10 px-4 py-3">
+            <p className="text-[8px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300">Receipts</p>
+            <p className="text-lg font-black text-indigo-700 dark:text-indigo-300 mt-1">${stats.receiptUsd.toFixed(0)}</p>
+            <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">{stats.receiptCount} issued</p>
+          </div>
+          <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 px-4 py-3">
+            <p className="text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">Cash Settled</p>
+            <p className="text-lg font-black text-emerald-700 dark:text-emerald-300 mt-1">${stats.cashSettledUsd.toFixed(0)}</p>
+            <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Trip-settled</p>
+          </div>
+        </div>
+        <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
+          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Recent Financial Events</p>
+          {stats.recentFinanceEvents.length > 0 ? (
+            <div className="space-y-2">
+              {stats.recentFinanceEvents.map(event => (
+                <div key={event.id} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-900 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300">{event.source}</span>
+                    <span className="text-[8px] font-bold uppercase tracking-wider text-slate-400">{format(parseISO(event.timestamp), 'MMM d, h:mm a')}</span>
+                  </div>
+                  <p className="text-[10px] font-bold text-brand-900 dark:text-slate-200 break-words">{event.note}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">No financial events recorded yet.</p>
+          )}
+        </div>
       </div>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -3100,12 +3499,20 @@ const FinanceCreditPanel: React.FC<{
   }, [filterDriverId]);
 
   const partyOptions = partyType === 'CLIENT'
-    ? customers.map(item => ({ id: item.id, name: item.name }))
-    : drivers.map(item => ({ id: item.id, name: item.name }));
+    ? customers.map(item => ({
+        id: item.id,
+        name: item.name,
+        searchable: `${item.name} ${item.phone}`,
+      }))
+    : drivers.map(item => ({
+        id: item.id,
+        name: item.name,
+        searchable: buildDriverSearchText(item),
+      }));
 
   const normalizedPartySearch = partySearch.trim().toLowerCase();
   const filteredPartyOptions = normalizedPartySearch
-    ? partyOptions.filter(option => option.name.toLowerCase().includes(normalizedPartySearch))
+    ? partyOptions.filter(option => matchesFleetQuery(option.searchable, normalizedPartySearch))
     : partyOptions;
 
   const filteredEntries = entries.filter(entry => {
@@ -3118,7 +3525,10 @@ const FinanceCreditPanel: React.FC<{
   const recentReceipts = receipts
     .filter(receipt => {
       if (!filterDriverId) return true;
-      return receipt.partyType === 'DRIVER' && drivers.some(driver => driver.id === filterDriverId && driver.name === receipt.partyName);
+      return receipt.partyType === 'DRIVER' && (
+        receipt.partyId === filterDriverId ||
+        (!receipt.partyId && drivers.some(driver => driver.id === filterDriverId && driver.name === receipt.partyName))
+      );
     })
     .slice(0, 6);
 

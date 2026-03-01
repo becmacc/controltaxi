@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
 import { Button } from '../components/ui/Button';
-import { Save, Coins, Clock, Activity, MessageSquare, Info, Phone, Fuel } from 'lucide-react';
+import { Save, Coins, Clock, Activity, MessageSquare, Info, Phone, Fuel, ExternalLink } from 'lucide-react';
 import { MessageTemplates } from '../types';
 import { DEFAULT_TEMPLATES, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 import {
@@ -23,6 +23,7 @@ export const SettingsPage: React.FC = () => {
   const [companyCarDriverGasCompanySharePercent, setCompanyCarDriverGasCompanySharePercent] = useState(settings.companyCarDriverGasCompanySharePercent.toString());
   const [otherDriverCompanySharePercent, setOtherDriverCompanySharePercent] = useState(settings.otherDriverCompanySharePercent.toString());
   const [operatorWhatsApp, setOperatorWhatsApp] = useState(settings.operatorWhatsApp || '');
+  const [googleBusinessReviewUrl, setGoogleBusinessReviewUrl] = useState(settings.googleBusinessReviewUrl || '');
   const [operatorIntlEnabled, setOperatorIntlEnabled] = useState(false);
   const [operatorDialCode, setOperatorDialCode] = useState(DEFAULT_PHONE_DIAL_CODE);
   const [operatorUseCustomDialCode, setOperatorUseCustomDialCode] = useState(false);
@@ -47,6 +48,7 @@ export const SettingsPage: React.FC = () => {
     setOtherDriverCompanySharePercent(settings.otherDriverCompanySharePercent.toString());
     const operatorPhone = settings.operatorWhatsApp || '';
     setOperatorWhatsApp(operatorPhone);
+    setGoogleBusinessReviewUrl(settings.googleBusinessReviewUrl || '');
     const detectedDialCode = detectPhoneDialCode(operatorPhone) || DEFAULT_PHONE_DIAL_CODE;
     const isKnownPreset = operatorPopularPresets.some(option => option.dialCode === detectedDialCode);
     setOperatorIntlEnabled(detectedDialCode !== DEFAULT_PHONE_DIAL_CODE);
@@ -81,6 +83,7 @@ export const SettingsPage: React.FC = () => {
       googleMapsApiKey: settings.googleMapsApiKey,
       googleMapsMapId: settings.googleMapsMapId,
       googleMapsMapIdDark: settings.googleMapsMapIdDark,
+      googleBusinessReviewUrl: googleBusinessReviewUrl.trim(),
       operatorWhatsApp: normalizedOperatorWhatsApp || operatorWhatsApp.trim(),
       fuelPriceUsdPerLiter: parseOrDefault(fuelPriceUsdPerLiter, 1.3),
       ownerDriverCompanySharePercent: parseOrDefault(ownerDriverCompanySharePercent, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT),
@@ -339,11 +342,28 @@ export const SettingsPage: React.FC = () => {
                 <p className="mt-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Used by Trips extract quick-send action.</p>
                </div>
 
+                 <div>
+                  <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Google Business Review Link (Positive Feedback)</label>
+                  <div className="relative group">
+                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 group-focus-within:text-gold-600 transition-colors">
+                      <ExternalLink size={16} />
+                    </div>
+                    <input
+                      type="url"
+                      value={googleBusinessReviewUrl}
+                      onChange={(e) => setGoogleBusinessReviewUrl(e.target.value)}
+                      className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-sm h-11 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all pl-11 pr-3"
+                      placeholder="https://g.page/r/.../review"
+                    />
+                  </div>
+                  <p className="mt-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Used in thank-you draft after positive ratings.</p>
+                 </div>
+
                <div className="bg-brand-50 dark:bg-brand-950 p-4 rounded-xl border border-brand-100 dark:border-brand-800 mb-4">
                   <div className="flex items-start">
                      <Info size={14} className="text-brand-600 mr-2 mt-0.5" />
                     <p className="text-[10px] font-bold text-brand-800 dark:text-slate-400 uppercase leading-relaxed">
-                      Supported Placeholders: <span className="text-gold-600">{"{customer_name}"}</span>, <span className="text-gold-600">{"{pickup}"}</span>, <span className="text-gold-600">{"{destination}"}</span>, <span className="text-gold-600">{"{trip_datetime_formatted}"}</span>, <span className="text-gold-600">{"{fare_usd}"}</span>, <span className="text-gold-600">{"{fare_lbp}"}</span>, <span className="text-gold-600">{"{driver_name}"}</span>, <span className="text-gold-600">{"{driver_name_with_plate}"}</span>
+                        Supported Placeholders: <span className="text-gold-600">{"{customer_name}"}</span>, <span className="text-gold-600">{"{pickup}"}</span>, <span className="text-gold-600">{"{destination}"}</span>, <span className="text-gold-600">{"{trip_datetime_formatted}"}</span>, <span className="text-gold-600">{"{fare_usd}"}</span>, <span className="text-gold-600">{"{fare_lbp}"}</span>, <span className="text-gold-600">{"{driver_name}"}</span>, <span className="text-gold-600">{"{driver_name_with_plate}"}</span>, <span className="text-gold-600">{"{google_review_link}"}</span>
                     </p>
                   </div>
                </div>

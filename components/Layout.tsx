@@ -1,10 +1,10 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { 
   Car, List, Settings as SettingsIcon, Users, Moon, Sun, 
   BrainCircuit, ShieldCheck, Zap, Radar, Bell, X, 
-  Clock, CheckCircle, AlertCircle, Phone, MessageCircle
+  Clock, CheckCircle, AlertCircle, Phone, MessageCircle, ExternalLink
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { format, differenceInMinutes, parseISO } from 'date-fns';
@@ -15,6 +15,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const navigate = useNavigate();
   const location = useLocation();
   const [showWatch, setShowWatch] = useState(false);
+  const MISSION_WATCH_UI_CHANNEL = 'control-mission-watch-ui';
+  const MISSION_WATCH_UI_STORAGE_KEY = 'control_mission_watch_ui_event';
 
   const isIntelligenceMode = location.pathname === '/crm';
   const activeAlerts = alerts
@@ -29,6 +31,83 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
   const handleLogoDoubleClick = () => {
     navigate(isIntelligenceMode ? '/brief' : '/crm');
+  };
+
+  const handleMissionWatchUiMessage = useCallback((payload: unknown) => {
+    if (!payload || typeof payload !== 'object') return;
+    const type = String((payload as { type?: unknown }).type || '');
+
+    if (type === 'POPUP_OPENED') {
+      setShowWatch(false);
+      return;
+    }
+
+    if (type === 'INLINE_OPENED' && location.pathname === '/watch') {
+      window.close();
+    }
+  }, [location.pathname]);
+
+  const broadcastMissionWatchUi = useCallback((type: 'POPUP_OPENED' | 'INLINE_OPENED') => {
+    const payload = { type, at: Date.now() };
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        const channel = new BroadcastChannel(MISSION_WATCH_UI_CHANNEL);
+        channel.postMessage(payload);
+        channel.close();
+      } catch {
+      }
+    }
+
+    try {
+      localStorage.setItem(MISSION_WATCH_UI_STORAGE_KEY, JSON.stringify(payload));
+      localStorage.removeItem(MISSION_WATCH_UI_STORAGE_KEY);
+    } catch {
+    }
+  }, []);
+
+  useEffect(() => {
+    const channel = typeof BroadcastChannel !== 'undefined'
+      ? new BroadcastChannel(MISSION_WATCH_UI_CHANNEL)
+      : null;
+
+    if (channel) {
+      channel.onmessage = event => {
+        handleMissionWatchUiMessage(event.data);
+      };
+    }
+
+    const handleStorageMessage = (event: StorageEvent) => {
+      if (event.key !== MISSION_WATCH_UI_STORAGE_KEY || !event.newValue) return;
+      try {
+        handleMissionWatchUiMessage(JSON.parse(event.newValue));
+      } catch {
+      }
+    };
+
+    window.addEventListener('storage', handleStorageMessage);
+
+    return () => {
+      if (channel) channel.close();
+      window.removeEventListener('storage', handleStorageMessage);
+    };
+  }, [handleMissionWatchUiMessage]);
+
+  const handleOpenWatchWindow = () => {
+    broadcastMissionWatchUi('POPUP_OPENED');
+    setShowWatch(false);
+    const watchUrl = `${window.location.origin}${window.location.pathname}#/watch`;
+    window.open(watchUrl, '_blank', 'noopener,noreferrer,width=420,height=820');
+  };
+
+  const handleToggleWatch = () => {
+    setShowWatch(prev => {
+      const next = !prev;
+      if (next) {
+        broadcastMissionWatchUi('INLINE_OPENED');
+      }
+      return next;
+    });
   };
 
   const linkClass = ({ isActive }: { isActive: boolean }) => 
@@ -65,7 +144,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         <div className="flex items-center space-x-3">
           {/* Mission Watch Trigger */}
           <button 
-            onClick={() => setShowWatch(!showWatch)}
+            onClick={handleToggleWatch}
             className={`relative p-2 rounded-full transition-all ${activeAlerts.length > 0 ? 'text-gold-400 bg-brand-800' : 'text-slate-500'}`}
           >
             <Radar size={18} className={activeAlerts.length > 0 ? 'animate-spin' : ''} style={{ animationDuration: '4s' }} />
@@ -111,7 +190,18 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 <h3 className="text-xs font-black uppercase tracking-[0.3em] text-brand-900 dark:text-gold-400">Mission Watch</h3>
                 <p className="text-[9px] font-bold text-slate-400 uppercase mt-0.5">Telemetry Feed</p>
               </div>
-              <button onClick={() => setShowWatch(false)} className="p-2 text-slate-400 hover:text-brand-900 dark:hover:text-white"><X size={20}/></button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={handleOpenWatchWindow}
+                  className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300 inline-flex items-center gap-1"
+                  title="Open Mission Watch in a separate window"
+                >
+                  <ExternalLink size={12} />
+                  Pop Out
+                </button>
+                <button onClick={() => setShowWatch(false)} className="p-2 text-slate-400 hover:text-brand-900 dark:hover:text-white"><X size={20}/></button>
+              </div>
            </div>
            
            <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -209,8 +299,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         
         {/* Sidebar - Hidden in Intelligence Mode */}
         {!isIntelligenceMode && (
-          <aside className="app-sidebar hidden md:flex flex-col w-20 lg:w-64 bg-slate-100 dark:bg-brand-900/50 border-r border-slate-200 dark:border-brand-800 p-3 lg:p-4 space-y-2 overflow-y-auto flex-shrink-0 z-20 transition-all duration-300">
-              <div className="mb-4 px-2 hidden lg:block">
+          <aside className="app-sidebar hidden md:flex flex-col w-16 lg:w-52 bg-slate-100 dark:bg-brand-900/50 border-r border-slate-200 dark:border-brand-800 p-2 lg:p-3 space-y-2 overflow-y-auto flex-shrink-0 z-20 transition-all duration-300">
+              <div className="mb-3 px-1 hidden lg:block">
                   <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">CMD Center</p>
               </div>
               <NavLink to="/brief" className={sidebarLinkClass}>

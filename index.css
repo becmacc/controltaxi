@@ -211,6 +211,122 @@ html {
   }
 }
 
+.horizontal-scroll-slider {
+  --slider-value: 0%;
+  --slider-fill: #eab308;
+  --slider-track: rgba(148, 163, 184, 0.28);
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 1rem;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+.horizontal-scroll-slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.horizontal-scroll-slider:focus-visible {
+  outline: none;
+}
+
+.horizontal-scroll-slider::-webkit-slider-runnable-track {
+  height: 0.55rem;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--slider-fill) 0,
+    var(--slider-fill) var(--slider-value),
+    var(--slider-track) var(--slider-value),
+    var(--slider-track) 100%
+  );
+}
+
+.horizontal-scroll-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 9999px;
+  border: 2px solid #ffffff;
+  background: currentColor;
+  margin-top: -0.225rem;
+  box-shadow: 0 1px 8px rgba(15, 23, 42, 0.22);
+}
+
+.horizontal-scroll-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(234, 179, 8, 0.22), 0 1px 8px rgba(15, 23, 42, 0.24);
+}
+
+body.missionlog-table-fullview .app-header {
+  display: none !important;
+}
+
+body.missionlog-table-fullview {
+  overflow: hidden !important;
+}
+
+body.missionlog-table-fullview .app-sidebar,
+body.missionlog-table-fullview .app-bottom-nav,
+body.missionlog-table-fullview .trip-summary-bar {
+  display: none !important;
+}
+
+body.missionlog-table-fullview .app-main {
+  padding-bottom: 0 !important;
+}
+
+.horizontal-scroll-slider::-moz-range-track {
+  height: 0.55rem;
+  border-radius: 9999px;
+  border: 0;
+  background: var(--slider-track);
+}
+
+.horizontal-scroll-slider::-moz-range-progress {
+  height: 0.55rem;
+  border-radius: 9999px;
+  background: var(--slider-fill);
+}
+
+.horizontal-scroll-slider::-moz-range-thumb {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 9999px;
+  border: 2px solid #ffffff;
+  background: currentColor;
+  box-shadow: 0 1px 8px rgba(15, 23, 42, 0.22);
+}
+
+.horizontal-scroll-slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgba(234, 179, 8, 0.22), 0 1px 8px rgba(15, 23, 42, 0.24);
+}
+
+.dark .horizontal-scroll-slider {
+  --slider-fill: #eab308;
+  --slider-track: rgba(51, 65, 85, 0.72);
+}
+
+.dark .horizontal-scroll-slider::-webkit-slider-thumb {
+  border-color: #0f172a;
+  box-shadow: 0 1px 10px rgba(0, 0, 0, 0.45);
+}
+
+.dark .horizontal-scroll-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(234, 179, 8, 0.26), 0 1px 10px rgba(0, 0, 0, 0.5);
+}
+
+.dark .horizontal-scroll-slider::-moz-range-thumb {
+  border-color: #0f172a;
+  box-shadow: 0 1px 10px rgba(0, 0, 0, 0.45);
+}
+
+.dark .horizontal-scroll-slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgba(234, 179, 8, 0.26), 0 1px 10px rgba(0, 0, 0, 0.5);
+}
+
 @media (orientation: landscape) and (max-height: 540px) and (pointer: coarse) {
   input,
   textarea,

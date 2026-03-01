@@ -9,9 +9,10 @@ import {
   FileText, CheckCircle2, XCircle, Car, Calendar,
   Download, AlertTriangle, DollarSign, List as ListIcon, 
   MessageCircle, Send, Settings, MailCheck, HeartHandshake,
-  LayoutGrid, MoreVertical, ExternalLink, ArrowRightLeft, UserX, ClipboardX, Trash2, Archive, ChevronDown, ChevronUp
+  LayoutGrid, MoreVertical, ExternalLink, ArrowRightLeft, UserX, ClipboardX, Trash2, Archive, ChevronDown, ChevronUp, Maximize2, Minimize2
 } from 'lucide-react';
 import { Button } from '../components/ui/Button';
+import { HorizontalScrollArea } from '../components/ui/HorizontalScrollArea';
 import { MessageModal } from '../components/MessageModal';
 import { CustomerSnapshotCard } from '../components/CustomerSnapshotCard';
 import { MIN_RIDE_FARE_USD } from '../constants';
@@ -34,12 +35,36 @@ const extractIndexMarkers = (text?: string): string[] => {
   return Array.from(new Set(matches.map(match => match.replace(/\[|\]/g, ''))));
 };
 
+const normalizeExternalUrl = (value?: string): string => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.href;
+  } catch {
+    return '';
+  }
+};
+
+const isPositiveFeedbackRating = (rating?: number): boolean => {
+  return typeof rating === 'number' && Number.isFinite(rating) && rating >= 4;
+};
+
 export const TripsPage: React.FC = () => {
   const { trips, deletedTrips, drivers, customers, creditLedger, receipts, updateFullTrip, deleteCancelledTrip, restoreDeletedTrip, settings, addCustomers } = useStore();
   const location = useLocation();
   const [filterText, setFilterText] = useState('');
   const [timeFilter, setTimeFilter] = useState<'ALL' | 'TODAY' | 'UPCOMING' | 'PAST'>('ALL');
   const [viewMode, setViewMode] = useState<ViewMode>('TABLE');
+  const [paymentModeFilters, setPaymentModeFilters] = useState<TripPaymentMode[]>(['CASH', 'CREDIT']);
+  const [settlementFilters, setSettlementFilters] = useState<TripSettlementStatus[]>(['PENDING', 'SETTLED', 'RECEIPTED']);
+  const [statusFilters, setStatusFilters] = useState<TripStatus[]>([
+    TripStatus.QUOTED,
+    TripStatus.CONFIRMED,
+    TripStatus.COMPLETED,
+    TripStatus.CANCELLED,
+  ]);
   
   const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -52,6 +77,50 @@ export const TripsPage: React.FC = () => {
   const [completedTripsCollapsed, setCompletedTripsCollapsed] = useState(true);
   const [deletedTripsCollapsed, setDeletedTripsCollapsed] = useState(true);
   const [handledDeepLinkKey, setHandledDeepLinkKey] = useState<string>('');
+  const [isTableFullView, setIsTableFullView] = useState(false);
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(target.closest('[contenteditable="true"]'));
+    };
+
+    const handleTableHotkeys = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return;
+
+      if (event.key === 'Escape') {
+        setIsTableFullView(false);
+        return;
+      }
+
+      if (event.key.toLowerCase() === 'f' && !event.metaKey && !event.ctrlKey && !event.altKey && viewMode === 'TABLE') {
+        event.preventDefault();
+        setIsTableFullView(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleTableHotkeys);
+    return () => window.removeEventListener('keydown', handleTableHotkeys);
+  }, [viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== 'TABLE') {
+      setIsTableFullView(false);
+    }
+  }, [viewMode]);
+
+  useEffect(() => {
+    if (isTableFullView) {
+      document.body.classList.add('missionlog-table-fullview');
+    } else {
+      document.body.classList.remove('missionlog-table-fullview');
+    }
+
+    return () => {
+      document.body.classList.remove('missionlog-table-fullview');
+    };
+  }, [isTableFullView]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -83,41 +152,89 @@ export const TripsPage: React.FC = () => {
     return { todayCount: todayTrips.length, pendingAssignment, successRate, projectedRevenue: totalTodayRevenue };
   }, [trips]);
 
-  const filteredTrips = useMemo(() => {
+  const customerSearchIndex = useMemo(() => {
+    const index = new Map<string, string>();
+
+    customers.forEach(customer => {
+      const key = customerPhoneKey(customer.phone);
+      if (!key) return;
+
+      const marketSegments = Array.isArray(customer.marketSegments) ? customer.marketSegments.join(' ') : '';
+      const frequentLocations = Array.isArray(customer.frequentLocations)
+        ? customer.frequentLocations
+            .flatMap(location => [location.label || '', location.address || '', location.mapsLink || ''])
+            .join(' ')
+        : '';
+
+      const blob = [
+        customer.name,
+        customer.phone,
+        customer.notes || '',
+        customer.profession || '',
+        customer.entityType || '',
+        customer.gender || '',
+        marketSegments,
+        customer.homeLocation?.label || '',
+        customer.homeLocation?.address || '',
+        customer.homeLocation?.mapsLink || '',
+        customer.businessLocation?.label || '',
+        customer.businessLocation?.address || '',
+        customer.businessLocation?.mapsLink || '',
+        frequentLocations,
+      ]
+        .join(' ')
+        .toLowerCase();
+
+      index.set(key, blob);
+    });
+
+    return index;
+  }, [customers]);
+
+  const ALL_PAYMENT_FILTERS: TripPaymentMode[] = ['CASH', 'CREDIT'];
+  const ALL_SETTLEMENT_FILTERS: TripSettlementStatus[] = ['PENDING', 'SETTLED', 'RECEIPTED'];
+  const ALL_STATUS_FILTERS: TripStatus[] = [TripStatus.QUOTED, TripStatus.CONFIRMED, TripStatus.COMPLETED, TripStatus.CANCELLED];
+
+  const baseFilteredTrips = useMemo(() => {
     const lower = filterText.toLowerCase();
     return trips.filter(trip => {
+      const linkedCustomerBlob = customerSearchIndex.get(customerPhoneKey(trip.customerPhone));
       const matchesText = trip.customerName.toLowerCase().includes(lower) || 
                           trip.customerPhone.includes(filterText) || 
                           trip.pickupText.toLowerCase().includes(lower) || 
                           trip.destinationText.toLowerCase().includes(lower) ||
                           trip.notes.toLowerCase().includes(lower) ||
-                          (trip.driverId && drivers.find(d => d.id === trip.driverId)?.name.toLowerCase().includes(lower));
+                          (trip.driverId && drivers.find(d => d.id === trip.driverId)?.name.toLowerCase().includes(lower)) ||
+                          Boolean(linkedCustomerBlob && linkedCustomerBlob.includes(lower));
 
       const tripDate = trip.tripDate ? parseISO(trip.tripDate) : parseISO(trip.createdAt);
       let matchesTime = true;
       if (timeFilter === 'TODAY') matchesTime = isToday(tripDate);
       else if (timeFilter === 'UPCOMING') matchesTime = isFuture(tripDate) && !isToday(tripDate);
       else if (timeFilter === 'PAST') matchesTime = isPast(tripDate) && !isToday(tripDate);
+
       return matchesText && matchesTime;
     }).sort((a, b) => {
       const dateA = a.tripDate ? new Date(a.tripDate).getTime() : new Date(a.createdAt).getTime();
       const dateB = b.tripDate ? new Date(b.tripDate).getTime() : new Date(b.createdAt).getTime();
       return dateB - dateA;
     });
-  }, [trips, drivers, filterText, timeFilter]);
+  }, [trips, drivers, filterText, timeFilter, customerSearchIndex]);
 
-  const filteredDeletedTrips = useMemo(() => {
+  const baseFilteredDeletedTrips = useMemo(() => {
     const lower = filterText.toLowerCase();
     return deletedTrips.filter(record => {
       const trip = record.trip;
       const driverName = trip.driverId ? (drivers.find(d => d.id === trip.driverId)?.name || '') : '';
+      const linkedCustomerBlob = customerSearchIndex.get(customerPhoneKey(trip.customerPhone));
       const matchesText = trip.customerName.toLowerCase().includes(lower) ||
         trip.customerPhone.includes(filterText) ||
         trip.pickupText.toLowerCase().includes(lower) ||
         trip.destinationText.toLowerCase().includes(lower) ||
         trip.notes.toLowerCase().includes(lower) ||
         record.deletedReason.toLowerCase().includes(lower) ||
-        driverName.toLowerCase().includes(lower);
+        driverName.toLowerCase().includes(lower) ||
+        Boolean(linkedCustomerBlob && linkedCustomerBlob.includes(lower));
 
       const deletedDate = parseISO(record.deletedAt || trip.createdAt);
       let matchesTime = true;
@@ -131,7 +248,109 @@ export const TripsPage: React.FC = () => {
       const dateB = new Date(b.deletedAt).getTime();
       return dateB - dateA;
     });
-  }, [deletedTrips, drivers, filterText, timeFilter]);
+  }, [deletedTrips, drivers, filterText, timeFilter, customerSearchIndex]);
+
+  const filteredTrips = useMemo(() => {
+    return baseFilteredTrips.filter(trip => {
+      const normalizedPaymentMode: TripPaymentMode = trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH';
+      const normalizedSettlementStatus: TripSettlementStatus = trip.settlementStatus || 'PENDING';
+      return paymentModeFilters.includes(normalizedPaymentMode)
+        && settlementFilters.includes(normalizedSettlementStatus)
+        && statusFilters.includes(trip.status);
+    });
+  }, [baseFilteredTrips, paymentModeFilters, settlementFilters, statusFilters]);
+
+  const filteredDeletedTrips = useMemo(() => {
+    return baseFilteredDeletedTrips.filter(record => {
+      const trip = record.trip;
+      const normalizedPaymentMode: TripPaymentMode = trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH';
+      const normalizedSettlementStatus: TripSettlementStatus = trip.settlementStatus || 'PENDING';
+      return paymentModeFilters.includes(normalizedPaymentMode)
+        && settlementFilters.includes(normalizedSettlementStatus)
+        && statusFilters.includes(trip.status);
+    });
+  }, [baseFilteredDeletedTrips, paymentModeFilters, settlementFilters, statusFilters]);
+
+  const filterOptionCounts = useMemo(() => {
+    const pool = [
+      ...baseFilteredTrips,
+      ...baseFilteredDeletedTrips.map(record => record.trip),
+    ];
+
+    return pool.reduce(
+      (acc, trip) => {
+        const mode: TripPaymentMode = trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH';
+        const settlement: TripSettlementStatus = trip.settlementStatus || 'PENDING';
+
+        acc.payment[mode] += 1;
+        acc.settlement[settlement] += 1;
+        acc.status[trip.status] += 1;
+        return acc;
+      },
+      {
+        payment: { CASH: 0, CREDIT: 0 },
+        settlement: { PENDING: 0, SETTLED: 0, RECEIPTED: 0 },
+        status: {
+          [TripStatus.QUOTED]: 0,
+          [TripStatus.CONFIRMED]: 0,
+          [TripStatus.COMPLETED]: 0,
+          [TripStatus.CANCELLED]: 0,
+        },
+      } as {
+        payment: Record<TripPaymentMode, number>;
+        settlement: Record<TripSettlementStatus, number>;
+        status: Record<TripStatus, number>;
+      }
+    );
+  }, [baseFilteredTrips, baseFilteredDeletedTrips]);
+
+  const togglePaymentModeFilter = (mode: TripPaymentMode) => {
+    setPaymentModeFilters(prev => {
+      const exists = prev.includes(mode);
+      if (exists) {
+        const next = prev.filter(entry => entry !== mode);
+        return next.length > 0 ? next : ['CASH', 'CREDIT'];
+      }
+      return [...prev, mode];
+    });
+  };
+
+  const toggleSettlementFilter = (status: TripSettlementStatus) => {
+    setSettlementFilters(prev => {
+      const exists = prev.includes(status);
+      if (exists) {
+        const next = prev.filter(entry => entry !== status);
+        return next.length > 0 ? next : ['PENDING', 'SETTLED', 'RECEIPTED'];
+      }
+      return [...prev, status];
+    });
+  };
+
+  const toggleStatusFilter = (status: TripStatus) => {
+    setStatusFilters(prev => {
+      const exists = prev.includes(status);
+      if (exists) {
+        const next = prev.filter(entry => entry !== status);
+        return next.length > 0 ? next : ALL_STATUS_FILTERS;
+      }
+      return [...prev, status];
+    });
+  };
+
+  const hasActiveFilters =
+    filterText.trim().length > 0 ||
+    timeFilter !== 'ALL' ||
+    paymentModeFilters.length !== ALL_PAYMENT_FILTERS.length ||
+    settlementFilters.length !== ALL_SETTLEMENT_FILTERS.length ||
+    statusFilters.length !== ALL_STATUS_FILTERS.length;
+
+  const clearAllFilters = () => {
+    setFilterText('');
+    setTimeFilter('ALL');
+    setPaymentModeFilters(ALL_PAYMENT_FILTERS);
+    setSettlementFilters(ALL_SETTLEMENT_FILTERS);
+    setStatusFilters(ALL_STATUS_FILTERS);
+  };
 
   const activeTrips = useMemo(
     () => filteredTrips.filter(trip => trip.status !== TripStatus.COMPLETED),
@@ -199,6 +418,38 @@ export const TripsPage: React.FC = () => {
     if (!messagingContext?.trip) return null;
     return buildCustomerSnapshotForTrip(messagingContext.trip, customers, trips, drivers, creditLedger, receipts);
   }, [messagingContext, customers, trips, drivers, creditLedger, receipts]);
+
+  const reviewLink = useMemo(
+    () => normalizeExternalUrl(settings.googleBusinessReviewUrl),
+    [settings.googleBusinessReviewUrl]
+  );
+
+  const messagingInitialMessage = useMemo(() => {
+    if (!messagingContext) return '';
+
+    const baseTemplate = messagingContext.type === 'FEEDBACK_REQ'
+      ? settings.templates.feedback_request
+      : settings.templates.feedback_thanks;
+
+    const baseMessage = replacePlaceholders(baseTemplate, messagingContext.trip, drivers);
+    const withExplicitPlaceholder = baseMessage.split('{google_review_link}').join(reviewLink);
+
+    const shouldIncludeReviewLink =
+      messagingContext.type === 'THANKS' &&
+      isPositiveFeedbackRating(messagingContext.trip.rating) &&
+      reviewLink.length > 0;
+
+    if (!shouldIncludeReviewLink) {
+      return withExplicitPlaceholder;
+    }
+
+    const hasReviewLinkAlready = withExplicitPlaceholder.toLowerCase().includes(reviewLink.toLowerCase());
+    if (hasReviewLinkAlready) {
+      return withExplicitPlaceholder;
+    }
+
+    return `${withExplicitPlaceholder}\n\nIf you enjoyed the ride, we'd really appreciate your Google review:\n${reviewLink}`;
+  }, [messagingContext, settings.templates.feedback_request, settings.templates.feedback_thanks, drivers, reviewLink]);
 
   const statusConfig = {
     [TripStatus.QUOTED]: { icon: FileText, label: 'Quoted', className: 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-brand-900/50 dark:text-slate-400 dark:border-brand-800' },
@@ -826,7 +1077,6 @@ export const TripsPage: React.FC = () => {
           return collection.findIndex(candidate => `${candidate.address.toLowerCase()}|${String(candidate.mapsLink || '').toLowerCase()}|${candidate.lat ?? ''}|${candidate.lng ?? ''}` === key) === index;
         })
       : existingFrequent;
-    const shouldSetHomeOnSmart = target === 'SMART_PICKUP' && !existing?.homeLocation?.address;
 
     const patch: Customer = {
       id: existing?.id || `${Date.now()}-${Math.random()}`,
@@ -842,14 +1092,14 @@ export const TripsPage: React.FC = () => {
       ...(existing?.gender ? { gender: existing.gender } : {}),
       ...(existing?.entityType ? { entityType: existing.entityType } : {}),
       ...(existing?.profession ? { profession: existing.profession } : {}),
-      ...((target === 'HOME' || shouldSetHomeOnSmart) ? { homeLocation: nextLocation } : (existing?.homeLocation ? { homeLocation: existing.homeLocation } : {})),
+      ...(target === 'HOME' ? { homeLocation: nextLocation } : (existing?.homeLocation ? { homeLocation: existing.homeLocation } : {})),
       ...(target === 'BUSINESS' ? { businessLocation: nextLocation } : (existing?.businessLocation ? { businessLocation: existing.businessLocation } : {})),
       frequentLocations: nextFrequent,
     };
 
     addCustomers([patch]);
     if (target === 'SMART_PICKUP') {
-      return shouldSetHomeOnSmart ? 'Pickup added to Frequent and set as Home.' : 'Pickup added to Frequent (Home kept).';
+      return 'Pickup added to Frequent places.';
     }
     return target === 'HOME'
       ? `${source === 'PICKUP' ? 'Pickup' : 'Dropoff'} saved as Home.`
@@ -925,21 +1175,144 @@ export const TripsPage: React.FC = () => {
              <div className="hidden sm:flex bg-slate-200 dark:bg-brand-900 rounded-lg p-1 border border-slate-300 dark:border-white/5">
                 <button onClick={() => setViewMode('TABLE')} className={`p-1.5 rounded-md transition-all ${viewMode === 'TABLE' ? 'bg-white dark:bg-brand-800 text-brand-900 dark:text-gold-400 shadow-sm' : 'text-slate-400'}`}><ListIcon size={16}/></button>
                 <button onClick={() => setViewMode('CARD')} className={`p-1.5 rounded-md transition-all ${viewMode === 'CARD' ? 'bg-white dark:bg-brand-800 text-brand-900 dark:text-gold-400 shadow-sm' : 'text-slate-400'}`}><LayoutGrid size={16}/></button>
+                {viewMode === 'TABLE' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsTableFullView(prev => !prev)}
+                    title={isTableFullView ? 'Exit full view (Esc)' : 'Open full view'}
+                    className={`p-1.5 rounded-md transition-all ${isTableFullView ? 'bg-white dark:bg-brand-800 text-brand-900 dark:text-gold-400 shadow-sm' : 'text-slate-400 hover:text-brand-900 dark:hover:text-gold-400'}`}
+                  >
+                    {isTableFullView ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                  </button>
+                )}
              </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-2.5 py-1.5">
-            <span className="inline-flex items-center h-5 px-2 rounded-md border border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10 text-[7px] font-black uppercase tracking-widest">Cash</span>
-            <span className="inline-flex items-center h-5 px-2 rounded-md border border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10 text-[7px] font-black uppercase tracking-widest">Credit</span>
-            <span className="inline-flex items-center h-5 px-2 rounded-md border border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20 text-[7px] font-black uppercase tracking-widest">Pending</span>
-            <span className="inline-flex items-center h-5 px-2 rounded-md border border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10 text-[7px] font-black uppercase tracking-widest">Settled</span>
-            <span className="inline-flex items-center h-5 px-2 rounded-md border border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10 text-[7px] font-black uppercase tracking-widest">Receipted</span>
+            <button
+              type="button"
+              onClick={() => togglePaymentModeFilter('CASH')}
+              title="Cash payment"
+              aria-label={`Cash payment filter, ${filterOptionCounts.payment.CASH} missions`}
+              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${paymentModeFilters.includes('CASH')
+                ? 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'
+                : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
+            >
+              <DollarSign size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <span>Cash</span>
+              <span className="ml-1 tabular-nums">{filterOptionCounts.payment.CASH}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => togglePaymentModeFilter('CREDIT')}
+              title="Credit account payment"
+              aria-label={`Credit payment filter, ${filterOptionCounts.payment.CREDIT} missions`}
+              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${paymentModeFilters.includes('CREDIT')
+                ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10'
+                : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
+            >
+              <ArrowRightLeft size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <span>Credit</span>
+              <span className="ml-1 tabular-nums">{filterOptionCounts.payment.CREDIT}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleSettlementFilter('PENDING')}
+              title="Not settled yet"
+              aria-label={`Pending settlement filter, ${filterOptionCounts.settlement.PENDING} missions`}
+              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${settlementFilters.includes('PENDING')
+                ? 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20'
+                : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
+            >
+              <Clock size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <span>Pending</span>
+              <span className="ml-1 tabular-nums">{filterOptionCounts.settlement.PENDING}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleSettlementFilter('SETTLED')}
+              title="Paid and settled"
+              aria-label={`Settled filter, ${filterOptionCounts.settlement.SETTLED} missions`}
+              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${settlementFilters.includes('SETTLED')
+                ? 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10'
+                : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
+            >
+              <CheckCircle2 size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <span>Settled</span>
+              <span className="ml-1 tabular-nums">{filterOptionCounts.settlement.SETTLED}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleSettlementFilter('RECEIPTED')}
+              title="Receipt issued"
+              aria-label={`Receipted filter, ${filterOptionCounts.settlement.RECEIPTED} missions`}
+              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${settlementFilters.includes('RECEIPTED')
+                ? 'border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10'
+                : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
+            >
+              <FileText size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <span>Receipted</span>
+              <span className="ml-1 tabular-nums">{filterOptionCounts.settlement.RECEIPTED}</span>
+            </button>
+            <span className="mx-0.5 h-4 w-px bg-slate-200 dark:bg-brand-800" />
+            <button
+              type="button"
+              onClick={() => toggleStatusFilter(TripStatus.QUOTED)}
+              title="Quote stage"
+              aria-label={`Quoted status filter, ${filterOptionCounts.status[TripStatus.QUOTED]} missions`}
+              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.QUOTED)
+                ? 'border-slate-400 text-slate-700 bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:bg-slate-900/30'
+                : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
+            >
+              <FileText size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <span>Quoted</span>
+              <span className="ml-1 tabular-nums">{filterOptionCounts.status[TripStatus.QUOTED]}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleStatusFilter(TripStatus.CONFIRMED)}
+              title="Confirmed and planned"
+              aria-label={`Confirmed status filter, ${filterOptionCounts.status[TripStatus.CONFIRMED]} missions`}
+              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.CONFIRMED)
+                ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10'
+                : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
+            >
+              <CheckCircle2 size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <span>Confirmed</span>
+              <span className="ml-1 tabular-nums">{filterOptionCounts.status[TripStatus.CONFIRMED]}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleStatusFilter(TripStatus.COMPLETED)}
+              title="Mission completed"
+              aria-label={`Completed status filter, ${filterOptionCounts.status[TripStatus.COMPLETED]} missions`}
+              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.COMPLETED)
+                ? 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'
+                : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
+            >
+              <Check size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <span>Completed</span>
+              <span className="ml-1 tabular-nums">{filterOptionCounts.status[TripStatus.COMPLETED]}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleStatusFilter(TripStatus.CANCELLED)}
+              title="Cancelled mission"
+              aria-label={`Cancelled status filter, ${filterOptionCounts.status[TripStatus.CANCELLED]} missions`}
+              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.CANCELLED)
+                ? 'border-red-300 text-red-700 bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:bg-red-900/10'
+                : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
+            >
+              <XCircle size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <span>Cancelled</span>
+              <span className="ml-1 tabular-nums">{filterOptionCounts.status[TripStatus.CANCELLED]}</span>
+            </button>
           </div>
 
           <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
             <div className="relative flex-1 lg:w-64">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input type="text" placeholder="Search vectors..." className="w-full bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl h-10 pl-9 text-[10px] font-bold uppercase tracking-widest" value={filterText} onChange={e => setFilterText(e.target.value)} />
+              <input type="text" placeholder="Search missions, customer profile, route..." className="w-full bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl h-10 pl-9 text-[10px] font-bold uppercase tracking-widest" value={filterText} onChange={e => setFilterText(e.target.value)} />
             </div>
             <div className="relative">
               <Calendar size={12} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -953,7 +1326,19 @@ export const TripsPage: React.FC = () => {
             </div>
             <Button variant="outline" className="h-10 text-[9px] font-black" onClick={() => handleManifestDownload('FILTERED')}><Download size={14} className="mr-2" /> Manifest</Button>
             <Button variant="outline" className="h-10 text-[9px] font-black" onClick={() => handleManifestDownload('ALL')}><Download size={14} className="mr-2" /> Manifest (All)</Button>
+            {hasActiveFilters && (
+              <Button variant="outline" className="h-10 text-[9px] font-black" onClick={clearAllFilters}>Clear Filters</Button>
+            )}
           </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-3 py-2.5 flex flex-wrap items-center gap-2 text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">
+          <span className="inline-flex items-center rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-2 py-1">Active {activeTrips.length}</span>
+          <span className="inline-flex items-center rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-2 py-1">Completed {completedTrips.length}</span>
+          <span className="inline-flex items-center rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-2 py-1">Deleted {filteredDeletedTrips.length}</span>
+          {hasActiveFilters && (
+            <span className="inline-flex items-center rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 px-2 py-1 text-blue-700 dark:text-blue-300">Filtered View</span>
+          )}
         </div>
 
         {manifestMessage && (
@@ -976,13 +1361,30 @@ export const TripsPage: React.FC = () => {
              </div>
              <h3 className="text-xl font-black text-brand-900 dark:text-white uppercase tracking-tight">No Active Missions</h3>
              <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.3em] mt-2">Completed missions are auto-archived below</p>
-             <Button variant="outline" className="mt-8 h-10 text-[9px]" onClick={() => {setFilterText(''); setTimeFilter('ALL');}}>Reset Filter Archive</Button>
+             <Button variant="outline" className="mt-8 h-10 text-[9px]" onClick={clearAllFilters}>Reset Filter Archive</Button>
           </div>
         )}
 
         {/* Responsive Table/Card Engine */}
         {activeTrips.length > 0 && viewMode === 'TABLE' ? (
-          <div className="hidden md:block bg-white dark:bg-brand-900 rounded-[2rem] border border-slate-200 dark:border-brand-800 shadow-xl overflow-x-auto">
+          <div className={isTableFullView ? 'fixed top-0 right-0 bottom-0 left-0 z-[9999] bg-slate-50 dark:bg-brand-950 p-0' : ''}>
+            {isTableFullView && (
+              <div className="px-4 md:px-6 pt-4 md:pt-5 pb-3 flex items-center justify-between border-b border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950">
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-300">Mission Log · Full View</p>
+                <button
+                  type="button"
+                  onClick={() => setIsTableFullView(false)}
+                  className="h-8 px-3 rounded-lg border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5"
+                >
+                  <Minimize2 size={12} />
+                  Exit Full View
+                </button>
+              </div>
+            )}
+          <HorizontalScrollArea
+            className={`${isTableFullView ? 'block h-[calc(100dvh-4.25rem)] bg-white dark:bg-brand-900 border-t border-slate-200 dark:border-brand-800 shadow-none rounded-none' : 'hidden md:block bg-white dark:bg-brand-900 rounded-[2rem] border border-slate-200 dark:border-brand-800 shadow-xl'}`}
+            viewportClassName={isTableFullView ? 'h-full' : 'rounded-[2rem]'}
+          >
             <table className="w-full min-w-[1160px] text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50 dark:bg-brand-950/50 border-b border-slate-100 dark:border-brand-800">
@@ -1124,6 +1526,7 @@ export const TripsPage: React.FC = () => {
                 })}
               </tbody>
             </table>
+          </HorizontalScrollArea>
           </div>
         ) : null}
 
@@ -1419,11 +1822,7 @@ export const TripsPage: React.FC = () => {
           recipientPhone={messagingContext.trip.customerPhone}
           operatorPhone={settings.operatorWhatsApp}
           customerSnapshot={messagingSnapshot || undefined}
-          initialMessage={replacePlaceholders(
-            messagingContext.type === 'FEEDBACK_REQ' ? settings.templates.feedback_request : settings.templates.feedback_thanks,
-            messagingContext.trip,
-            drivers
-          )}
+          initialMessage={messagingInitialMessage}
           onMarkSent={(finalMsg) => {
             const field = messagingContext.type === 'FEEDBACK_REQ' ? 'feedback_request_sent_at' : 'thank_you_sent_at';
             updateFullTrip({ ...messagingContext.trip, [field]: new Date().toISOString() });
@@ -1490,9 +1889,7 @@ const TripUpdateModal: React.FC<{
   const [requoteMessage, setRequoteMessage] = useState('');
   const [requoteBusy, setRequoteBusy] = useState(false);
   const destinationInputRef = useRef<HTMLInputElement>(null);
-  const destinationAutocompleteRef = useRef<any>(null);
   const stopInputRefs = useRef<Array<HTMLInputElement | null>>([]);
-  const stopAutocompleteRefs = useRef<any[]>([]);
 
   useEffect(() => {
     setStatus(trip.status);
@@ -1522,114 +1919,6 @@ const TripUpdateModal: React.FC<{
     setPriorityActionMessage('');
     setRequoteBusy(false);
   }, [trip]);
-
-  useEffect(() => {
-    if (!mapsApiKey.trim()) return;
-
-    let disposed = false;
-
-    const setupAutocomplete = async () => {
-      try {
-        await loadGoogleMapsScript(mapsApiKey);
-        if (disposed || !destinationInputRef.current || !google?.maps?.places?.Autocomplete) {
-          return;
-        }
-
-        if (destinationAutocompleteRef.current) {
-          google.maps.event.clearInstanceListeners(destinationAutocompleteRef.current);
-        }
-
-        const autocomplete = new google.maps.places.Autocomplete(destinationInputRef.current, {
-          componentRestrictions: { country: 'lb' },
-          fields: ['place_id', 'geometry', 'formatted_address', 'name'],
-        });
-
-        autocomplete.addListener('place_changed', () => {
-          const place = autocomplete.getPlace();
-          const nextValue = place?.formatted_address || place?.name;
-          if (nextValue) {
-            setDestinationDraft(nextValue);
-          }
-
-          const lat = Number(place?.geometry?.location?.lat?.() ?? place?.geometry?.location?.lat);
-          const lng = Number(place?.geometry?.location?.lng?.() ?? place?.geometry?.location?.lng);
-          if (Number.isFinite(lat) && Number.isFinite(lng) && nextValue) {
-            setDestinationCandidate({
-              text: nextValue,
-              placeId: place?.place_id || 'GEOCODED_DESTINATION',
-              lat,
-              lng,
-            });
-          }
-        });
-
-        destinationAutocompleteRef.current = autocomplete;
-
-        setStopCandidates(prev => {
-          const next = prev.slice(0, stopsDraft.length);
-          while (next.length < stopsDraft.length) next.push(null);
-          return next;
-        });
-
-        stopAutocompleteRefs.current.forEach(instance => {
-          if (instance && google?.maps?.event?.clearInstanceListeners) {
-            google.maps.event.clearInstanceListeners(instance);
-          }
-        });
-        stopAutocompleteRefs.current = [];
-
-        stopInputRefs.current = stopInputRefs.current.slice(0, stopsDraft.length);
-        stopInputRefs.current.forEach((input, index) => {
-          if (!input) return;
-
-          const stopAutocomplete = new google.maps.places.Autocomplete(input, {
-            componentRestrictions: { country: 'lb' },
-            fields: ['place_id', 'geometry', 'formatted_address', 'name'],
-          });
-
-          stopAutocomplete.addListener('place_changed', () => {
-            const place = stopAutocomplete.getPlace();
-            const nextValue = place?.formatted_address || place?.name;
-            if (!nextValue) return;
-            setStopsDraft(prev => prev.map((entry, i) => (i === index ? nextValue : entry)));
-
-            const latRaw = place?.geometry?.location?.lat;
-            const lngRaw = place?.geometry?.location?.lng;
-            const lat = typeof latRaw === 'function' ? Number(latRaw.call(place.geometry.location)) : Number(latRaw);
-            const lng = typeof lngRaw === 'function' ? Number(lngRaw.call(place.geometry.location)) : Number(lngRaw);
-            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-
-            const candidate: TripStop = {
-              text: nextValue,
-              placeId: place?.place_id || 'GEOCODED_STOP',
-              lat,
-              lng,
-            };
-            setStopCandidates(prev => prev.map((entry, i) => (i === index ? candidate : entry)));
-          });
-
-          stopAutocompleteRefs.current[index] = stopAutocomplete;
-        });
-      } catch {
-      }
-    };
-
-    setupAutocomplete();
-
-    return () => {
-      disposed = true;
-      if (destinationAutocompleteRef.current && google?.maps?.event?.clearInstanceListeners) {
-        google.maps.event.clearInstanceListeners(destinationAutocompleteRef.current);
-      }
-      destinationAutocompleteRef.current = null;
-      stopAutocompleteRefs.current.forEach(instance => {
-        if (instance && google?.maps?.event?.clearInstanceListeners) {
-          google.maps.event.clearInstanceListeners(instance);
-        }
-      });
-      stopAutocompleteRefs.current = [];
-    };
-  }, [mapsApiKey, trip.id, stopsDraft.length]);
 
   const liveTrip: Trip = {
     ...trip,
@@ -1997,10 +2286,9 @@ const TripUpdateModal: React.FC<{
             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block px-1">Assign Places to Contact</label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <button type="button" onClick={() => runAssignLocation('HOME', 'PICKUP')} className="h-10 rounded-xl border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300">Pickup → Home</button>
-              <button type="button" onClick={() => runAssignLocation('SMART_PICKUP', 'PICKUP')} className="h-10 rounded-xl border border-cyan-300 dark:border-cyan-900/40 bg-cyan-50 dark:bg-cyan-900/10 text-[9px] font-black uppercase tracking-widest text-cyan-700 dark:text-cyan-300">Pickup Smart</button>
+              <button type="button" onClick={() => runAssignLocation('FREQUENT', 'PICKUP')} className="h-10 rounded-xl border border-cyan-300 dark:border-cyan-900/40 bg-cyan-50 dark:bg-cyan-900/10 text-[9px] font-black uppercase tracking-widest text-cyan-700 dark:text-cyan-300">Pickup → Frequent</button>
               <button type="button" onClick={() => runAssignLocation('BUSINESS', 'DROPOFF')} className="h-10 rounded-xl border border-amber-300 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[9px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300">Dropoff → Business</button>
-              <button type="button" onClick={() => runAssignLocation('FREQUENT', 'PICKUP')} className="h-10 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[9px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">Pickup + Frequent</button>
-              <button type="button" onClick={() => runAssignLocation('FREQUENT', 'DROPOFF')} className="h-10 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[9px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">Dropoff + Frequent</button>
+              <button type="button" onClick={() => runAssignLocation('FREQUENT', 'DROPOFF')} className="h-10 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[9px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">Dropoff → Frequent</button>
             </div>
             {locationActionMessage && (
               <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300">{locationActionMessage}</p>

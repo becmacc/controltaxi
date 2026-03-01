@@ -67,6 +67,8 @@ export interface Driver {
   fuelRangeKm: number; // Estimated range on a full tank (default ~500km)
   fuelLogs?: DriverFuelLogEntry[];
   companyShareOverridePercent?: number;
+  profileTimeline?: CustomerProfileEvent[];
+  lastEnrichedAt?: string;
 }
 
 export interface Customer {
@@ -204,6 +206,7 @@ export interface ReceiptRecord {
   ledgerEntryId: string;
   issuedAt: string;
   partyType: CreditPartyType;
+  partyId?: string;
   partyName: string;
   cycle: CreditCycle;
   amountUsd: number;
@@ -221,6 +224,7 @@ export interface Settings {
   googleMapsApiKey: string;
   googleMapsMapId: string;
   googleMapsMapIdDark: string;
+  googleBusinessReviewUrl: string;
   operatorWhatsApp: string;
   hourlyWaitRate: number;
   ratePerKm: number;

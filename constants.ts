@@ -7,6 +7,9 @@ export const MIN_RIDE_FARE_USD = 7;
 export const DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT = 15;
 export const DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT = 50;
 export const DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT = 30;
+export const DISPATCH_NOW_MIN_MINUTES = 3;
+export const DISPATCH_NOW_MAX_MINUTES = 15;
+export const DISPATCH_NOW_DEFAULT_MINUTES = Math.round((DISPATCH_NOW_MIN_MINUTES + DISPATCH_NOW_MAX_MINUTES) / 2);
 export const APP_NAME = "Control";
 
 export const DEFAULT_TEMPLATES = {
@@ -38,6 +41,7 @@ export const SPECIAL_REQUIREMENTS = [
   { id: 'van', label: 'Van required', short: 'Van' },
   { id: 'pet', label: 'Pet onboard', short: 'Pet' },
   { id: 'wheelchair', label: 'Wheelchair / Access', short: 'Access' },
+  { id: 'compound_access', label: 'Compound/Gate access required', short: 'Gate Access' },
   { id: 'smoking', label: 'Smoking allowed', short: 'Smoking' },
   { id: 'no_smoking', label: 'Smoking NOT allowed', short: 'No Smoke' },
   { id: 'stops', label: 'Multiple stops', short: 'Stops' },

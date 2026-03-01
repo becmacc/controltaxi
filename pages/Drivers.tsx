@@ -1,9 +1,10 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
 import { Driver, TripStatus, DriverAvailability } from '../types';
 import { isToday, parseISO, subDays } from 'date-fns';
 import { Button } from '../components/ui/Button';
+import { HorizontalScrollArea } from '../components/ui/HorizontalScrollArea';
 import {
   applyPhoneDialCode,
   buildWhatsAppLink,
@@ -16,7 +17,7 @@ import {
   Plus, User, Car, Phone, Trash2, Edit2, XCircle, Star, Hash, Activity, 
   X, Power, CheckCircle, Clock, Trophy, Map, DollarSign, TrendingUp, 
   Medal, Download, Copy, Check, Info, Users, ExternalLink, PhoneForwarded,
-  Fuel, Search, UserX, AlertCircle, ArrowUpRight, List as ListIcon, LayoutGrid
+  Fuel, Search, UserX, AlertCircle, ArrowUpRight, List as ListIcon, LayoutGrid, Maximize2, Minimize2
 } from 'lucide-react';
 
 const ownershipLabelMap = {
@@ -38,6 +39,7 @@ export const DriversPage: React.FC = () => {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [isTableFullView, setIsTableFullView] = useState(false);
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -117,6 +119,37 @@ export const DriversPage: React.FC = () => {
     setActionTone(tone);
     setTimeout(() => setActionMessage(''), 2400);
   };
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(target.closest('[contenteditable="true"]'));
+    };
+
+    const handleTableHotkeys = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return;
+
+      if (event.key === 'Escape') {
+        setIsTableFullView(false);
+        return;
+      }
+
+      if (event.key.toLowerCase() === 'f' && !event.metaKey && !event.ctrlKey && !event.altKey && desktopView === 'TABLE') {
+        event.preventDefault();
+        setIsTableFullView(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleTableHotkeys);
+    return () => window.removeEventListener('keydown', handleTableHotkeys);
+  }, [desktopView]);
+
+  useEffect(() => {
+    if (desktopView !== 'TABLE') {
+      setIsTableFullView(false);
+    }
+  }, [desktopView]);
 
   const normalizePlate = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, '');
   const phonePopularPresets = PHONE_COUNTRY_PRESETS;
@@ -263,6 +296,70 @@ export const DriversPage: React.FC = () => {
     showActionMessage('Unit removed successfully.', 'SUCCESS');
   };
 
+  const escapeCsvCell = (value: unknown): string => {
+    const raw = String(value ?? '');
+    if (!/[",\n]/.test(raw)) return raw;
+    return `"${raw.replace(/"/g, '""')}"`;
+  };
+
+  const handleExportFleetRosterCsv = () => {
+    if (rankedDrivers.length === 0) {
+      showActionMessage('No units available for export.', 'ERROR');
+      return;
+    }
+
+    const headers = [
+      'driver_id',
+      'name',
+      'phone',
+      'car_model',
+      'plate_number',
+      'status',
+      'availability',
+      'vehicle_ownership',
+      'fuel_responsibility',
+      'maintenance_responsibility',
+      'completed_trips',
+      'distance_km',
+      'revenue_usd',
+      'profitability_index_usd',
+      'avg_rating',
+      'metrics_window',
+      'search_scope',
+    ];
+
+    const rows = rankedDrivers.map(driver => [
+      driver.id,
+      driver.name,
+      driver.phone,
+      driver.carModel,
+      driver.plateNumber,
+      driver.status,
+      driver.currentStatus,
+      driver.vehicleOwnership,
+      driver.fuelCostResponsibility,
+      driver.maintenanceResponsibility,
+      driver.stats.totalTrips,
+      Math.round(driver.stats.totalDistance),
+      Number(driver.stats.totalRevenue || 0).toFixed(2),
+      Number(driver.stats.profitabilityIndex || 0).toFixed(2),
+      driver.stats.avgRating,
+      metricsWindow,
+      searchTerm.trim() ? 'FILTERED' : 'ALL',
+    ].map(escapeCsvCell).join(','));
+
+    const csv = [headers.map(escapeCsvCell).join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `fleet-roster-${searchTerm.trim() ? 'filtered' : 'all'}-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+
+    showActionMessage(`Fleet roster exported (${rankedDrivers.length} units).`, 'SUCCESS');
+  };
+
   return (
     <div className="app-page-shell p-4 md:p-6 bg-slate-50 dark:bg-brand-950 min-h-full transition-colors duration-300">
       
@@ -343,7 +440,22 @@ export const DriversPage: React.FC = () => {
               <LayoutGrid size={12} />
               Grid
             </button>
+            {desktopView === 'TABLE' && (
+              <button
+                type="button"
+                onClick={() => setIsTableFullView(prev => !prev)}
+                title={isTableFullView ? 'Exit full view (Esc)' : 'Open full view'}
+                className={`h-8 px-2.5 rounded-lg text-[8px] font-black uppercase tracking-widest inline-flex items-center gap-1.5 transition-colors ${isTableFullView ? 'bg-brand-900 text-gold-400 dark:bg-brand-800' : 'text-slate-500 dark:text-slate-300 hover:text-brand-900 dark:hover:text-gold-400'}`}
+              >
+                {isTableFullView ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+                Full
+              </button>
+            )}
           </div>
+          <Button onClick={handleExportFleetRosterCsv} variant="outline" className="h-10 px-4 w-full sm:w-auto">
+            <Download size={14} className="mr-2" />
+            Export CSV
+          </Button>
           <Button onClick={() => setIsFormOpen(true)} variant="gold" className="h-10 px-4 shadow-lg shadow-gold-500/20 w-full sm:w-auto">
             <Plus size={16} className="mr-2" />
             Onboard Unit
@@ -359,8 +471,25 @@ export const DriversPage: React.FC = () => {
 
       {/* Desktop Table View */}
       {desktopView === 'TABLE' && (
-      <div className="hidden md:block bg-white dark:bg-brand-900 shadow-xl overflow-hidden rounded-3xl border border-slate-200 dark:border-brand-800">
-        <table className="min-w-full divide-y divide-slate-100 dark:divide-brand-800">
+      <div className={isTableFullView ? 'fixed inset-0 z-[70] bg-slate-50 dark:bg-brand-950 p-4 md:p-6' : ''}>
+      {isTableFullView && (
+        <div className="mb-3 flex items-center justify-between">
+          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-300">Fleet Command · Full View</p>
+          <button
+            type="button"
+            onClick={() => setIsTableFullView(false)}
+            className="h-8 px-3 rounded-lg border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5"
+          >
+            <Minimize2 size={12} />
+            Exit Full View
+          </button>
+        </div>
+      )}
+      <HorizontalScrollArea
+        className={`${isTableFullView ? 'block h-[calc(100dvh-5.5rem)] bg-white dark:bg-brand-900 rounded-2xl border border-slate-200 dark:border-brand-800 shadow-2xl' : 'hidden md:block bg-white dark:bg-brand-900 shadow-xl rounded-3xl border border-slate-200 dark:border-brand-800'}`}
+        viewportClassName={isTableFullView ? 'rounded-2xl h-full' : 'rounded-3xl'}
+      >
+        <table className="min-w-[1080px] w-full divide-y divide-slate-100 dark:divide-brand-800">
           <thead className="bg-slate-50 dark:bg-brand-950">
             <tr>
               <th className="px-6 py-5 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest w-12">Rank</th>
@@ -455,6 +584,7 @@ export const DriversPage: React.FC = () => {
             )}
           </tbody>
         </table>
+      </HorizontalScrollArea>
       </div>
       )}
 

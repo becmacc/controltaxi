@@ -50,7 +50,7 @@ export interface ContactImportReport {
   errors: string[];
 }
 
-const splitCsvLine = (line: string): string[] => {
+const splitDelimitedLine = (line: string, delimiter: string): string[] => {
   const values: string[] = [];
   let current = '';
   let inQuotes = false;
@@ -69,7 +69,7 @@ const splitCsvLine = (line: string): string[] => {
       continue;
     }
 
-    if (char === ',' && !inQuotes) {
+    if (char === delimiter && !inQuotes) {
       values.push(current.trim());
       current = '';
       continue;
@@ -80,6 +80,135 @@ const splitCsvLine = (line: string): string[] => {
 
   values.push(current.trim());
   return values;
+};
+
+const parseDelimitedRows = (text: string, delimiter: string): string[][] => {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (char === '"') {
+      const next = text[index + 1];
+      if (inQuotes && next === '"') {
+        cell += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (!inQuotes && char === delimiter) {
+      row.push(cell.trim());
+      cell = '';
+      continue;
+    }
+
+    if (!inQuotes && (char === '\n' || char === '\r')) {
+      if (char === '\r' && text[index + 1] === '\n') {
+        index += 1;
+      }
+      row.push(cell.trim());
+      const hasContent = row.some(entry => entry.length > 0);
+      if (hasContent) {
+        rows.push(row);
+      }
+      row = [];
+      cell = '';
+      continue;
+    }
+
+    cell += char;
+  }
+
+  if (cell.length > 0 || row.length > 0) {
+    row.push(cell.trim());
+    const hasContent = row.some(entry => entry.length > 0);
+    if (hasContent) {
+      rows.push(row);
+    }
+  }
+
+  return rows;
+};
+
+const normalizeHeader = (header: string): string => {
+  return header
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\-_]/g, ' ')
+    .replace(/\s+/g, ' ');
+};
+
+const detectDelimiter = (headerLine: string): string => {
+  const candidates = [',', ';', '\t', '|'];
+  let bestDelimiter = ',';
+  let bestScore = -1;
+
+  candidates.forEach(candidate => {
+    const fields = splitDelimitedLine(headerLine, candidate);
+    const score = fields.length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestDelimiter = candidate;
+    }
+  });
+
+  return bestDelimiter;
+};
+
+const findNameColumnIndex = (headers: string[]): number => {
+  const exactAliases = new Set([
+    'name',
+    'full name',
+    'full_name',
+    'customer name',
+    'customer_name',
+    'display name',
+    'contact name',
+  ]);
+
+  const exactIndex = headers.findIndex(header => exactAliases.has(header));
+  if (exactIndex >= 0) return exactIndex;
+
+  return headers.findIndex(header => /(^|\s)name($|\s)/.test(header));
+};
+
+const findPhoneColumnIndex = (headers: string[]): number => {
+  let bestIndex = -1;
+  let bestScore = -1;
+
+  headers.forEach((header, index) => {
+    let score = 0;
+    const isPhoneLike = /(phone|mobile|tel|telephone|cell|number)/.test(header);
+    if (!isPhoneLike) return;
+
+    score += 20;
+    if (['phone', 'mobile', 'number', 'customer phone', 'customer_phone'].includes(header)) {
+      score += 100;
+    }
+    if (/value|number/.test(header)) {
+      score += 15;
+    }
+    if (/type|label|kind/.test(header)) {
+      score -= 20;
+    }
+    if (/primary|main/.test(header)) {
+      score += 10;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
 };
 
 const cleanString = (value: unknown): string => {
@@ -310,50 +439,70 @@ const parseContactsFromJson = (text: string): ContactImportReport => {
 };
 
 const parseContactsFromCsv = (text: string): ContactImportReport => {
-  const lines = text
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
+  const sanitizedText = text.replace(/^\uFEFF/, '');
+  const previewLines = sanitizedText.split(/\r?\n/).filter(Boolean);
 
-  if (lines.length < 2) {
+  if (previewLines.length < 2) {
     return { totalRows: 0, valid: [], rejected: 0, errors: ['CSV needs a header row and at least one data row.'] };
   }
 
-  const headers = splitCsvLine(lines[0]).map(h => h.toLowerCase());
-  const nameIndex = headers.findIndex(h => ['name', 'full_name', 'customer_name'].includes(h));
-  const phoneIndex = headers.findIndex(h => ['phone', 'mobile', 'number', 'customer_phone'].includes(h));
+  const delimiter = detectDelimiter(previewLines[0]);
+  const rows = parseDelimitedRows(sanitizedText, delimiter);
 
-  if (nameIndex === -1 || phoneIndex === -1) {
+  if (rows.length < 2) {
+    return { totalRows: 0, valid: [], rejected: 0, errors: ['CSV needs a header row and at least one data row.'] };
+  }
+
+  const headers = rows[0].map(normalizeHeader);
+  const nameIndex = findNameColumnIndex(headers);
+  const phoneIndex = findPhoneColumnIndex(headers);
+  const firstNameIndex = headers.findIndex(header => ['first name', 'firstname', 'given name', 'givenname'].includes(header));
+  const lastNameIndex = headers.findIndex(header => ['last name', 'lastname', 'family name', 'familyname', 'surname'].includes(header));
+
+  if ((nameIndex === -1 && firstNameIndex === -1 && lastNameIndex === -1) || phoneIndex === -1) {
     return {
       totalRows: 0,
       valid: [],
       rejected: 0,
-      errors: ['CSV header must include name and phone columns.'],
+      errors: ['CSV header must include a phone column and either a name column or first/last name columns.'],
     };
   }
 
   const errors: string[] = [];
   const valid: ContactImportCandidate[] = [];
+  const MAX_REPORTED_ERRORS = 120;
 
-  lines.slice(1).forEach((line, index) => {
-    const cols = splitCsvLine(line);
+  rows.slice(1).forEach((cols, index) => {
     const row: Record<string, unknown> = {};
     headers.forEach((header, headerIndex) => {
       row[header] = cols[headerIndex] ?? '';
     });
-    row.name = cols[nameIndex];
+
+    const firstName = firstNameIndex >= 0 ? String(cols[firstNameIndex] ?? '').trim() : '';
+    const lastName = lastNameIndex >= 0 ? String(cols[lastNameIndex] ?? '').trim() : '';
+    const compositeName = `${firstName} ${lastName}`.trim();
+    row.name = nameIndex >= 0 ? cols[nameIndex] : compositeName;
     row.phone = cols[phoneIndex];
 
     const parsedRow = parseContactRow(row, `Row ${index + 2}`);
     if (parsedRow.error) {
-      errors.push(parsedRow.error);
+      if (errors.length < MAX_REPORTED_ERRORS) {
+        errors.push(parsedRow.error);
+      }
       return;
     }
 
     valid.push(parsedRow.contact!);
   });
 
-  const totalRows = lines.length - 1;
+  const totalRows = rows.length - 1;
+
+  if (errors.length === MAX_REPORTED_ERRORS) {
+    const hiddenErrorCount = Math.max(0, totalRows - valid.length - MAX_REPORTED_ERRORS);
+    if (hiddenErrorCount > 0) {
+      errors.push(`...and ${hiddenErrorCount} more invalid rows.`);
+    }
+  }
 
   return {
     totalRows,
@@ -475,9 +624,7 @@ export const parseContactsImport = (fileName: string, text: string): ContactImpo
 
   if (/BEGIN:VCARD/i.test(text)) return parseContactsFromVcf(text);
 
-  try {
-    return parseContactsFromJson(text);
-  } catch {
-    return parseContactsFromCsv(text);
-  }
+  const trimmed = text.trim();
+  const looksLikeJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+  return looksLikeJson ? parseContactsFromJson(text) : parseContactsFromCsv(text);
 };
