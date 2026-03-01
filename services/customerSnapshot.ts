@@ -1,5 +1,14 @@
-import { Customer, CustomerMarketSegment, Driver, Trip, TripStatus } from '../types';
+import { CreditLedgerEntry, Customer, CustomerMarketSegment, Driver, ReceiptRecord, Trip, TripStatus } from '../types';
 import { customerPhoneKey } from './customerProfile';
+
+interface SolvencySnapshot {
+  openCreditUsd: number;
+  paidCreditUsd: number;
+  overdueOpenCount: number;
+  receiptCount: number;
+  lastReceiptAt?: string;
+  latestReceipt?: ReceiptRecord;
+}
 
 export interface CustomerSnapshot {
   name: string;
@@ -19,6 +28,22 @@ export interface CustomerSnapshot {
   homeAddress?: string;
   businessAddress?: string;
   frequentPlacesCount: number;
+  openCreditUsd: number;
+  paidCreditUsd: number;
+  overdueOpenCount: number;
+  receiptCount: number;
+  lastReceiptAt?: string;
+  latestReceipt?: ReceiptRecord;
+  driverSolvency?: {
+    driverId: string;
+    driverName: string;
+    openCreditUsd: number;
+    paidCreditUsd: number;
+    overdueOpenCount: number;
+    receiptCount: number;
+    lastReceiptAt?: string;
+    latestReceipt?: ReceiptRecord;
+  };
 }
 
 const toTimestamp = (value?: string): number => {
@@ -29,6 +54,40 @@ const toTimestamp = (value?: string): number => {
 
 const uniqueSegments = (segments: CustomerMarketSegment[]): CustomerMarketSegment[] => {
   return Array.from(new Set(segments));
+};
+
+const lower = (value?: string): string => String(value || '').trim().toLowerCase();
+
+const isOverdue = (dueDate?: string): boolean => {
+  if (!dueDate) return false;
+  const parsed = new Date(dueDate).getTime();
+  return Number.isFinite(parsed) && parsed < Date.now();
+};
+
+const buildSolvencySnapshot = (
+  entries: CreditLedgerEntry[],
+  receipts: ReceiptRecord[]
+): SolvencySnapshot => {
+  const openCreditUsd = entries
+    .filter(entry => entry.status === 'OPEN')
+    .reduce((sum, entry) => sum + entry.amountUsd, 0);
+  const paidCreditUsd = entries
+    .filter(entry => entry.status === 'PAID')
+    .reduce((sum, entry) => sum + entry.amountUsd, 0);
+  const overdueOpenCount = entries.filter(entry => entry.status === 'OPEN' && isOverdue(entry.dueDate)).length;
+
+  const sortedReceipts = receipts
+    .slice()
+    .sort((a, b) => toTimestamp(b.issuedAt) - toTimestamp(a.issuedAt));
+  const latestReceipt = sortedReceipts[0];
+
+  return {
+    openCreditUsd,
+    paidCreditUsd,
+    overdueOpenCount,
+    receiptCount: receipts.length,
+    ...(latestReceipt ? { lastReceiptAt: latestReceipt.issuedAt, latestReceipt } : {}),
+  };
 };
 
 const deriveSegments = (customer: Customer | undefined, normalizedPhone: string): CustomerMarketSegment[] => {
@@ -49,9 +108,13 @@ export const buildCustomerSnapshotForTrip = (
   trip: Trip,
   customers: Customer[],
   trips: Trip[],
-  drivers: Driver[]
+  drivers: Driver[],
+  creditLedger: CreditLedgerEntry[],
+  receipts: ReceiptRecord[]
 ): CustomerSnapshot => {
-  return buildCustomerSnapshot(trip.customerName, trip.customerPhone, customers, trips, drivers);
+  return buildCustomerSnapshot(trip.customerName, trip.customerPhone, customers, trips, drivers, creditLedger, receipts, {
+    driverContextId: trip.driverId,
+  });
 };
 
 export const buildCustomerSnapshot = (
@@ -59,7 +122,10 @@ export const buildCustomerSnapshot = (
   customerPhone: string,
   customers: Customer[],
   trips: Trip[],
-  drivers: Driver[]
+  drivers: Driver[],
+  creditLedger: CreditLedgerEntry[],
+  receipts: ReceiptRecord[],
+  options?: { driverContextId?: string }
 ): CustomerSnapshot => {
   const normalizedPhone = customerPhoneKey(customerPhone);
   const customer = customers.find(entry => customerPhoneKey(entry.phone) === normalizedPhone);
@@ -81,6 +147,50 @@ export const buildCustomerSnapshot = (
   const preferredDriverName = preferredDriverId
     ? drivers.find(driver => driver.id === preferredDriverId)?.name
     : undefined;
+
+  const customerPartyIds = new Set<string>([
+    normalizedPhone,
+    customer?.id || '',
+  ].map(value => lower(value)).filter(Boolean));
+  const normalizedCustomerName = lower(customer?.name || customerName);
+
+  const customerLedgerEntries = creditLedger.filter(entry => {
+    if (entry.partyType !== 'CLIENT') return false;
+    const partyIdMatch = customerPartyIds.has(lower(entry.partyId));
+    if (partyIdMatch) return true;
+    if (!entry.partyId) {
+      return lower(entry.partyName) === normalizedCustomerName;
+    }
+    return false;
+  });
+
+  const customerEntryIds = new Set(customerLedgerEntries.map(entry => entry.id));
+  const customerReceipts = receipts.filter(receipt => {
+    if (receipt.partyType !== 'CLIENT') return false;
+    if (customerEntryIds.has(receipt.ledgerEntryId)) return true;
+    return lower(receipt.partyName) === normalizedCustomerName;
+  });
+  const customerSolvency = buildSolvencySnapshot(customerLedgerEntries, customerReceipts);
+
+  const contextDriverId = options?.driverContextId || preferredDriverId;
+  const contextDriver = contextDriverId ? drivers.find(driver => driver.id === contextDriverId) : undefined;
+  let driverSolvency: CustomerSnapshot['driverSolvency'] | undefined;
+  if (contextDriver) {
+    const driverLedgerEntries = creditLedger.filter(entry => entry.partyType === 'DRIVER' && entry.partyId === contextDriver.id);
+    const driverEntryIds = new Set(driverLedgerEntries.map(entry => entry.id));
+    const driverReceipts = receipts.filter(receipt => receipt.partyType === 'DRIVER' && (driverEntryIds.has(receipt.ledgerEntryId) || lower(receipt.partyName) === lower(contextDriver.name)));
+    const solvency = buildSolvencySnapshot(driverLedgerEntries, driverReceipts);
+    driverSolvency = {
+      driverId: contextDriver.id,
+      driverName: contextDriver.name,
+      openCreditUsd: solvency.openCreditUsd,
+      paidCreditUsd: solvency.paidCreditUsd,
+      overdueOpenCount: solvency.overdueOpenCount,
+      receiptCount: solvency.receiptCount,
+      ...(solvency.lastReceiptAt ? { lastReceiptAt: solvency.lastReceiptAt } : {}),
+      ...(solvency.latestReceipt ? { latestReceipt: solvency.latestReceipt } : {}),
+    };
+  }
 
   const destinationFrequency: Record<string, number> = {};
   completedTrips.forEach(entry => {
@@ -124,5 +234,12 @@ export const buildCustomerSnapshot = (
     ...(customer?.homeLocation?.address ? { homeAddress: customer.homeLocation.address } : {}),
     ...(customer?.businessLocation?.address ? { businessAddress: customer.businessLocation.address } : {}),
     frequentPlacesCount: Array.isArray(customer?.frequentLocations) ? customer!.frequentLocations.length : 0,
+    openCreditUsd: customerSolvency.openCreditUsd,
+    paidCreditUsd: customerSolvency.paidCreditUsd,
+    overdueOpenCount: customerSolvency.overdueOpenCount,
+    receiptCount: customerSolvency.receiptCount,
+    ...(customerSolvency.lastReceiptAt ? { lastReceiptAt: customerSolvency.lastReceiptAt } : {}),
+    ...(customerSolvency.latestReceipt ? { latestReceipt: customerSolvency.latestReceipt } : {}),
+    ...(driverSolvency ? { driverSolvency } : {}),
   };
 };

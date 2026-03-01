@@ -35,7 +35,7 @@ const extractIndexMarkers = (text?: string): string[] => {
 };
 
 export const TripsPage: React.FC = () => {
-  const { trips, deletedTrips, drivers, customers, updateFullTrip, deleteCancelledTrip, restoreDeletedTrip, settings, addCustomers } = useStore();
+  const { trips, deletedTrips, drivers, customers, creditLedger, receipts, updateFullTrip, deleteCancelledTrip, restoreDeletedTrip, settings, addCustomers } = useStore();
   const location = useLocation();
   const [filterText, setFilterText] = useState('');
   const [timeFilter, setTimeFilter] = useState<'ALL' | 'TODAY' | 'UPCOMING' | 'PAST'>('ALL');
@@ -49,6 +49,7 @@ export const TripsPage: React.FC = () => {
   const [manifestMessage, setManifestMessage] = useState('');
   const [whatsAppError, setWhatsAppError] = useState<string | null>(null);
   const [actionToast, setActionToast] = useState<{ tone: 'SUCCESS' | 'ERROR'; message: string } | null>(null);
+  const [completedTripsCollapsed, setCompletedTripsCollapsed] = useState(true);
   const [deletedTripsCollapsed, setDeletedTripsCollapsed] = useState(true);
   const [handledDeepLinkKey, setHandledDeepLinkKey] = useState<string>('');
 
@@ -132,6 +133,21 @@ export const TripsPage: React.FC = () => {
     });
   }, [deletedTrips, drivers, filterText, timeFilter]);
 
+  const activeTrips = useMemo(
+    () => filteredTrips.filter(trip => trip.status !== TripStatus.COMPLETED),
+    [filteredTrips]
+  );
+
+  const completedTrips = useMemo(() => {
+    return filteredTrips
+      .filter(trip => trip.status === TripStatus.COMPLETED)
+      .sort((a, b) => {
+        const aStamp = a.completedAt || a.tripDate || a.createdAt;
+        const bStamp = b.completedAt || b.tripDate || b.createdAt;
+        return new Date(bStamp).getTime() - new Date(aStamp).getTime();
+      });
+  }, [filteredTrips]);
+
   const activeDrivers = useMemo(
     () => drivers.filter(d => d.status === 'ACTIVE'),
     [drivers]
@@ -139,8 +155,8 @@ export const TripsPage: React.FC = () => {
 
   const selectedTripSnapshot = useMemo(() => {
     if (!selectedTrip) return null;
-    return buildCustomerSnapshotForTrip(selectedTrip, customers, trips, drivers);
-  }, [selectedTrip, customers, trips, drivers]);
+    return buildCustomerSnapshotForTrip(selectedTrip, customers, trips, drivers, creditLedger, receipts);
+  }, [selectedTrip, customers, trips, drivers, creditLedger, receipts]);
 
   const getTripIndexMarkers = (trip: Trip): string[] => {
     const normalizedPhone = customerPhoneKey(trip.customerPhone);
@@ -181,8 +197,8 @@ export const TripsPage: React.FC = () => {
 
   const messagingSnapshot = useMemo(() => {
     if (!messagingContext?.trip) return null;
-    return buildCustomerSnapshotForTrip(messagingContext.trip, customers, trips, drivers);
-  }, [messagingContext, customers, trips, drivers]);
+    return buildCustomerSnapshotForTrip(messagingContext.trip, customers, trips, drivers, creditLedger, receipts);
+  }, [messagingContext, customers, trips, drivers, creditLedger, receipts]);
 
   const statusConfig = {
     [TripStatus.QUOTED]: { icon: FileText, label: 'Quoted', className: 'bg-slate-100 text-slate-500 border-slate-200 dark:bg-brand-900/50 dark:text-slate-400 dark:border-brand-800' },
@@ -714,6 +730,10 @@ export const TripsPage: React.FC = () => {
     setIsModalOpen(false);
 
     if (wasCompleted) {
+      setManifestState('DONE');
+      setManifestMessage(`Trip #${updatedTrip.id.toString().slice(-4)} marked completed and moved to Completed Archive.`);
+      showActionToast(`Trip #${updatedTrip.id.toString().slice(-4)} moved to Completed Archive.`);
+      setCompletedTripsCollapsed(false);
       setTimeout(() => setMessagingContext({ trip: updatedTrip, type: 'FEEDBACK_REQ' }), 400);
     } else if (feedbackJustReceived) {
       setTimeout(() => setMessagingContext({ trip: updatedTrip, type: 'THANKS' }), 400);
@@ -754,6 +774,17 @@ export const TripsPage: React.FC = () => {
     setManifestState('DONE');
     setManifestMessage(`Archived trip ${tripLabel} restored to active Mission Log.`);
     showActionToast(`Archived trip ${tripLabel} restored to active log.`);
+  };
+
+  const handleReopenCompletedTrip = (trip: Trip) => {
+    const reopenedTrip: Trip = {
+      ...trip,
+      status: TripStatus.CONFIRMED,
+    };
+    updateFullTrip(reopenedTrip);
+    setManifestState('DONE');
+    setManifestMessage(`Completed trip #${trip.id.toString().slice(-4)} reopened to active missions.`);
+    showActionToast(`Trip #${trip.id.toString().slice(-4)} reopened to active missions.`);
   };
 
   const handleAssignLocationFromTrip = (
@@ -897,6 +928,14 @@ export const TripsPage: React.FC = () => {
              </div>
           </div>
 
+          <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-2.5 py-1.5">
+            <span className="inline-flex items-center h-5 px-2 rounded-md border border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10 text-[7px] font-black uppercase tracking-widest">Cash</span>
+            <span className="inline-flex items-center h-5 px-2 rounded-md border border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10 text-[7px] font-black uppercase tracking-widest">Credit</span>
+            <span className="inline-flex items-center h-5 px-2 rounded-md border border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20 text-[7px] font-black uppercase tracking-widest">Pending</span>
+            <span className="inline-flex items-center h-5 px-2 rounded-md border border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10 text-[7px] font-black uppercase tracking-widest">Settled</span>
+            <span className="inline-flex items-center h-5 px-2 rounded-md border border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10 text-[7px] font-black uppercase tracking-widest">Receipted</span>
+          </div>
+
           <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
             <div className="relative flex-1 lg:w-64">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -930,19 +969,19 @@ export const TripsPage: React.FC = () => {
         )}
 
         {/* No Missions Identified State */}
-        {filteredTrips.length === 0 && (
+          {activeTrips.length === 0 && (
           <div className="flex flex-col items-center justify-center py-20 bg-white dark:bg-brand-900 rounded-[3rem] border border-slate-200 dark:border-brand-800 shadow-sm animate-in fade-in duration-500">
              <div className="w-24 h-24 bg-slate-50 dark:bg-brand-950 rounded-full flex items-center justify-center mb-6">
                 <ClipboardX size={48} className="text-slate-300 dark:text-brand-800" />
              </div>
-             <h3 className="text-xl font-black text-brand-900 dark:text-white uppercase tracking-tight">No Missions Identified</h3>
-             <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.3em] mt-2">Adjust search filters or criteria</p>
+             <h3 className="text-xl font-black text-brand-900 dark:text-white uppercase tracking-tight">No Active Missions</h3>
+             <p className="text-[10px] font-black uppercase text-slate-400 tracking-[0.3em] mt-2">Completed missions are auto-archived below</p>
              <Button variant="outline" className="mt-8 h-10 text-[9px]" onClick={() => {setFilterText(''); setTimeFilter('ALL');}}>Reset Filter Archive</Button>
           </div>
         )}
 
         {/* Responsive Table/Card Engine */}
-        {filteredTrips.length > 0 && viewMode === 'TABLE' ? (
+        {activeTrips.length > 0 && viewMode === 'TABLE' ? (
           <div className="hidden md:block bg-white dark:bg-brand-900 rounded-[2rem] border border-slate-200 dark:border-brand-800 shadow-xl overflow-x-auto">
             <table className="w-full min-w-[1160px] text-left border-collapse">
               <thead>
@@ -959,7 +998,7 @@ export const TripsPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50 dark:divide-brand-800/50">
-                {filteredTrips.map(trip => {
+                {activeTrips.map(trip => {
                   const driver = drivers.find(d => d.id === trip.driverId);
                   const tripDate = parseISO(trip.tripDate || trip.createdAt);
                   const indexMarkers = getTripIndexMarkers(trip);
@@ -1089,9 +1128,9 @@ export const TripsPage: React.FC = () => {
         ) : null}
 
         {/* Card View (Always on Mobile, Toggleable on Desktop) */}
-        {filteredTrips.length > 0 && (viewMode === 'CARD' || viewMode === 'TABLE') && (
+        {activeTrips.length > 0 && (viewMode === 'CARD' || viewMode === 'TABLE') && (
           <div className={`${viewMode === 'TABLE' ? 'md:hidden' : ''} grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-4 md:pb-20`}>
-            {filteredTrips.map(trip => {
+            {activeTrips.map(trip => {
               const tripDate = parseISO(trip.tripDate || trip.createdAt);
               const driver = drivers.find(d => d.id === trip.driverId);
               const indexMarkers = getTripIndexMarkers(trip);
@@ -1208,6 +1247,78 @@ export const TripsPage: React.FC = () => {
             })}
           </div>
         )}
+
+        <div className={`${completedTripsCollapsed ? 'bg-slate-50/50 dark:bg-brand-950/40 border-slate-200/60 dark:border-brand-800/50 shadow-none' : 'bg-white dark:bg-brand-900 border-slate-200 dark:border-brand-800 shadow-sm'} rounded-[2rem] border ${completedTripsCollapsed ? 'p-2.5 md:p-3' : 'p-6 md:p-8'} space-y-4 transition-colors`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className={`${completedTripsCollapsed ? 'text-[10px] font-bold text-slate-400 dark:text-slate-500 tracking-wider' : 'text-xl font-black text-brand-900 dark:text-white tracking-tight'} uppercase`}>{completedTripsCollapsed ? 'Completed' : 'Completed Archive'}</h3>
+              {!completedTripsCollapsed && (
+                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Completed missions leave active board automatically and remain reviewable</p>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <div className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[8px] font-black uppercase tracking-widest ${completedTripsCollapsed ? 'border-transparent bg-transparent text-slate-400/80 dark:text-slate-500/80' : 'border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-500 dark:text-slate-300'}`}>
+                <CheckCircle2 size={12} />
+                {completedTripsCollapsed ? completedTrips.length : `${completedTrips.length} Archived`}
+              </div>
+              <button
+                type="button"
+                onClick={() => setCompletedTripsCollapsed(prev => !prev)}
+                className={`h-8 ${completedTripsCollapsed ? 'w-8 px-0 justify-center' : 'px-2.5'} rounded-lg border text-[8px] font-black uppercase tracking-widest inline-flex items-center gap-1 ${completedTripsCollapsed ? 'border-transparent bg-transparent text-slate-400 dark:text-slate-500' : 'border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-600 dark:text-slate-300'}`}
+              >
+                {completedTripsCollapsed ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+                {!completedTripsCollapsed && 'Minimize'}
+              </button>
+            </div>
+          </div>
+
+          {!completedTripsCollapsed && completedTrips.length === 0 ? (
+            <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-4 py-4 text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">
+              No completed trips in this filter window.
+            </div>
+          ) : !completedTripsCollapsed ? (
+            <div className="space-y-3">
+              {completedTrips.map(trip => {
+                const driver = drivers.find(d => d.id === trip.driverId);
+                const completedStamp = parseISO(trip.completedAt || trip.tripDate || trip.createdAt);
+                return (
+                  <div key={`completed-${trip.id}`} className="rounded-2xl border border-slate-200 dark:border-brand-800 bg-slate-50/80 dark:bg-brand-950 p-4 md:p-5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-brand-900 dark:text-white">#{trip.id.toString().slice(-4)} · {trip.customerName}</p>
+                        <p className="text-[9px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-300 mt-1">{trip.customerPhone} · {driver?.name || 'Unassigned'}</p>
+                        <p className="text-[9px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-300 mt-1">{trip.pickupText} → {trip.destinationText}</p>
+                        <p className="text-[8px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mt-1">Fare ${trip.fareUsd} · {trip.paymentMode || 'CASH'} · {trip.settlementStatus || 'PENDING'}</p>
+                      </div>
+                      <div className="text-right">
+                        <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-400">
+                          <CheckCircle2 size={10} /> Completed
+                        </span>
+                        <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 mt-2">{Number.isNaN(completedStamp.getTime()) ? (trip.completedAt || trip.tripDate || trip.createdAt) : format(completedStamp, 'MMM d, h:mm a')}</p>
+                        <div className="mt-2 flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openModal(trip)}
+                            className="h-7 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+                          >
+                            View
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleReopenCompletedTrip(trip)}
+                            className="h-7 px-2 rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300"
+                          >
+                            Reopen
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
 
         <div className={`${deletedTripsCollapsed ? 'bg-slate-50/50 dark:bg-brand-950/40 border-slate-200/60 dark:border-brand-800/50 shadow-none' : 'bg-white dark:bg-brand-900 border-slate-200 dark:border-brand-800 shadow-sm'} rounded-[2rem] border ${deletedTripsCollapsed ? 'p-2.5 md:p-3' : 'p-6 md:p-8'} space-y-4 transition-colors`}>
           <div className="flex items-center justify-between">

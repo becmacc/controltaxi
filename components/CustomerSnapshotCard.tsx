@@ -1,8 +1,9 @@
 import React from 'react';
-import { AlertCircle, MessageCircle, Phone, Star, UserCheck } from 'lucide-react';
+import { AlertCircle, Download, MessageCircle, Phone, Star, UserCheck } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { CustomerSnapshot } from '../services/customerSnapshot';
 import { buildWhatsAppLink, normalizePhoneForWhatsApp } from '../services/whatsapp';
+import { exportReceiptPdfFriendly } from '../services/receiptExport';
 
 interface CustomerSnapshotCardProps {
   snapshot: CustomerSnapshot;
@@ -28,6 +29,8 @@ export const CustomerSnapshotCard: React.FC<CustomerSnapshotCardProps> = ({ snap
   const phoneKey = normalizePhoneForWhatsApp(snapshot.phone) || snapshot.normalizedPhone;
   const callHref = phoneKey ? `tel:+${phoneKey}` : '';
   const whatsappHref = buildWhatsAppLink(phoneKey) || '';
+  const hasCustomerReceipt = Boolean(snapshot.latestReceipt);
+  const hasDriverReceipt = Boolean(snapshot.driverSolvency?.latestReceipt);
 
   return (
     <div className={`rounded-2xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950/50 p-3 md:p-4 space-y-2.5 md:space-y-3 ${className}`.trim()}>
@@ -65,6 +68,50 @@ export const CustomerSnapshotCard: React.FC<CustomerSnapshotCardProps> = ({ snap
         <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-900 p-2">
           <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Trips</p>
           <p className="text-[11px] font-black text-brand-900 dark:text-slate-100">{snapshot.completedTrips}/{snapshot.totalTrips}</p>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-900 p-2.5 md:p-3 space-y-2">
+        <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Solvency</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div className="rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-2.5 py-2">
+            <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Customer</p>
+            <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 dark:text-amber-400">Open ${snapshot.openCreditUsd.toFixed(0)}</p>
+            <p className="text-[9px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">Paid ${snapshot.paidCreditUsd.toFixed(0)} · Rcpt {snapshot.receiptCount}</p>
+            {snapshot.overdueOpenCount > 0 && (
+              <p className="text-[8px] font-black uppercase tracking-widest text-red-600 dark:text-red-400">Overdue {snapshot.overdueOpenCount}</p>
+            )}
+          </div>
+          {snapshot.driverSolvency && (
+            <div className="rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 px-2.5 py-2">
+              <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Driver · {snapshot.driverSolvency.driverName}</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 dark:text-amber-400">Open ${snapshot.driverSolvency.openCreditUsd.toFixed(0)}</p>
+              <p className="text-[9px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">Paid ${snapshot.driverSolvency.paidCreditUsd.toFixed(0)} · Rcpt {snapshot.driverSolvency.receiptCount}</p>
+              {snapshot.driverSolvency.overdueOpenCount > 0 && (
+                <p className="text-[8px] font-black uppercase tracking-widest text-red-600 dark:text-red-400">Overdue {snapshot.driverSolvency.overdueOpenCount}</p>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {hasCustomerReceipt && (
+            <button
+              type="button"
+              onClick={() => exportReceiptPdfFriendly(snapshot.latestReceipt!, { companyName: "Andrew's Taxi", partyPhone: snapshot.phone })}
+              className="h-7 px-2 rounded-lg border border-indigo-200 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-900/10 text-[8px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300 inline-flex items-center"
+            >
+              <Download size={11} className="mr-1" /> Customer Receipt
+            </button>
+          )}
+          {hasDriverReceipt && (
+            <button
+              type="button"
+              onClick={() => exportReceiptPdfFriendly(snapshot.driverSolvency!.latestReceipt!, { companyName: "Andrew's Taxi", extraNotes: `Driver: ${snapshot.driverSolvency!.driverName}` })}
+              className="h-7 px-2 rounded-lg border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 inline-flex items-center"
+            >
+              <Download size={11} className="mr-1" /> Driver Receipt
+            </button>
+          )}
         </div>
       </div>
 

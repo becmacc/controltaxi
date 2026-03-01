@@ -1,6 +1,6 @@
 import { initializeApp, getApp, getApps } from 'firebase/app';
 import { AuthError, getAuth, signInAnonymously } from 'firebase/auth';
-import { doc, getDoc, getFirestore, serverTimestamp, setDoc } from 'firebase/firestore';
+import { deleteField, doc, getDoc, getFirestore, serverTimestamp, setDoc } from 'firebase/firestore';
 
 type SyncStatus = 'disabled' | 'connecting' | 'ready' | 'error';
 
@@ -30,6 +30,8 @@ const SYNC_CLIENT_ID_KEY = '__control_sync_client_id__';
 const CLOUD_COLLECTION = import.meta.env.VITE_FIREBASE_SYNC_COLLECTION || 'control-sync';
 const DEFAULT_CLOUD_DOC_ID = import.meta.env.VITE_FIREBASE_SYNC_DOC_ID || 'shared';
 const POLL_INTERVAL_MS = 3000;
+const PAYLOAD_CHUNK_COLLECTION = 'payloadChunks';
+const PAYLOAD_CHUNK_CHAR_SIZE = 240000;
 
 const getFirebaseConfig = () => ({
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -61,6 +63,66 @@ const isPermissionDeniedError = (error: unknown) => {
 
 const buildPermissionHint = (path: string) =>
   `permission-denied path=${path} (Check Firestore rules on /control-sync/{docId}, Anonymous Auth enabled, and Firestore App Check enforcement).`;
+
+const chunkString = (text: string, chunkSize: number): string[] => {
+  if (!text) return [''];
+  const chunks: string[] = [];
+  for (let index = 0; index < text.length; index += chunkSize) {
+    chunks.push(text.slice(index, index + chunkSize));
+  }
+  return chunks;
+};
+
+const hasChunkedPayload = (data: Record<string, unknown> | undefined): boolean => {
+  if (!data) return false;
+  return data.payloadChunked === true && typeof data.payloadChunkCount === 'number' && Number(data.payloadChunkCount) > 0;
+};
+
+const resolveRemotePayload = async (
+  firestore: ReturnType<typeof getFirestore>,
+  docId: string,
+  data: Record<string, unknown> | undefined
+): Promise<unknown | null> => {
+  if (!data) return null;
+
+  if ('payload' in data && data.payload !== undefined && data.payload !== null) {
+    return data.payload;
+  }
+
+  if (!hasChunkedPayload(data)) {
+    return null;
+  }
+
+  const chunkCount = Math.max(0, Math.floor(Number(data.payloadChunkCount) || 0));
+  if (chunkCount === 0) return null;
+
+  const chunkSnapshots = await Promise.all(
+    Array.from({ length: chunkCount }, (_, index) =>
+      getDoc(doc(firestore, CLOUD_COLLECTION, docId, PAYLOAD_CHUNK_COLLECTION, `chunk-${String(index).padStart(5, '0')}`))
+    )
+  );
+
+  const payloadText = chunkSnapshots
+    .map((snapshot, index) => {
+      if (!snapshot.exists()) {
+        throw new Error(`Missing payload chunk ${index + 1}/${chunkCount}`);
+      }
+      const chunk = snapshot.data();
+      if (typeof chunk?.data !== 'string') {
+        throw new Error(`Invalid payload chunk ${index + 1}/${chunkCount}`);
+      }
+      return chunk.data;
+    })
+    .join('');
+
+  if (!payloadText.trim()) return null;
+
+  try {
+    return JSON.parse(payloadText);
+  } catch (error) {
+    throw new Error(`Failed to parse chunked payload: ${getErrorMessage(error)}`);
+  }
+};
 
 export const getCloudSyncDocId = () => {
   return DEFAULT_CLOUD_DOC_ID || 'shared';
@@ -125,9 +187,10 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
     const firestore = getFirestore(app);
     const syncRef = doc(firestore, CLOUD_COLLECTION, activeDocId);
     const snapshot = await getDoc(syncRef);
-    const data = snapshot.data();
+    const data = snapshot.data() as Record<string, unknown> | undefined;
+    const hasRemotePayload = Boolean(data?.payload) || hasChunkedPayload(data);
 
-    if (!data?.payload) {
+    if (!hasRemotePayload) {
       return {
         ok: false,
         code: 'no-remote-payload',
@@ -135,14 +198,16 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
       };
     }
 
-    const signature = typeof data.signature === 'string' && data.signature
-      ? data.signature
-      : createSyncSignature(data.payload);
+    const resolvedPayload = await resolveRemotePayload(firestore, activeDocId, data);
 
-    const payloadRecord = data.payload && typeof data.payload === 'object'
-      ? data.payload as Record<string, unknown>
+    const signature = typeof data?.signature === 'string' && data.signature
+      ? data.signature
+      : createSyncSignature(resolvedPayload || {});
+
+    const payloadRecord = resolvedPayload && typeof resolvedPayload === 'object'
+      ? resolvedPayload as Record<string, unknown>
       : null;
-    const topLevelSyncEpoch = typeof data.syncEpoch === 'number' && Number.isFinite(data.syncEpoch)
+    const topLevelSyncEpoch = typeof data?.syncEpoch === 'number' && Number.isFinite(data.syncEpoch)
       ? Math.max(0, Math.floor(data.syncEpoch))
       : null;
     const payloadSyncEpoch = payloadRecord && typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
@@ -150,7 +215,7 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
       : null;
     const syncEpoch = topLevelSyncEpoch ?? payloadSyncEpoch ?? 0;
 
-    const topLevelResetToken = typeof data.resetToken === 'string' ? data.resetToken.trim() : '';
+    const topLevelResetToken = typeof data?.resetToken === 'string' ? data.resetToken.trim() : '';
     const payloadResetToken = payloadRecord && typeof payloadRecord.resetToken === 'string'
       ? String(payloadRecord.resetToken).trim()
       : '';
@@ -244,10 +309,25 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
 
       try {
         const snapshot = await getDoc(legacyRef);
-        const data = snapshot.data();
+        const data = snapshot.data() as Record<string, unknown> | undefined;
         const signature = typeof data?.signature === 'string' ? data.signature : null;
-        const payloadRecord = data?.payload && typeof data.payload === 'object'
-          ? data.payload as Record<string, unknown>
+        const hasRemotePayload = Boolean(data?.payload) || hasChunkedPayload(data);
+
+        if (!hasRemotePayload) {
+          return;
+        }
+
+        if (signature && signature === seenLegacySignature && channel === 'legacy:poll') {
+          return;
+        }
+
+        const resolvedPayload = await resolveRemotePayload(firestore, activeDocId, data);
+        if (!resolvedPayload) {
+          return;
+        }
+
+        const payloadRecord = resolvedPayload && typeof resolvedPayload === 'object'
+          ? resolvedPayload as Record<string, unknown>
           : null;
         const topLevelSyncEpoch = typeof data?.syncEpoch === 'number' && Number.isFinite(data.syncEpoch)
           ? Math.max(0, Math.floor(data.syncEpoch))
@@ -262,18 +342,10 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
           : '';
         const resetToken = topLevelResetToken || payloadResetToken || undefined;
 
-        if (!data?.payload) {
-          return;
-        }
-
-        if (signature && signature === seenLegacySignature && channel === 'legacy:poll') {
-          return;
-        }
-
         seenLegacySignature = signature;
-        options.onRemoteData(data.payload, {
+        options.onRemoteData(resolvedPayload, {
           updatedBy: typeof data.updatedBy === 'string' ? data.updatedBy : undefined,
-          signature: signature || undefined,
+          signature: signature || createSyncSignature(resolvedPayload),
           syncEpoch,
           resetToken,
           channel,
@@ -320,11 +392,45 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
 
         try {
           const nowMs = Date.now();
+          const payloadText = JSON.stringify(payload);
+          const chunks = chunkString(payloadText, PAYLOAD_CHUNK_CHAR_SIZE);
+          const shouldChunk = chunks.length > 1;
+
+          if (shouldChunk) {
+            await Promise.all(
+              chunks.map((chunk, index) =>
+                setDoc(
+                  doc(firestore, CLOUD_COLLECTION, activeDocId, PAYLOAD_CHUNK_COLLECTION, `chunk-${String(index).padStart(5, '0')}`),
+                  {
+                    index,
+                    data: chunk,
+                    signature,
+                    updatedBy: options.clientId,
+                    updatedAt: serverTimestamp(),
+                    updatedAtMs: nowMs,
+                  },
+                  { merge: true }
+                )
+              )
+            );
+          }
 
           await setDoc(
             legacyRef,
             {
-              payload,
+              ...(shouldChunk
+                ? {
+                    payload: deleteField(),
+                    payloadChunked: true,
+                    payloadChunkCount: chunks.length,
+                    payloadEncoding: 'json',
+                  }
+                : {
+                    payload,
+                    payloadChunked: false,
+                    payloadChunkCount: 0,
+                    payloadEncoding: 'inline',
+                  }),
               signature,
               syncEpoch: typeof (payload as { syncEpoch?: unknown }).syncEpoch === 'number'
                 ? Math.max(0, Math.floor((payload as { syncEpoch?: number }).syncEpoch || 0))

@@ -22,6 +22,7 @@ import { buildCustomerFromImportedContact, customerPhoneKey, mergeCustomerCollec
 import { parseGoogleMapsLink, parseGpsOrLatLngInput } from '../services/locationParser';
 import { createSyncSignature, fetchCloudSyncSignature, getCloudSyncDocId } from '../services/cloudSyncService';
 import { DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
+import { exportReceiptPdfFriendly } from '../services/receiptExport';
 
 type ViewMode = 'CUSTOMERS' | 'FLEET' | 'FINANCE' | 'VAULT';
 type CustomerSort = 'SPEND' | 'RECENCY' | 'FREQUENCY';
@@ -3285,7 +3286,16 @@ const FinanceCreditPanel: React.FC<{
                 <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100">{receipt.partyName}</p>
                 <p className="text-[8px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300">#{receipt.receiptNumber}</p>
                 <p className="text-[8px] font-bold uppercase tracking-widest text-slate-400">{receipt.partyType} · {receipt.cycle} · {format(parseISO(receipt.issuedAt), 'MMM d, h:mm a')}</p>
-                <p className="text-[10px] font-black text-emerald-600">${receipt.amountUsd.toFixed(2)}</p>
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-black text-emerald-600">${receipt.amountUsd.toFixed(2)}</p>
+                  <button
+                    type="button"
+                    onClick={() => exportReceiptPdfFriendly(receipt, { companyName: "Andrew's Taxi" })}
+                    className="h-6 px-2 rounded-md border border-indigo-200 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-900/10 text-[8px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300"
+                  >
+                    PDF
+                  </button>
+                </div>
               </div>
             ))
           )}

@@ -12,7 +12,7 @@ import {
 } from '../constants';
 import { 
   Sparkles, Globe, LocateFixed, Focus, Timer,
-  Activity, Zap, Sun, Moon, Sunrise, Sunset, Copy, Check, MessageCircle, Briefcase, Receipt, Wallet, AlertTriangle
+  Activity, Zap, Sun, Moon, Sunrise, Sunset, Copy, Check, MessageCircle, Briefcase, Receipt, Wallet, AlertTriangle, CheckCircle, AlertOctagon, FileText
 } from 'lucide-react';
 import { format, isToday, parseISO, startOfDay, addHours, isSameHour } from 'date-fns';
 import { Button } from '../components/ui/Button';
@@ -119,15 +119,15 @@ const AccountingPulse: React.FC<{
           <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 mt-1">Net after owed ${Math.round(netAfterCompany)}</p>
         </div>
         <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
-          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Cash Settled (Trips)</p>
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><CheckCircle size={10} /> Cash Settled (Trips)</p>
           <p className="text-xl font-black text-emerald-600 mt-1">${Math.round(cashSettledTodayUsd)}</p>
         </div>
         <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
-          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Open Credit (Trips)</p>
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><AlertOctagon size={10} /> Open Credit (Trips)</p>
           <p className="text-xl font-black text-amber-600 mt-1">${Math.round(openCreditTripTodayUsd)}</p>
         </div>
         <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-4">
-          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Receipted (Trips)</p>
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1"><FileText size={10} /> Receipted (Trips)</p>
           <p className="text-xl font-black text-indigo-600 mt-1">${Math.round(receiptedTripTodayUsd)}</p>
         </div>
       </div>

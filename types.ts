@@ -158,6 +158,7 @@ export interface Trip {
   creditLedgerEntryId?: string;
   receiptId?: string;
   settledAt?: string;
+  completedAt?: string;
   status: TripStatus;
   notes: string;
 

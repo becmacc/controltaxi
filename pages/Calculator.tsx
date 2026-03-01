@@ -92,7 +92,7 @@ const TrafficGauge: React.FC<{ index: number }> = ({ index }) => {
 };
 
 export const CalculatorPage: React.FC = () => {
-  const { settings, addTrip, theme, customers, drivers, trips, updateFullTrip, addCustomers } = useStore();
+  const { settings, addTrip, theme, customers, drivers, trips, creditLedger, receipts, updateFullTrip, addCustomers } = useStore();
   const navigate = useNavigate();
   
   // Maps State
@@ -198,8 +198,8 @@ export const CalculatorPage: React.FC = () => {
     const name = customerName.trim();
     const phone = customerPhone.trim();
     if (!name && !phone) return null;
-    return buildCustomerSnapshot(name, phone, customers, trips, drivers);
-  }, [customerName, customerPhone, customers, trips, drivers]);
+    return buildCustomerSnapshot(name, phone, customers, trips, drivers, creditLedger, receipts, { driverContextId: selectedDriverId || undefined });
+  }, [customerName, customerPhone, customers, trips, drivers, creditLedger, receipts, selectedDriverId]);
 
   const quoteDirectoryCustomer = useMemo(() => {
     const normalizedPhone = customerPhoneKey(customerPhone.trim());
@@ -317,8 +317,8 @@ export const CalculatorPage: React.FC = () => {
 
   const savedTripSnapshot = useMemo(() => {
     if (!lastSavedTrip) return null;
-    return buildCustomerSnapshotForTrip(lastSavedTrip, customers, trips, drivers);
-  }, [lastSavedTrip, customers, trips, drivers]);
+    return buildCustomerSnapshotForTrip(lastSavedTrip, customers, trips, drivers, creditLedger, receipts);
+  }, [lastSavedTrip, customers, trips, drivers, creditLedger, receipts]);
 
   const setMarkerPosition = (marker: any, position: any) => {
     if (!marker) return;

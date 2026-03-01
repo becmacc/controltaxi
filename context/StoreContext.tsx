@@ -687,11 +687,27 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const previousTrip = trips.find(t => t.id === trip.id);
     const nowIso = new Date().toISOString();
     const normalizedPaymentMode: TripPaymentMode = trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH';
+    const transitionedToCompleted = previousTrip?.status !== TripStatus.COMPLETED && trip.status === TripStatus.COMPLETED;
+    const reopenedFromCompleted = previousTrip?.status === TripStatus.COMPLETED && trip.status !== TripStatus.COMPLETED;
     let nextTrip: Trip = {
       ...trip,
       paymentMode: normalizedPaymentMode,
       settlementStatus: trip.settlementStatus || 'PENDING',
     };
+
+    if (transitionedToCompleted) {
+      nextTrip = {
+        ...nextTrip,
+        completedAt: nextTrip.completedAt || nowIso,
+      };
+    }
+
+    if (reopenedFromCompleted) {
+      nextTrip = {
+        ...nextTrip,
+        completedAt: undefined,
+      };
+    }
 
     let nextLedger = creditLedger;
     let nextReceipts = receipts;
