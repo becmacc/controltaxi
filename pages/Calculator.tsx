@@ -1290,7 +1290,11 @@ export const CalculatorPage: React.FC = () => {
     }
 
     const existing = customers.find(entry => customerPhoneKey(entry.phone) === normalizedPhone);
-    const existingNotes = (existing?.notes || '').replace(/\bVVIP\b|\bVIP\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+    const PRIORITY_MARKER_PATTERN = /\[?\s*(?:v\.?\s*v\.?\s*i\.?\s*p|v\.?\s*i\.?\s*p)\s*\]?/gi;
+    const existingNotes = (existing?.notes || '')
+      .replace(PRIORITY_MARKER_PATTERN, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
     const nextNotes = `[${tier}]${existingNotes ? ` ${existingNotes}` : ''}`;
 
     const patch: Customer = {
