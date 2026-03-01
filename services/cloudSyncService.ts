@@ -139,6 +139,20 @@ export const getOrCreateCloudSyncClientId = () => {
   return created;
 };
 
+const hashString = (value: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
+const fingerprintSection = (value: unknown): string => {
+  const encoded = JSON.stringify(value ?? null);
+  return `${encoded.length}:${hashString(encoded)}`;
+};
+
 export const createSyncSignature = (payload: unknown): string => {
   if (!payload || typeof payload !== 'object') return '{}';
   const record = payload as Record<string, unknown>;
@@ -147,19 +161,29 @@ export const createSyncSignature = (payload: unknown): string => {
     : 0;
   const resetToken = typeof record.resetToken === 'string' ? record.resetToken.trim() : '';
 
-  return JSON.stringify({
-    version: typeof record.version === 'string' ? record.version : '0',
-    syncEpoch,
-    resetToken,
-    trips: Array.isArray(record.trips) ? record.trips : [],
-    deletedTrips: Array.isArray(record.deletedTrips) ? record.deletedTrips : [],
-    drivers: Array.isArray(record.drivers) ? record.drivers : [],
-    customers: Array.isArray(record.customers) ? record.customers : [],
-    alerts: Array.isArray(record.alerts) ? record.alerts : [],
-    creditLedger: Array.isArray(record.creditLedger) ? record.creditLedger : [],
-    receipts: Array.isArray(record.receipts) ? record.receipts : [],
-    settings: record.settings && typeof record.settings === 'object' ? record.settings : {},
-  });
+  const version = typeof record.version === 'string' ? record.version : '0';
+  const trips = Array.isArray(record.trips) ? record.trips : [];
+  const deletedTrips = Array.isArray(record.deletedTrips) ? record.deletedTrips : [];
+  const drivers = Array.isArray(record.drivers) ? record.drivers : [];
+  const customers = Array.isArray(record.customers) ? record.customers : [];
+  const alerts = Array.isArray(record.alerts) ? record.alerts : [];
+  const creditLedger = Array.isArray(record.creditLedger) ? record.creditLedger : [];
+  const receipts = Array.isArray(record.receipts) ? record.receipts : [];
+  const settings = record.settings && typeof record.settings === 'object' ? record.settings : {};
+
+  return [
+    `v:${version}`,
+    `e:${syncEpoch}`,
+    `r:${resetToken}`,
+    `t:${trips.length}:${fingerprintSection(trips)}`,
+    `dt:${deletedTrips.length}:${fingerprintSection(deletedTrips)}`,
+    `d:${drivers.length}:${fingerprintSection(drivers)}`,
+    `c:${customers.length}:${fingerprintSection(customers)}`,
+    `a:${alerts.length}:${fingerprintSection(alerts)}`,
+    `cl:${creditLedger.length}:${fingerprintSection(creditLedger)}`,
+    `rc:${receipts.length}:${fingerprintSection(receipts)}`,
+    `s:${fingerprintSection(settings)}`,
+  ].join('|');
 };
 
 export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetchResult> => {

@@ -2256,7 +2256,7 @@ export const GMBriefPage: React.FC = () => {
 
   return (
     <div className="app-page-shell gmb-shell p-4 md:p-8 w-full space-y-8 animate-fade-in pb-24 lg:pb-8">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div className={`flex flex-col md:flex-row justify-between items-start md:items-center gap-4 ${fullscreenGmPanel ? 'hidden' : ''}`}>
         <div>
           <div className="flex items-center space-x-2 mb-1">
             <div className="w-2 h-2 rounded-full bg-gold-500 animate-pulse" />
@@ -2322,7 +2322,7 @@ export const GMBriefPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="space-y-8">
+      <div className={`space-y-8 ${fullscreenGmPanel ? 'hidden' : ''}`}>
         {/* Geographic Layer */}
         {activeBundle === 'SPACE_TIME' && (
           <div id="gm-stage-space-time" className="space-y-8 animate-in fade-in slide-in-from-right-2 duration-200">
@@ -2384,8 +2384,8 @@ export const GMBriefPage: React.FC = () => {
       </div>
 
       {fullscreenGmPanel && (
-        <div className="fixed inset-0 z-[10000] bg-slate-50 dark:bg-brand-950 p-2 md:p-4 flex flex-col overflow-hidden">
-          <div className="rounded-2xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-2xl flex flex-col min-h-0 h-full overflow-hidden">
+        <div className="fixed inset-0 z-[10000] bg-slate-50 dark:bg-brand-950 p-0 flex flex-col overflow-hidden">
+          <div className="border-0 bg-white dark:bg-brand-900 shadow-2xl flex flex-col min-h-0 h-full overflow-hidden">
             <div className="px-4 md:px-5 py-3 border-b border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 flex items-center justify-between gap-3 shrink-0">
               <div>
                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-300">
