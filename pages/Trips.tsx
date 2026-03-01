@@ -1472,6 +1472,29 @@ const TripUpdateModal: React.FC<{
     feedback,
   };
 
+  const minimumFareInfo = useMemo(() => {
+    const minimumFareUsd = Math.max(0, MIN_RIDE_FARE_USD);
+    const distanceKm = Number.isFinite(liveTrip.distanceKm) ? liveTrip.distanceKm : 0;
+    const distanceFactor = liveTrip.isRoundTrip ? 2 : 1;
+    const ratePerKm = Number.isFinite(liveTrip.ratePerKmSnapshot) ? liveTrip.ratePerKmSnapshot : 0;
+    const waitTimeHours = Number.isFinite(liveTrip.waitTimeHours) ? liveTrip.waitTimeHours : 0;
+    const hourlyWaitRate = Number.isFinite(liveTrip.hourlyWaitRateSnapshot) ? liveTrip.hourlyWaitRateSnapshot : 0;
+    const computedFareUsd = Math.ceil(distanceKm * distanceFactor * ratePerKm) + Math.ceil(waitTimeHours * hourlyWaitRate);
+    const minimumFareApplied = computedFareUsd > 0 && computedFareUsd < minimumFareUsd && liveTrip.fareUsd === minimumFareUsd;
+
+    return {
+      minimumFareUsd,
+      minimumFareApplied,
+    };
+  }, [
+    liveTrip.distanceKm,
+    liveTrip.isRoundTrip,
+    liveTrip.ratePerKmSnapshot,
+    liveTrip.waitTimeHours,
+    liveTrip.hourlyWaitRateSnapshot,
+    liveTrip.fareUsd,
+  ]);
+
   const driverPhone = drivers.find(d => d.id === driverId)?.phone;
   const driverTemplate = buildDriverTemplate(liveTrip);
   const customerTemplate = buildCustomerTemplate(liveTrip);
@@ -1547,7 +1570,15 @@ const TripUpdateModal: React.FC<{
     );
     setStopsDraft((result.updatedTrip.stops || []).map(stop => stop.originalLink || stop.text).filter(Boolean));
     setStopCandidates((result.updatedTrip.stops || []).map(stop => ({ ...stop })));
-    setRequoteMessage(`New quote ready: $${result.updatedTrip.fareUsd} · ${result.updatedTrip.distanceText} · ${result.updatedTrip.stops?.length || 0} stop(s)`);
+    const minimumFareUsd = Math.max(0, MIN_RIDE_FARE_USD);
+    const requoteComputedFareUsd = Math.ceil(result.updatedTrip.distanceKm * (result.updatedTrip.isRoundTrip ? 2 : 1) * result.updatedTrip.ratePerKmSnapshot)
+      + Math.ceil(result.updatedTrip.waitTimeHours * result.updatedTrip.hourlyWaitRateSnapshot);
+    const minimumFareApplied = requoteComputedFareUsd > 0 && requoteComputedFareUsd < minimumFareUsd && result.updatedTrip.fareUsd === minimumFareUsd;
+    setRequoteMessage(
+      minimumFareApplied
+        ? `New quote ready: $${result.updatedTrip.fareUsd} · ${result.updatedTrip.distanceText} · ${result.updatedTrip.stops?.length || 0} stop(s) · minimum fare applied ($${minimumFareUsd})`
+        : `New quote ready: $${result.updatedTrip.fareUsd} · ${result.updatedTrip.distanceText} · ${result.updatedTrip.stops?.length || 0} stop(s)`
+    );
   };
 
   const addStopField = () => {
@@ -1689,6 +1720,11 @@ const TripUpdateModal: React.FC<{
               <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 py-2">
                 <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Fare</p>
                 <p className="text-[11px] font-black text-brand-900 dark:text-white mt-1">${liveTrip.fareUsd}</p>
+                {minimumFareInfo.minimumFareApplied && (
+                  <span className="inline-flex items-center h-5 mt-1 px-2 rounded-md border border-amber-300/50 bg-amber-500/10 text-[7px] font-black uppercase tracking-widest text-amber-300">
+                    Min Applied (${minimumFareInfo.minimumFareUsd})
+                  </span>
+                )}
               </div>
               <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 py-2">
                 <p className="text-[8px] font-black uppercase tracking-widest text-slate-400">Distance</p>

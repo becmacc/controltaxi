@@ -1579,6 +1579,27 @@ export const CalculatorPage: React.FC = () => {
 
   const canPinStopsFromMap = Boolean(pickupPlace && destPlace);
 
+  const fareComputation = useMemo(() => {
+    if (!result) {
+      return {
+        computedFareUsd: 0,
+        minimumFareUsd: Math.max(0, MIN_RIDE_FARE_USD),
+        minimumFareApplied: false,
+      };
+    }
+
+    const base = Math.ceil(result.distanceKm * (isRoundTrip ? 2 : 1) * settings.ratePerKm);
+    const wait = addWaitTime ? Math.ceil(waitTimeHours * settings.hourlyWaitRate) : 0;
+    const computedFareUsd = base + wait;
+    const minimumFareUsd = Math.max(0, MIN_RIDE_FARE_USD);
+
+    return {
+      computedFareUsd,
+      minimumFareUsd,
+      minimumFareApplied: computedFareUsd < minimumFareUsd,
+    };
+  }, [result, isRoundTrip, addWaitTime, waitTimeHours, settings.ratePerKm, settings.hourlyWaitRate]);
+
   const confirmPending = (type: 'pickup' | 'dest') => {
     const loc = new google.maps.LatLng(pendingLocation!.lat, pendingLocation!.lng);
     geocoder.current.geocode({ location: loc }, (res: any, status: any) => {
@@ -1964,6 +1985,11 @@ export const CalculatorPage: React.FC = () => {
                           <span className="text-4xl font-black tracking-tighter">{fareUsd}</span>
                        </div>
                        <p className="text-[9px] font-black text-gold-600 uppercase tracking-widest mt-1">~{fareLbp.toLocaleString()} LBP Total</p>
+                        {fareComputation.minimumFareApplied && (
+                         <span className="inline-flex items-center h-5 mt-2 px-2 rounded-md border border-amber-300/50 bg-amber-500/10 text-[8px] font-black uppercase tracking-widest text-amber-300">
+                          Minimum Fare Applied (${fareComputation.minimumFareUsd})
+                         </span>
+                        )}
                     </div>
                     <div className="text-right space-y-1.5 min-w-[132px]">
                        <button
