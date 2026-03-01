@@ -237,7 +237,7 @@ export const CRMPage: React.FC = () => {
   const [metricsWindow, setMetricsWindow] = useState<'TODAY' | '7D' | '30D' | 'ALL'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
-  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [mobilePaneMode, setMobilePaneMode] = useState<'FEED' | 'CORE'>('FEED');
   const [customerSort] = useState<CustomerSort>('SPEND');
   const [isProcessing, setIsProcessing] = useState(true);
   const [vaultStatusMessage, setVaultStatusMessage] = useState('');
@@ -254,23 +254,16 @@ export const CRMPage: React.FC = () => {
 
   const now = new Date();
   const showOverviewMode = !selectedItem && (activeView === 'FINANCE' || activeView === 'VAULT');
+  const mobileCoreEligible = activeView === 'CUSTOMERS' || activeView === 'FLEET';
+  const showMobileCorePanel = mobileCoreEligible && !selectedItem && mobilePaneMode === 'CORE';
+  const showDetailPanel = Boolean(selectedItem || showOverviewMode || showMobileCorePanel);
   const syncChannel = useMemo(() => getCloudSyncDocId(), [vaultStatusMessage]);
   const contactPickerSupported = typeof navigator !== 'undefined' && typeof (navigator as any).contacts?.select === 'function';
   const savedPlacesSectionId = (phone: string) => `saved-places-${customerPhoneKey(phone)}`;
-  const shouldShowMobileDetail = mobileDetailOpen && Boolean(selectedItem);
-
-  const openDetailPanel = (id: string) => {
-    setSelectedItem(id);
-    setMobileDetailOpen(true);
-  };
-
-  const closeMobileDetailPanel = () => {
-    setMobileDetailOpen(false);
-  };
 
   const jumpToSavedPlaces = (phone: string) => {
     const targetId = savedPlacesSectionId(phone);
-    openDetailPanel(phone);
+    setSelectedItem(phone);
     window.setTimeout(() => {
       const section = document.getElementById(targetId);
       if (!section) return;
@@ -388,7 +381,14 @@ export const CRMPage: React.FC = () => {
   useEffect(() => {
     setSearchTerm('');
     setSelectedItem(null);
-    setMobileDetailOpen(false);
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView === 'CUSTOMERS' || activeView === 'FLEET') {
+      setMobilePaneMode('FEED');
+      return;
+    }
+    setMobilePaneMode('CORE');
   }, [activeView]);
 
   useEffect(() => {
@@ -910,7 +910,7 @@ export const CRMPage: React.FC = () => {
   }, [activeView, filteredItems, searchTerm]);
 
   const handleSuggestionSelect = (id: string) => {
-    openDetailPanel(id);
+    setSelectedItem(id);
     setShowSearchSuggestions(false);
   };
 
@@ -1421,7 +1421,6 @@ export const CRMPage: React.FC = () => {
     }
 
     setSelectedItem(null);
-    setMobileDetailOpen(false);
     showCoreStatus(`Removed CRM profile for ${profile.name}.`);
   };
 
@@ -1443,7 +1442,7 @@ export const CRMPage: React.FC = () => {
 
     removeDriver(stats.driver.id);
     setActiveView('CUSTOMERS');
-    openDetailPanel(normalizedPhone);
+    setSelectedItem(normalizedPhone);
     showCoreStatus(`Removed ${stats.driver.name} from fleet and moved to CRM contacts.`);
   };
 
@@ -1562,10 +1561,10 @@ export const CRMPage: React.FC = () => {
   const renderIntelligenceContent = () => {
     if (!selectedItem) {
       if (activeView === 'CUSTOMERS') {
-        return <DirectoryOverviewView profiles={customerProfiles} onSelectCustomer={openDetailPanel} />;
+        return <DirectoryOverviewView profiles={customerProfiles} onSelectCustomer={setSelectedItem} />;
       }
       if (activeView === 'FLEET') {
-        return <FleetOverviewView units={fleetHealth} windowLabel={metricsWindowLabel} onSelectDriver={openDetailPanel} />;
+        return <FleetOverviewView units={fleetHealth} windowLabel={metricsWindowLabel} onSelectDriver={setSelectedItem} />;
       }
       if (activeView === 'FINANCE') {
         return (
@@ -1619,7 +1618,7 @@ export const CRMPage: React.FC = () => {
       return (
         <CustomerIntelligenceView
           profile={profile}
-          onJumpToDriver={(id) => { setActiveView('FLEET'); openDetailPanel(id); }}
+          onJumpToDriver={(id) => { setActiveView('FLEET'); setSelectedItem(id); }}
           onUpdateSegments={handleUpdateCustomerSegments}
           onUpdateGender={handleUpdateCustomerGender}
           onUpdateEntityType={handleUpdateCustomerEntityType}
@@ -1711,7 +1710,7 @@ export const CRMPage: React.FC = () => {
              { id: 'FINANCE', label: 'Yield', icon: DollarSign },
              { id: 'VAULT', label: 'Vault', icon: Database }
            ].map(tab => (
-             <button key={tab.id} onClick={() => { setActiveView(tab.id as ViewMode); setSelectedItem(null); setMobileDetailOpen(false); }} className={`crm-tab-button flex items-center space-x-2.5 h-10 md:h-14 border-b-2 transition-all flex-shrink-0 ${activeView === tab.id ? 'border-brand-900 dark:border-emerald-500 text-brand-900 dark:text-emerald-500' : 'border-transparent text-slate-400 dark:text-slate-50'}`}><tab.icon size={14} /><span className="text-[10px] font-black uppercase tracking-widest">{tab.label}</span></button>
+             <button key={tab.id} onClick={() => { setActiveView(tab.id as ViewMode); setSelectedItem(null); }} className={`crm-tab-button flex items-center space-x-2.5 h-10 md:h-14 border-b-2 transition-all flex-shrink-0 ${activeView === tab.id ? 'border-brand-900 dark:border-emerald-500 text-brand-900 dark:text-emerald-500' : 'border-transparent text-slate-400 dark:text-slate-50'}`}><tab.icon size={14} /><span className="text-[10px] font-black uppercase tracking-widest">{tab.label}</span></button>
            ))}
         </div>
           <div className="crm-controls flex items-center gap-2 flex-wrap md:flex-nowrap">
@@ -1771,6 +1770,30 @@ export const CRMPage: React.FC = () => {
                    {window}
                  </button>
                ))}
+             </div>
+           )}
+           {mobileCoreEligible && (
+             <div className="md:hidden flex items-center gap-1 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/5 p-1 w-full">
+               <button
+                 type="button"
+                 onClick={() => {
+                   setSelectedItem(null);
+                   setMobilePaneMode('FEED');
+                 }}
+                 className={`flex-1 h-8 rounded-lg text-[8px] font-black uppercase tracking-widest transition-colors ${mobilePaneMode === 'FEED' ? 'bg-brand-900 text-gold-400 dark:bg-brand-800' : 'text-slate-500 dark:text-slate-300'}`}
+               >
+                 Feed
+               </button>
+               <button
+                 type="button"
+                 onClick={() => {
+                   setSelectedItem(null);
+                   setMobilePaneMode('CORE');
+                 }}
+                 className={`flex-1 h-8 rounded-lg text-[8px] font-black uppercase tracking-widest transition-colors ${mobilePaneMode === 'CORE' ? 'bg-brand-900 text-gold-400 dark:bg-brand-800' : 'text-slate-500 dark:text-slate-300'}`}
+               >
+                 Core
+               </button>
              </div>
            )}
            {activeView === 'CUSTOMERS' && (
@@ -1877,7 +1900,7 @@ export const CRMPage: React.FC = () => {
       )}
 
       <div className="flex-1 flex overflow-hidden relative">
-        <div className="w-full md:w-64 lg:w-80 border-r border-slate-200 dark:border-white/5 bg-white dark:bg-brand-950/80 overflow-y-auto transition-all">
+        <div className={`w-full md:w-64 lg:w-80 border-r border-slate-200 dark:border-white/5 bg-white dark:bg-brand-950/80 overflow-y-auto transition-all ${showDetailPanel ? 'hidden md:block' : 'block'}`}>
           {isProcessing ? (
             Array(6).fill(0).map((_, i) => <SkeletonItem key={i} />)
           ) : filteredItems.length > 0 ? (
@@ -1902,11 +1925,11 @@ export const CRMPage: React.FC = () => {
                 return (
                   <div
                     key={id}
-                    onClick={() => openDetailPanel(id)}
+                    onClick={() => setSelectedItem(id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
-                        openDetailPanel(id);
+                        setSelectedItem(id);
                       }
                     }}
                     role="button"
@@ -2005,11 +2028,11 @@ export const CRMPage: React.FC = () => {
                 return (
                   <div
                     key={id}
-                    onClick={() => openDetailPanel(id)}
+                    onClick={() => setSelectedItem(id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
-                        openDetailPanel(id);
+                        setSelectedItem(id);
                       }
                     }}
                     role="button"
@@ -2096,7 +2119,7 @@ export const CRMPage: React.FC = () => {
                 const id = profile.id;
                 const safeBurnRatio = Number.isFinite(profile.burnRatio) ? profile.burnRatio : 0;
                 return (
-                  <button key={id} onClick={() => openDetailPanel(id)} className={`w-full p-4 md:p-5 text-left border-b border-slate-100 dark:border-white/5 transition-all relative ${selectedItem === id ? 'bg-brand-50 dark:bg-emerald-500/5 border-l-4 border-l-brand-900 dark:border-l-emerald-500' : 'hover:bg-slate-50 dark:hover:bg-white/5'}`}>
+                  <button key={id} onClick={() => setSelectedItem(id)} className={`w-full p-4 md:p-5 text-left border-b border-slate-100 dark:border-white/5 transition-all relative ${selectedItem === id ? 'bg-brand-50 dark:bg-emerald-500/5 border-l-4 border-l-brand-900 dark:border-l-emerald-500' : 'hover:bg-slate-50 dark:hover:bg-white/5'}`}>
                     <div className="flex justify-between items-start mb-2">
                       <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${selectedItem === id ? 'bg-brand-900 text-gold-400 dark:bg-white/10 dark:text-emerald-500' : 'bg-slate-100 text-slate-400 dark:bg-brand-900/50'}`}>
                         <DollarSign size={18} />
@@ -2128,7 +2151,7 @@ export const CRMPage: React.FC = () => {
               const profile = item as VaultFeedItem;
               const id = profile.id;
               return (
-                <button key={id} onClick={() => openDetailPanel(id)} className={`w-full p-4 md:p-5 text-left border-b border-slate-100 dark:border-white/5 transition-all relative ${selectedItem === id ? 'bg-brand-50 dark:bg-emerald-500/5 border-l-4 border-l-brand-900 dark:border-l-emerald-500' : 'hover:bg-slate-50 dark:hover:bg-white/5'}`}>
+                <button key={id} onClick={() => setSelectedItem(id)} className={`w-full p-4 md:p-5 text-left border-b border-slate-100 dark:border-white/5 transition-all relative ${selectedItem === id ? 'bg-brand-50 dark:bg-emerald-500/5 border-l-4 border-l-brand-900 dark:border-l-emerald-500' : 'hover:bg-slate-50 dark:hover:bg-white/5'}`}>
                   <div className="flex justify-between items-start mb-2">
                     <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${selectedItem === id ? 'bg-brand-900 text-gold-400 dark:bg-white/10 dark:text-emerald-500' : 'bg-slate-100 text-slate-400 dark:bg-brand-900/50'}`}>
                       {profile.id === 'EXPORT' ? <Download size={18} /> : profile.id === 'IMPORT' ? <Upload size={18} /> : profile.id === 'CLEAR' ? <Archive size={18} /> : <Database size={18} />}
@@ -2149,7 +2172,7 @@ export const CRMPage: React.FC = () => {
           )}
         </div>
 
-          <div className="hidden md:block flex-1 bg-slate-100/30 dark:bg-black/20 overflow-y-auto p-4 md:p-6 lg:p-12">
+        <div className={`flex-1 bg-slate-100/30 dark:bg-black/20 overflow-y-auto p-4 md:p-6 lg:p-12 ${showDetailPanel ? 'block' : 'hidden md:block'}`}>
           {isProcessing ? (
              <div className="max-w-4xl mx-auto flex flex-col items-center justify-center h-full opacity-40">
                 <Loader2 className="w-8 h-8 animate-spin mb-4" />
@@ -2157,27 +2180,24 @@ export const CRMPage: React.FC = () => {
              </div>
           ) : (
             <div className="max-w-4xl mx-auto space-y-6 md:space-y-12 animate-in fade-in slide-in-from-right-8 duration-500">
+               {selectedItem && (
+                 <button
+                   onClick={() => {
+                     setSelectedItem(null);
+                     if (mobileCoreEligible) {
+                       setMobilePaneMode('CORE');
+                     }
+                   }}
+                   className="md:hidden flex items-center space-x-2 text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4"
+                 >
+                   <ChevronLeft size={16} />
+                   <span>{mobileCoreEligible ? 'Back to Core' : 'Return to Feed'}</span>
+                 </button>
+               )}
                {renderIntelligenceContent()}
             </div>
           )}
         </div>
-
-        {shouldShowMobileDetail && (
-          <div className="md:hidden fixed inset-0 z-40">
-            <button
-              type="button"
-              aria-label="Close detail panel"
-              onClick={closeMobileDetailPanel}
-              className="absolute inset-0 bg-black/45"
-            />
-            <div className="absolute inset-y-0 right-0 w-full bg-slate-100 dark:bg-brand-950 overflow-y-auto p-4">
-              <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in slide-in-from-right-8 duration-300">
-                <button onClick={closeMobileDetailPanel} className="flex items-center space-x-2 text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2"><ChevronLeft size={16} /><span>Return to Feed</span></button>
-                {renderIntelligenceContent()}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       <input
