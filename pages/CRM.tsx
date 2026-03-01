@@ -563,7 +563,7 @@ export const CRMPage: React.FC = () => {
       {
         id: 'CLEAR',
         title: 'Hard Reset Sync',
-        subtitle: 'Clear data and rotate sync channel',
+        subtitle: 'Clear data and force cloud reset',
         tone: 'DANGER',
       },
     ];
@@ -716,7 +716,7 @@ export const CRMPage: React.FC = () => {
   const handleVaultClear = async () => {
     if (!vaultClearArmed) {
       setVaultClearArmed(true);
-      setVaultStatusMessage('Click Hard Reset again to confirm. This clears data and rotates to a brand-new sync channel.');
+      setVaultStatusMessage('Click Hard Reset again to confirm. This clears data and force-resets the current sync channel.');
       return;
     }
 
@@ -744,8 +744,8 @@ export const CRMPage: React.FC = () => {
 
         setVaultStatusMessage(
           copied
-            ? `Hard reset complete. New sync channel copied: ${nextChannel}. Reloading in 3s...`
-            : `Hard reset complete. New sync channel: ${nextChannel}. Copy it now. Reloading in 3s...`
+            ? `Hard reset complete. Active sync channel copied: ${nextChannel}. Reloading in 3s...`
+            : `Hard reset complete. Active sync channel: ${nextChannel}. Copy it now. Reloading in 3s...`
         );
         setVaultSyncStatus('CHECKING');
         setVaultSyncDetail(`Switching to ${nextChannel}...`);

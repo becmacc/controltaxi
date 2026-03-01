@@ -10,7 +10,6 @@ import {
   fetchCloudSyncSignature,
   getCloudSyncDocId,
   getOrCreateCloudSyncClientId,
-  rotateCloudSyncDocId,
   startCloudSync,
 } from '../services/cloudSyncService';
 
@@ -762,19 +761,26 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         publishDebounceRef.current = null;
       }
 
-      cloudSyncSessionRef.current?.stop();
-      cloudSyncSessionRef.current = null;
-      setCloudSyncReady(false);
-
       const currentDocId = getCloudSyncDocId();
-      const baseDocId = currentDocId.replace(/-\d+$/, '') || 'shared';
-      const nextDocId = rotateCloudSyncDocId(baseDocId);
 
       Storage.clearOperationalData();
       refreshData();
-      lastSyncedSignatureRef.current = null;
 
-      return { ok: true, nextDocId };
+      const session = cloudSyncSessionRef.current;
+      if (!session || !session.isEnabled) {
+        return { ok: false, reason: 'Cloud sync is not enabled on this device.' };
+      }
+
+      const payload = Storage.getFullSystemData({ includeSettings: true });
+      const signature = createSyncSignature(payload);
+      const ok = await session.publish(payload, signature);
+      if (!ok) {
+        return { ok: false, reason: 'Cloud publish failed after reset.' };
+      }
+
+      lastSyncedSignatureRef.current = signature;
+
+      return { ok: true, nextDocId: currentDocId };
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'Hard reset failed.';
       return { ok: false, reason };

@@ -27,7 +27,6 @@ export interface CloudSyncSignatureFetchResult {
 }
 
 const SYNC_CLIENT_ID_KEY = '__control_sync_client_id__';
-const SYNC_DOC_ID_OVERRIDE_KEY = '__control_sync_doc_id__';
 const CLOUD_COLLECTION = import.meta.env.VITE_FIREBASE_SYNC_COLLECTION || 'control-sync';
 const DEFAULT_CLOUD_DOC_ID = import.meta.env.VITE_FIREBASE_SYNC_DOC_ID || 'shared';
 const POLL_INTERVAL_MS = 3000;
@@ -64,24 +63,7 @@ const buildPermissionHint = (path: string) =>
   `permission-denied path=${path} (Check Firestore rules on /control-sync/{docId}, Anonymous Auth enabled, and Firestore App Check enforcement).`;
 
 export const getCloudSyncDocId = () => {
-  const override = String(localStorage.getItem(SYNC_DOC_ID_OVERRIDE_KEY) || '').trim();
-  return override || DEFAULT_CLOUD_DOC_ID || 'shared';
-};
-
-export const setCloudSyncDocIdOverride = (docId: string) => {
-  const normalized = String(docId || '').trim();
-  if (!normalized) {
-    localStorage.removeItem(SYNC_DOC_ID_OVERRIDE_KEY);
-    return;
-  }
-  localStorage.setItem(SYNC_DOC_ID_OVERRIDE_KEY, normalized);
-};
-
-export const rotateCloudSyncDocId = (baseDocId: string) => {
-  const normalizedBase = String(baseDocId || '').trim() || 'shared';
-  const next = `${normalizedBase}-${Date.now()}`;
-  setCloudSyncDocIdOverride(next);
-  return next;
+  return DEFAULT_CLOUD_DOC_ID || 'shared';
 };
 
 export const isCloudSyncConfigured = () => hasRequiredFirebaseConfig() && Boolean(getCloudSyncDocId());
