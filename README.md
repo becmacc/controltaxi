@@ -87,10 +87,9 @@ Optional variables (with defaults):
 
 Firebase setup expectations:
 
-- Enable **Authentication -> Anonymous**
-- Enable **Authentication -> Sign-in method -> Email/Password**
+- Enable **Authentication -> Sign-in method -> Google**
 - Enable **Firestore Database**
-- Allow authenticated reads/writes for the sync doc path
+- Gate access using an allowlist collection (`allowed_users`)
 
 ### 3) Operator sign-in (recommended for production)
 
@@ -105,9 +104,10 @@ When to add Firebase Auth:
 Firebase checklist:
 
 - Go to **Firebase Console -> Authentication -> Sign-in method**.
-- Enable **Email/Password**.
-- Create operator users in **Authentication -> Users**.
-- (Optional but recommended) Assign custom claims for core access (`admin`/`ops` or `coreAccess: true`) using Admin SDK.
+- Enable **Google**.
+- Keep only providers you need (for Google-only, disable Email/Password and Anonymous).
+- Sign in once with each operator Google account so each user appears in **Authentication -> Users**.
+- Create an allowlist in Firestore (steps below) so only approved UIDs can access data.
 
 Core access behavior in app:
 
@@ -115,21 +115,55 @@ Core access behavior in app:
 - Core-only sections (e.g. Settings, CRM Yield/Vault) require core role/claim.
 - Roles accepted for core access: `admin` or `ops`, or claim `coreAccess: true`.
 
-Example Firestore rule for default collection:
+Example Firestore rules (copy/paste) using `allowed_users` allowlist:
 
 ```txt
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isApproved() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/allowed_users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/allowed_users/$(request.auth.uid)).data.enabled == true;
+    }
+
     match /control-sync/{docId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if isApproved();
     }
     match /control-sync/{docId}/payloadChunks/{chunkId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if isApproved();
+    }
+
+    match /allowed_users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if isApproved();
     }
   }
 }
 ```
+
+### 4) Firestore allowlist setup (`allowed_users`) — step by step
+
+1. Go to **Firebase Console -> Authentication -> Users**.
+2. Find your operator account and copy its **User UID**.
+3. Go to **Firestore Database -> Data**.
+4. Create collection: `allowed_users`.
+5. Create document with **Document ID = that UID**.
+6. Add fields:
+   - `enabled` (boolean) = `true`
+   - `role` (string) = `ops` (or `admin` / `viewer`)
+   - `note` (string, optional) = operator name
+7. Repeat steps 2–6 for each approved user.
+8. Go to **Firestore Database -> Rules**, paste the rules above, click **Publish**.
+9. Sign out/in on the app (refresh token), then verify:
+   - approved UID can use the app,
+   - non-approved UID gets blocked by rules.
+
+Tip: Keep at least one known admin UID in `allowed_users` before publishing rules.
 
 ## Data model and persistence
 
