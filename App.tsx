@@ -44,6 +44,7 @@ const AccessBlocked: React.FC<{ uid?: string | null; email?: string | null; disp
   const [requestStatus, setRequestStatus] = useState<'idle' | 'pending' | 'approved' | 'rejected'>('idle');
   const [requestFeedback, setRequestFeedback] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [checkingStatus, setCheckingStatus] = useState(false);
 
   const firestore = useMemo(() => {
     if (!isFirebaseConfigured) return null;
@@ -115,11 +116,48 @@ const AccessBlocked: React.FC<{ uid?: string | null; email?: string | null; disp
     }
   };
 
+  const handleCheckApprovalAgain = async () => {
+    if (!firestore || !uid) return;
+
+    setCheckingStatus(true);
+    setRequestFeedback('');
+
+    try {
+      const [requestSnapshot, allowedSnapshot] = await Promise.all([
+        getDoc(doc(firestore, 'access_requests', uid)),
+        getDoc(doc(firestore, 'allowed_users', uid)),
+      ]);
+
+      if (requestSnapshot.exists()) {
+        const status = String((requestSnapshot.data() as { status?: unknown }).status || '').trim().toLowerCase();
+        if (status === 'pending' || status === 'approved' || status === 'rejected') {
+          setRequestStatus(status);
+        }
+      }
+
+      const isApprovedNow = allowedSnapshot.exists() && (allowedSnapshot.data() as { enabled?: unknown }).enabled === true;
+      if (isApprovedNow) {
+        setRequestStatus('approved');
+        setRequestFeedback('Approval found. Please sign out and sign in again to continue.');
+      } else if (!requestSnapshot.exists()) {
+        setRequestStatus('idle');
+        setRequestFeedback('No approval yet. You can request access below.');
+      } else {
+        setRequestFeedback('Still waiting for admin review. Check again later.');
+      }
+    } catch {
+      setRequestFeedback('Could not check approval status. Try again.');
+    } finally {
+      setCheckingStatus(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 flex items-center justify-center p-6">
       <div className="w-full max-w-md rounded-3xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-900 shadow-2xl p-6 md:p-8 space-y-4">
         <h1 className="text-lg font-black uppercase tracking-tight">Access Not Approved</h1>
-        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-300">This Google account is not in the allowed users list yet.</p>
+        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-300">This Google account is not approved yet.</p>
+        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-300">OPS users get control-side access. Admin users get Core access (CRM + Settings).</p>
         {email ? (
           <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Signed in as: {email}</p>
         ) : null}
@@ -154,6 +192,15 @@ const AccessBlocked: React.FC<{ uid?: string | null; email?: string | null; disp
 
           <button
             type="button"
+            onClick={handleCheckApprovalAgain}
+            disabled={checkingStatus}
+            className="w-full h-10 rounded-xl border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[10px] font-black uppercase tracking-[0.2em] text-blue-700 dark:text-blue-300 disabled:opacity-60"
+          >
+            {checkingStatus ? 'Checking...' : 'Check Again'}
+          </button>
+
+          <button
+            type="button"
             onClick={onSignOut}
             className="w-full h-10 rounded-xl border border-slate-300 dark:border-white/15 bg-white dark:bg-brand-950 text-[10px] font-black uppercase tracking-[0.2em]"
           >
@@ -182,7 +229,7 @@ const AuthGate: React.FC<{ requireCore?: boolean }> = ({ requireCore = false }) 
   }
 
   if (requireCore && !hasCoreAccess) {
-    return <Navigate to="/crm" replace />;
+    return <Navigate to="/brief" replace />;
   }
 
   return <Outlet />;
@@ -210,11 +257,11 @@ function App() {
                   <Route path="/trips" element={<TripsPage />} />
                   <Route path="/drivers" element={<DriversPage />} />
                   <Route path="/watch" element={<MissionWatchPage />} />
-                  <Route path="/crm" element={<CRMPage />} />
                 </Route>
 
                 <Route element={<AuthGate requireCore />}>
                   <Route element={<AppShell />}>
+                    <Route path="/crm" element={<CRMPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
                   </Route>
                 </Route>

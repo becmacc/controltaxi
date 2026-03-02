@@ -50,7 +50,13 @@ export const LoginPage: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            <p className="text-[10px] font-bold text-slate-500 dark:text-slate-300">Sign in with your approved Google operator account.</p>
+            <p className="text-[10px] font-bold text-slate-500 dark:text-slate-300">Sign in with your approved Google account.</p>
+
+            <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-3 space-y-2">
+              <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Access Levels</p>
+              <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">OPS: access to control operations only (Brief, Calculator, Trips, Drivers).</p>
+              <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">Admin/Core: includes CRM and Settings access.</p>
+            </div>
 
             {error && (
               <div className="rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 px-3 py-2">

@@ -6,7 +6,7 @@ import { Button } from '../components/ui/Button';
 import { Save, Coins, Clock, Activity, MessageSquare, Info, Phone, Fuel, ExternalLink, Maximize2, Minimize2 } from 'lucide-react';
 import { MessageTemplates } from '../types';
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { collection, doc, getFirestore, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, doc, getFirestore, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { DEFAULT_TEMPLATES, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 import {
   applyPhoneDialCode,
@@ -23,6 +23,8 @@ type AccessRequestRecord = {
   status: 'pending' | 'approved' | 'rejected';
   requestedAtMs: number;
 };
+
+type AllowedUserRole = 'ops' | 'viewer' | 'admin';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -41,6 +43,8 @@ const isFirebaseConfigured = Boolean(
   firebaseConfig.messagingSenderId &&
   firebaseConfig.appId
 );
+
+const mailCollectionName = String(import.meta.env.VITE_FIREBASE_MAIL_COLLECTION || '').trim();
 
 export const SettingsPage: React.FC = () => {
   const { settings, updateSettings } = useStore();
@@ -71,6 +75,7 @@ export const SettingsPage: React.FC = () => {
   const [isConfigFullView, setIsConfigFullView] = useState(false);
   const [isShortcutGuideCollapsed, setIsShortcutGuideCollapsed] = useState(true);
   const [pendingAccessRequests, setPendingAccessRequests] = useState<AccessRequestRecord[]>([]);
+  const [approvalRoleByUid, setApprovalRoleByUid] = useState<Record<string, AllowedUserRole>>({});
   const [accessQueueMessage, setAccessQueueMessage] = useState('');
   const [accessQueueBusyUid, setAccessQueueBusyUid] = useState<string | null>(null);
 
@@ -266,12 +271,13 @@ export const SettingsPage: React.FC = () => {
       setAccessQueueBusyUid(request.uid);
       const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
       const firestore = getFirestore(app);
+      const approvedRole = approvalRoleByUid[request.uid] || 'ops';
 
       await setDoc(
         doc(firestore, 'allowed_users', request.uid),
         {
           enabled: true,
-          role: 'ops',
+          role: approvedRole,
           note: request.email || request.displayName || 'Approved via Settings queue',
           approvedByUid: user.uid,
           approvedByEmail: user.email || '',
@@ -283,6 +289,7 @@ export const SettingsPage: React.FC = () => {
 
       await updateDoc(doc(firestore, 'access_requests', request.uid), {
         status: 'approved',
+        approvedRole,
         reviewedByUid: user.uid,
         reviewedByEmail: user.email || '',
         reviewedAt: serverTimestamp(),
@@ -291,7 +298,26 @@ export const SettingsPage: React.FC = () => {
         lastUpdatedAtMs: Date.now(),
       });
 
-      setAccessQueueMessage(`Approved ${request.email || request.uid}.`);
+      if (mailCollectionName && request.email) {
+        try {
+          await addDoc(collection(firestore, mailCollectionName), {
+            to: [request.email],
+            message: {
+              subject: 'Control access approved',
+              text: `Your Control account has been approved with role ${approvedRole}. Please sign out and sign in again to continue.`,
+            },
+            meta: {
+              type: 'access_approved',
+              uid: request.uid,
+              role: approvedRole,
+            },
+            createdAt: serverTimestamp(),
+          });
+        } catch {
+        }
+      }
+
+      setAccessQueueMessage(`Approved ${request.email || request.uid} as ${approvedRole}.`);
       window.setTimeout(() => setAccessQueueMessage(''), 2500);
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'Approval failed.';
@@ -360,6 +386,20 @@ export const SettingsPage: React.FC = () => {
                     <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-300">{request.displayName || 'No display name'} · UID {request.uid}</p>
                   </div>
                   <div className="flex items-center gap-2">
+                    <select
+                      value={approvalRoleByUid[request.uid] || 'ops'}
+                      onChange={event => {
+                        const nextRole = event.target.value === 'admin' || event.target.value === 'viewer' ? event.target.value : 'ops';
+                        setApprovalRoleByUid(prev => ({ ...prev, [request.uid]: nextRole }));
+                      }}
+                      disabled={accessQueueBusyUid === request.uid}
+                      className="h-8 rounded-lg border border-slate-300 dark:border-brand-700 bg-white dark:bg-brand-900 px-2 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-200"
+                      aria-label={`Role for ${request.email || request.uid}`}
+                    >
+                      <option value="ops">OPS</option>
+                      <option value="viewer">Viewer</option>
+                      <option value="admin">Admin</option>
+                    </select>
                     <button
                       type="button"
                       onClick={() => handleApproveAccessRequest(request)}

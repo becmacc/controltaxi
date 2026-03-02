@@ -112,7 +112,7 @@ Firebase checklist:
 Core access behavior in app:
 
 - All app routes require sign-in.
-- Core-only sections (e.g. Settings, CRM Yield/Vault) require core role/claim.
+- Core-only sections (CRM and Settings) require core role/claim.
 - Core access is granted to `admin` role, or explicit claim `coreAccess: true`.
 
 Example Firestore rules (copy/paste) using `allowed_users` allowlist:
