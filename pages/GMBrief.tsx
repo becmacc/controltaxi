@@ -1,5 +1,6 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useStore } from '../context/StoreContext';
 import { TripStatus, Trip, Driver, Settings, TripPaymentMode, TripSettlementStatus } from '../types';
 import { loadGoogleMapsScript } from '../services/googleMapsLoader';
@@ -824,7 +825,7 @@ const TemporalPulse: React.FC<{ trips: Trip[]; isFullscreen?: boolean }> = ({ tr
   );
 };
 
-const FleetHeatmap: React.FC<{ trips: Trip[], apiKey: string, theme: string, mapIdLight?: string, mapIdDark?: string }> = ({ trips, apiKey, theme, mapIdLight, mapIdDark }) => {
+const FleetHeatmap: React.FC<{ trips: Trip[], apiKey: string, theme: string, mapIdLight?: string, mapIdDark?: string, className?: string }> = ({ trips, apiKey, theme, mapIdLight, mapIdDark, className }) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const [mapsLoaded, setMapsLoaded] = useState(false);
   const [timePulse, setTimePulse] = useState(() => Date.now());
@@ -1410,7 +1411,7 @@ const FleetHeatmap: React.FC<{ trips: Trip[], apiKey: string, theme: string, map
   }, []);
 
   return (
-    <div className="relative w-full h-[400px] rounded-[2.5rem] overflow-hidden border border-slate-200 dark:border-brand-800 shadow-2xl group/map">
+    <div className={`relative w-full ${className || 'h-[400px]'} rounded-[2.5rem] overflow-hidden border border-slate-200 dark:border-brand-800 shadow-2xl group/map`}>
       <div ref={mapRef} className="w-full h-full" />
       <div className="absolute top-6 left-6 flex space-x-2 pointer-events-none">
         <div className="bg-brand-900/95 backdrop-blur-xl p-4 rounded-2xl border border-white/10 shadow-2xl pointer-events-auto">
@@ -1455,6 +1456,7 @@ const FleetHeatmap: React.FC<{ trips: Trip[], apiKey: string, theme: string, map
 
 export const GMBriefPage: React.FC = () => {
   const { trips, drivers, creditLedger, receipts, settings, theme } = useStore();
+  const location = useLocation();
   type GmPanel = 'HEATMAP' | 'TEMPORAL' | 'FLEET_YIELD' | 'ACCOUNTING' | 'SYNTHESIS';
   type GmBundle = 'SPACE_TIME' | 'ACCOUNT_AUDIT' | 'SYNTHESIS';
   const [isGeneratingAi, setIsGeneratingAi] = useState(false);
@@ -1636,6 +1638,26 @@ export const GMBriefPage: React.FC = () => {
       setHoveredGmPanel(null);
     }
   }, [fullscreenGmPanel]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const focus = String(params.get('focus') || '').toLowerCase();
+    if (focus !== 'yield') return;
+
+    setActiveBundle('ACCOUNT_AUDIT');
+    setLastInteractedGmPanel('FLEET_YIELD');
+
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.getElementById('gm-stage-fleet-yield');
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [location.search]);
 
   const stats = useMemo(() => {
     const todayTrips = trips.filter(t => isToday(parseISO(t.tripDate || t.createdAt)));
@@ -2270,7 +2292,8 @@ export const GMBriefPage: React.FC = () => {
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-white/10 bg-white/70 dark:bg-brand-900/40 p-1 gap-1">
+          <div className="inline-flex flex-col sm:flex-row sm:items-center gap-1 rounded-2xl border border-gold-500/30 bg-brand-950/85 ring-1 ring-gold-500/15 shadow-lg shadow-brand-950/30 p-1.5 backdrop-blur-sm">
+          <div className="inline-flex items-center rounded-lg border border-gold-500/30 bg-brand-900/60 p-1 gap-1">
             {gmBundles.map(bundle => {
               const isActive = activeBundle === bundle.key;
               return (
@@ -2279,8 +2302,8 @@ export const GMBriefPage: React.FC = () => {
                   type="button"
                   onClick={() => setActiveBundle(bundle.key)}
                   className={`h-8 px-2.5 rounded-md border text-[8px] font-black uppercase tracking-[0.16em] inline-flex items-center transition-colors ${isActive
-                    ? 'border-gold-300/70 bg-gold-50/80 dark:border-gold-800/70 dark:bg-gold-900/20 text-gold-700 dark:text-gold-300'
-                    : 'border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-950 text-slate-500 dark:text-slate-300'}`}
+                    ? 'border-gold-400/70 bg-gold-500/15 text-gold-200 shadow-sm shadow-gold-500/10'
+                    : 'border-brand-700 bg-brand-900/50 text-slate-300 hover:border-gold-500/30 hover:text-gold-200'}`}
                 >
                   {bundle.icon}
                   {bundle.label}
@@ -2288,12 +2311,12 @@ export const GMBriefPage: React.FC = () => {
               );
             })}
           </div>
-          <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-white/10 bg-white/70 dark:bg-brand-900/40 p-1">
+          <div className="inline-flex items-center gap-1 rounded-lg border border-gold-500/30 bg-brand-900/60 p-1">
             <button
               type="button"
               onClick={() => moveBundle('prev')}
               disabled={activeBundleIndex === 0}
-              className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="h-8 px-2 rounded-md border border-brand-700 bg-brand-900/50 text-[8px] font-black uppercase tracking-widest text-slate-200 hover:border-gold-500/30 hover:text-gold-200 disabled:opacity-40 disabled:cursor-not-allowed"
               title="Previous bundle (←)"
             >
               ← Prev
@@ -2302,11 +2325,12 @@ export const GMBriefPage: React.FC = () => {
               type="button"
               onClick={() => moveBundle('next')}
               disabled={activeBundleIndex >= gmBundles.length - 1}
-              className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="h-8 px-2 rounded-md border border-brand-700 bg-brand-900/50 text-[8px] font-black uppercase tracking-widest text-slate-200 hover:border-gold-500/30 hover:text-gold-200 disabled:opacity-40 disabled:cursor-not-allowed"
               title="Next bundle (→)"
             >
               Next →
             </button>
+          </div>
           </div>
           <button
             type="button"
@@ -2412,13 +2436,14 @@ export const GMBriefPage: React.FC = () => {
 
             <div className="flex-1 min-h-0 overflow-auto p-2 md:p-3">
               {fullscreenGmPanel === 'HEATMAP' ? (
-                <div className="h-full min-h-[420px]">
+                <div className="h-full min-h-[calc(100dvh-8.5rem)]">
                   <FleetHeatmap
                     trips={stats.todayTripsList}
                     apiKey={settings.googleMapsApiKey}
                     theme={theme}
                     mapIdLight={settings.googleMapsMapId}
                     mapIdDark={settings.googleMapsMapIdDark}
+                    className="h-full min-h-[calc(100dvh-8.5rem)]"
                   />
                 </div>
               ) : fullscreenGmPanel === 'TEMPORAL' ? (

@@ -1,5 +1,5 @@
 import { ContactImportCandidate } from './contactImport';
-import { Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, Trip } from '../types';
+import { Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, Trip, TripPaymentMode } from '../types';
 import { normalizePhoneForWhatsApp } from './whatsapp';
 
 const toIso = (value?: string): string => {
@@ -9,6 +9,12 @@ const toIso = (value?: string): string => {
 };
 
 const trimText = (value: unknown): string => String(value ?? '').trim();
+
+const normalizePaymentMode = (mode?: TripPaymentMode): TripPaymentMode | undefined => {
+  if (mode === 'CREDIT') return 'CREDIT';
+  if (mode === 'CASH') return 'CASH';
+  return undefined;
+};
 
 const pickSource = (current: Customer['source'], incoming: Customer['source']): Customer['source'] => {
   const rank: Record<Customer['source'], number> = { OPERATIONAL: 1, SYNC: 2, MANUAL: 3 };
@@ -245,6 +251,7 @@ export const mergeCustomerRecord = (existing: Customer, incoming: Customer): Cus
   const hasIncomingHomeLocation = Object.prototype.hasOwnProperty.call(incoming, 'homeLocation');
   const hasIncomingBusinessLocation = Object.prototype.hasOwnProperty.call(incoming, 'businessLocation');
   const hasIncomingFrequentLocations = Object.prototype.hasOwnProperty.call(incoming, 'frequentLocations');
+  const hasIncomingDefaultPaymentMode = Object.prototype.hasOwnProperty.call(incoming, 'defaultPaymentMode');
   const homeLocation = hasIncomingHomeLocation
     ? normalizeLocation(incoming.homeLocation)
     : (normalizeLocation(existing.homeLocation) || normalizeLocation(incoming.homeLocation));
@@ -254,6 +261,11 @@ export const mergeCustomerRecord = (existing: Customer, incoming: Customer): Cus
   const frequentLocations = hasIncomingFrequentLocations
     ? mergeFrequentLocations([], incoming.frequentLocations)
     : mergeFrequentLocations(existing.frequentLocations, incoming.frequentLocations);
+  const incomingDefaultPaymentMode = normalizePaymentMode(incoming.defaultPaymentMode);
+  const existingDefaultPaymentMode = normalizePaymentMode(existing.defaultPaymentMode);
+  const defaultPaymentMode = hasIncomingDefaultPaymentMode
+    ? incomingDefaultPaymentMode
+    : existingDefaultPaymentMode;
 
   const createdAt = new Date(existing.createdAt).getTime() <= new Date(incoming.createdAt).getTime()
     ? toIso(existing.createdAt)
@@ -281,6 +293,7 @@ export const mergeCustomerRecord = (existing: Customer, incoming: Customer): Cus
     ...(homeLocation ? { homeLocation } : {}),
     ...(businessLocation ? { businessLocation } : {}),
     ...(frequentLocations.length > 0 ? { frequentLocations } : {}),
+    ...(defaultPaymentMode ? { defaultPaymentMode } : {}),
     createdAt,
     ...(notes ? { notes } : {}),
     ...(profileTimeline.length > 0 ? { profileTimeline } : {}),
@@ -347,6 +360,7 @@ export const buildCustomerFromTrip = (
   const includeTimelineEvent = options?.includeTimelineEvent === true;
   const note = trimText(trip.notes);
   const timestamp = toIso(trip.tripDate || trip.createdAt);
+  const normalizedPaymentMode = normalizePaymentMode(trip.paymentMode) || 'CASH';
   const isInternational = inferInternationalFromPhone(trip.customerPhone);
   const marketSegments = inferSegments(trip.customerPhone, trip.customerName, note);
   const gender = inferGenderFromText(trip.customerName, note) || 'UNSPECIFIED';
@@ -358,6 +372,7 @@ export const buildCustomerFromTrip = (
     name: trimText(trip.customerName) || 'Unknown Client',
     phone: customerPhoneKey(trip.customerPhone),
     source: 'OPERATIONAL',
+    defaultPaymentMode: normalizedPaymentMode,
     ...(isInternational ? { isInternational: true } : {}),
     ...(marketSegments.length > 0 ? { marketSegments } : {}),
     ...(gender ? { gender } : {}),
@@ -432,4 +447,29 @@ export const buildCustomerFromImportedContact = (contact: ContactImportCandidate
         }
       : {}),
   };
+};
+
+export const getCustomerPreferredPaymentMode = (
+  customer: Customer | null | undefined,
+  trips: Trip[]
+): TripPaymentMode => {
+  const explicit = normalizePaymentMode(customer?.defaultPaymentMode);
+  if (explicit) return explicit;
+  if (!customer) return 'CASH';
+
+  const key = customerPhoneKey(customer.phone);
+  if (!key) return 'CASH';
+
+  let latestTs = 0;
+  let latestMode: TripPaymentMode | undefined;
+
+  trips.forEach(trip => {
+    if (customerPhoneKey(trip.customerPhone) !== key) return;
+    const ts = new Date(trip.tripDate || trip.createdAt).getTime();
+    if (!Number.isFinite(ts) || ts < latestTs) return;
+    latestTs = ts;
+    latestMode = normalizePaymentMode(trip.paymentMode) || 'CASH';
+  });
+
+  return latestMode || 'CASH';
 };

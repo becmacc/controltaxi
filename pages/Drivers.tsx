@@ -5,6 +5,7 @@ import { Driver, TripStatus, DriverAvailability } from '../types';
 import { isToday, parseISO, subDays } from 'date-fns';
 import { Button } from '../components/ui/Button';
 import { HorizontalScrollArea } from '../components/ui/HorizontalScrollArea';
+import { UnitSnapshotCard } from '../components/UnitSnapshotCard';
 import {
   applyPhoneDialCode,
   buildWhatsAppLink,
@@ -13,6 +14,7 @@ import {
   normalizePhoneForWhatsApp,
   PHONE_COUNTRY_PRESETS,
 } from '../services/whatsapp';
+import { buildUnitSnapshotMetrics } from '../services/unitSnapshot';
 import { 
   Plus, User, Car, Phone, Trash2, Edit2, XCircle, Star, Hash, Activity, 
   X, Power, CheckCircle, Clock, Trophy, Map, DollarSign, TrendingUp, 
@@ -40,6 +42,7 @@ export const DriversPage: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [isTableFullView, setIsTableFullView] = useState(false);
+  const [unitSnapshotDriverId, setUnitSnapshotDriverId] = useState<string | null>(null);
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -55,6 +58,47 @@ export const DriversPage: React.FC = () => {
   const [actionTone, setActionTone] = useState<'SUCCESS' | 'ERROR'>('SUCCESS');
 
   const { rankedDrivers, fleetStats } = useMemo(() => {
+    const availabilityPriority: Record<DriverAvailability, number> = {
+      AVAILABLE: 3,
+      BUSY: 2,
+      OFF_DUTY: 1,
+    };
+
+    const ownershipPriority = {
+      COMPANY_FLEET: 3,
+      OWNER_DRIVER: 2,
+      RENTAL: 1,
+    } as const;
+
+    const responsibilityPriority = {
+      COMPANY: 2,
+      SHARED: 1,
+      DRIVER: 0,
+    } as const;
+
+    const inferredCompanyShare = (driver: Driver): number => {
+      const explicit = Number(driver.companyShareOverridePercent);
+      if (Number.isFinite(explicit) && explicit >= 0) {
+        return Math.max(0, Math.min(1, explicit / 100));
+      }
+
+      if (driver.vehicleOwnership === 'COMPANY_FLEET') {
+        if (driver.fuelCostResponsibility === 'COMPANY') return 0.7;
+        if (driver.fuelCostResponsibility === 'SHARED') return 0.62;
+        return 0.55;
+      }
+
+      if (driver.vehicleOwnership === 'OWNER_DRIVER') {
+        if (driver.fuelCostResponsibility === 'DRIVER') return 0.35;
+        if (driver.fuelCostResponsibility === 'SHARED') return 0.4;
+        return 0.45;
+      }
+
+      if (driver.fuelCostResponsibility === 'COMPANY') return 0.5;
+      if (driver.fuelCostResponsibility === 'SHARED') return 0.45;
+      return 0.4;
+    };
+
     const now = new Date();
     const windowStart = metricsWindow === 'TODAY'
       ? subDays(now, 0)
@@ -102,8 +146,39 @@ export const DriversPage: React.FC = () => {
       d.carModel.toLowerCase().includes(searchTerm.toLowerCase())
     );
 
+    const withSmartScore = filtered.map(driver => {
+      const companyShare = inferredCompanyShare(driver);
+      const fuelBurdenFactor = driver.fuelCostResponsibility === 'COMPANY'
+        ? 1
+        : driver.fuelCostResponsibility === 'SHARED'
+          ? 0.5
+          : 0;
+      const estimatedCompanyValue = (driver.stats.totalRevenue * companyShare) - ((driver.totalGasSpent || 0) * fuelBurdenFactor);
+      const arrangementAlignment =
+        (ownershipPriority[driver.vehicleOwnership || 'COMPANY_FLEET'] * 4) +
+        (responsibilityPriority[driver.fuelCostResponsibility || 'COMPANY'] * 2) +
+        responsibilityPriority[driver.maintenanceResponsibility || 'COMPANY'];
+      const activityPriority = (driver.status === 'ACTIVE' ? 1 : 0) * 4 + (availabilityPriority[driver.currentStatus] || 0);
+
+      const smartSortScore =
+        (activityPriority * 1_000_000) +
+        (arrangementAlignment * 100_000) +
+        (estimatedCompanyValue * 10) +
+        driver.stats.profitabilityIndex;
+
+      return {
+        ...driver,
+        smartSortScore,
+      };
+    });
+
     return {
-      rankedDrivers: filtered.sort((a, b) => b.stats.totalRevenue - a.stats.totalRevenue),
+      rankedDrivers: withSmartScore.sort((a, b) => {
+        if (b.smartSortScore !== a.smartSortScore) return b.smartSortScore - a.smartSortScore;
+        if (b.stats.totalRevenue !== a.stats.totalRevenue) return b.stats.totalRevenue - a.stats.totalRevenue;
+        if (b.stats.totalTrips !== a.stats.totalTrips) return b.stats.totalTrips - a.stats.totalTrips;
+        return a.name.localeCompare(b.name);
+      }),
       fleetStats: { totalRevenue: totalFleetRevenue, totalDistance: totalFleetDistance, activeUnits: activeUnitsCount, totalUnits: drivers.length }
     };
   }, [drivers, trips, searchTerm, metricsWindow]);
@@ -113,6 +188,16 @@ export const DriversPage: React.FC = () => {
     BUSY: { label: 'Occupied', color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-900/40', border: 'border-amber-100 dark:border-amber-800' },
     OFF_DUTY: { label: 'Standby', color: 'text-slate-400', bg: 'bg-slate-50 dark:bg-brand-900', border: 'border-slate-200 dark:border-brand-800' },
   };
+
+  const unitSnapshotDriver = useMemo(
+    () => (unitSnapshotDriverId ? drivers.find(driver => driver.id === unitSnapshotDriverId) || null : null),
+    [unitSnapshotDriverId, drivers]
+  );
+
+  const unitSnapshotMetrics = useMemo(() => {
+    if (!unitSnapshotDriver) return null;
+    return buildUnitSnapshotMetrics(unitSnapshotDriver, trips);
+  }, [unitSnapshotDriver, trips]);
 
   const showActionMessage = (message: string, tone: 'SUCCESS' | 'ERROR') => {
     setActionMessage(message);
@@ -412,8 +497,9 @@ export const DriversPage: React.FC = () => {
           <h2 className="text-2xl font-black text-brand-900 dark:text-slate-100 uppercase tracking-tight">Fleet Command</h2>
           <p className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest mt-1">Real-time personnel monitoring</p>
         </div>
-        <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto">
-          <div className="flex items-center gap-1 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-1 w-full sm:w-auto">
+        <div className="flex flex-col gap-2 w-full md:w-auto md:items-end">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 w-full md:w-auto md:justify-end">
+            <div className="flex items-center gap-1 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-1 w-full sm:w-auto overflow-x-auto snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>button]:shrink-0 [&>button]:snap-start">
             {(['TODAY', '7D', '30D', 'ALL'] as const).map(window => (
               <button
                 key={window}
@@ -424,18 +510,18 @@ export const DriversPage: React.FC = () => {
                 {window}
               </button>
             ))}
-          </div>
-          <div className="relative w-full sm:w-64">
-             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-             <input 
-               type="text" 
-               placeholder="Search units..." 
-               value={searchTerm}
-               onChange={(e) => setSearchTerm(e.target.value)}
-               className="w-full bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl h-10 pl-9 text-[10px] font-black uppercase tracking-widest"
-             />
-          </div>
-          <div className="hidden md:flex items-center gap-1 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-1">
+            </div>
+            <div className="relative w-full sm:w-64">
+               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+               <input 
+                 type="text" 
+                 placeholder="Search units..." 
+                 value={searchTerm}
+                 onChange={(e) => setSearchTerm(e.target.value)}
+                 className="w-full bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl h-10 pl-9 text-[10px] font-black uppercase tracking-widest"
+               />
+            </div>
+            <div className="hidden md:flex items-center gap-1 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-1 overflow-x-auto snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>button]:shrink-0 [&>button]:snap-start">
             <button
               type="button"
               onClick={() => setDesktopView('TABLE')}
@@ -463,15 +549,18 @@ export const DriversPage: React.FC = () => {
                 Full
               </button>
             )}
+            </div>
           </div>
-          <Button onClick={handleExportFleetRosterCsv} variant="outline" className="h-10 px-4 w-full sm:w-auto">
-            <Download size={14} className="mr-2" />
-            Export CSV
-          </Button>
-          <Button onClick={() => setIsFormOpen(true)} variant="gold" className="h-10 px-4 shadow-lg shadow-gold-500/20 w-full sm:w-auto">
-            <Plus size={16} className="mr-2" />
-            Onboard Unit
-          </Button>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full md:w-auto md:justify-end">
+            <Button onClick={handleExportFleetRosterCsv} variant="outline" className="h-10 px-4 w-full sm:w-auto sm:shrink-0">
+              <Download size={14} className="mr-2" />
+              Export CSV
+            </Button>
+            <Button onClick={() => setIsFormOpen(true)} variant="gold" size="sm" className="h-9 px-3 text-[10px] shadow-lg shadow-gold-500/20 w-full sm:w-auto whitespace-nowrap sm:shrink-0">
+              <Plus size={14} className="mr-1.5 shrink-0" />
+              Onboard Unit
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -501,14 +590,14 @@ export const DriversPage: React.FC = () => {
         className={`${isTableFullView ? 'block flex-1 min-h-0 overflow-hidden bg-white dark:bg-brand-900 rounded-2xl border border-slate-200 dark:border-brand-800 shadow-2xl' : 'hidden md:block bg-white dark:bg-brand-900 shadow-xl rounded-3xl border border-slate-200 dark:border-brand-800'}`}
         viewportClassName={isTableFullView ? 'rounded-2xl h-full min-h-0' : 'rounded-3xl'}
       >
-        <table className="min-w-[1080px] w-full divide-y divide-slate-100 dark:divide-brand-800">
+        <table className="min-w-[900px] w-full divide-y divide-slate-100 dark:divide-brand-800">
           <thead className="bg-slate-50 dark:bg-brand-950">
             <tr>
-              <th className="px-6 py-5 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest w-12">Rank</th>
-              <th className="px-6 py-5 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Fleet Unit</th>
-              <th className="px-6 py-4 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Operational State</th>
-              <th className="px-6 py-4 text-left text-[10px] font-black text-slate-400 uppercase tracking-widest">Performance KPIs</th>
-              <th className="px-6 py-4 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest">Control</th>
+              <th className="px-3 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em] w-10">Rank</th>
+              <th className="px-3 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em]">Fleet Unit</th>
+              <th className="px-3 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em]">State</th>
+              <th className="px-3 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em]">KPIs</th>
+              <th className="px-3 py-3 text-right text-[9px] font-black text-slate-400 uppercase tracking-[0.08em]"><span className="sr-only">Action</span></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-brand-800">
@@ -517,18 +606,24 @@ export const DriversPage: React.FC = () => {
               
               return (
                 <tr key={driver.id} className="hover:bg-slate-50 dark:hover:bg-brand-800/40 transition-colors group">
-                  <td className="px-6 py-5 text-center">
+                  <td className="px-3 py-4 text-center">
                     {index === 0 && searchTerm === '' ? <Trophy size={18} className="text-gold-500 mx-auto"/> : <span className="text-[10px] font-black text-slate-300">#{index+1}</span>}
                   </td>
-                  <td className="px-6 py-5 whitespace-nowrap">
+                  <td className="px-3 py-4 whitespace-nowrap">
                     <div className="flex items-center">
-                      <div className="h-10 w-10 rounded-xl bg-brand-900 flex items-center justify-center font-black text-gold-400 text-xs shadow-sm">
+                      <div className="h-9 w-9 rounded-xl bg-brand-900 flex items-center justify-center font-black text-gold-400 text-[10px] shadow-sm">
                         {driver.name.charAt(0)}
                       </div>
-                      <div className="ml-4">
-                        <span className="text-sm font-black text-brand-900 dark:text-slate-100">{driver.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setUnitSnapshotDriverId(driver.id)}
+                        className="ml-2.5 text-left hover:opacity-85 transition-opacity"
+                        title={`Open unit snapshot for ${driver.name}`}
+                        aria-label={`Open unit snapshot for ${driver.name}`}
+                      >
+                        <span className="text-[12px] font-black text-brand-900 dark:text-slate-100">{driver.name}</span>
                         <p className="text-[9px] font-bold text-slate-400">{driver.carModel} • {driver.plateNumber}</p>
-                        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                        <div className="mt-1 inline-flex max-w-[20rem] items-center gap-1.5 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50/80 dark:bg-brand-950/70 px-1.5 py-1 flex-nowrap overflow-x-auto snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>span]:shrink-0 [&>span]:snap-start">
                           <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20">
                             {ownershipLabelMap[driver.vehicleOwnership || 'COMPANY_FLEET']}
                           </span>
@@ -539,10 +634,10 @@ export const DriversPage: React.FC = () => {
                             Maint {responsibilityLabelMap[driver.maintenanceResponsibility || 'COMPANY']}
                           </span>
                         </div>
-                      </div>
+                      </button>
                     </div>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-3 py-3">
                     <div className="flex flex-col space-y-1">
                       <div className="flex items-center space-x-2">
                         <div className={`w-1.5 h-1.5 rounded-full ${avail.color.replace('text-', 'bg-')} ${driver.currentStatus === 'AVAILABLE' ? 'animate-pulse' : ''}`} />
@@ -555,8 +650,8 @@ export const DriversPage: React.FC = () => {
                       </select>
                     </div>
                   </td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center space-x-8">
+                  <td className="px-3 py-3">
+                    <div className="flex items-center space-x-4">
                        <div className="text-left">
                           <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">Distance</p>
                           <p className="text-[10px] font-black text-blue-500 uppercase">{Math.round(driver.stats.totalDistance).toLocaleString()} KM</p>
@@ -576,11 +671,11 @@ export const DriversPage: React.FC = () => {
                        </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-3 py-3 text-right">
                     <div className="flex items-center justify-end space-x-1">
-                      <button type="button" onClick={() => openDriverWhatsApp(driver.phone)} title="Open WhatsApp" aria-label={`Open WhatsApp for ${driver.name}`} className="p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-brand-800 rounded-lg transition-colors"><Phone size={14} /></button>
-                      <button type="button" onClick={() => handleEditClick(driver)} title="Edit unit" aria-label={`Edit ${driver.name}`} className="p-2 text-slate-400 hover:text-brand-900 dark:hover:text-white rounded-lg transition-colors"><Edit2 size={14}/></button>
-                      <button type="button" onClick={() => handleRemoveDriver(driver)} title="Remove unit" aria-label={`Remove ${driver.name}`} className="p-2 text-slate-200 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={14}/></button>
+                      <button type="button" onClick={() => openDriverWhatsApp(driver.phone)} title="Open WhatsApp" aria-label={`Open WhatsApp for ${driver.name}`} className="p-1 text-blue-600 hover:bg-blue-50 dark:hover:bg-brand-800 rounded-lg transition-colors"><Phone size={12} /></button>
+                      <button type="button" onClick={() => handleEditClick(driver)} title="Edit unit" aria-label={`Edit ${driver.name}`} className="p-1 text-slate-400 hover:text-brand-900 dark:hover:text-white rounded-lg transition-colors"><Edit2 size={12}/></button>
+                      <button type="button" onClick={() => handleRemoveDriver(driver)} title="Remove unit" aria-label={`Remove ${driver.name}`} className="p-1 text-slate-200 hover:text-red-500 rounded-lg transition-colors"><Trash2 size={12}/></button>
                     </div>
                   </td>
                 </tr>
@@ -611,10 +706,16 @@ export const DriversPage: React.FC = () => {
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex items-center space-x-3">
                     <div className="w-10 h-10 rounded-xl bg-brand-900 flex items-center justify-center text-gold-400 font-black">{driver.name.charAt(0)}</div>
-                    <div>
+                    <button
+                      type="button"
+                      onClick={() => setUnitSnapshotDriverId(driver.id)}
+                      className="text-left hover:opacity-85 transition-opacity"
+                      title={`Open unit snapshot for ${driver.name}`}
+                      aria-label={`Open unit snapshot for ${driver.name}`}
+                    >
                       <h4 className="text-sm font-black text-brand-900 dark:text-white uppercase leading-none">{driver.name}</h4>
                       <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-widest">{driver.carModel} · {driver.plateNumber}</p>
-                    </div>
+                    </button>
                   </div>
                   <div className="text-right">
                     {index === 0 && searchTerm === '' ? <Trophy size={14} className="text-gold-500 ml-auto" /> : <p className="text-[9px] font-black text-slate-400">#{index + 1}</p>}
@@ -634,7 +735,7 @@ export const DriversPage: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-1 gap-2 pt-4 border-t border-slate-50 dark:border-brand-800 mt-4">
-                  <div className="flex items-center gap-1.5 flex-wrap">
+                  <div className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50/80 dark:bg-brand-950/70 px-1.5 py-1 flex-nowrap overflow-x-auto snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>span]:shrink-0 [&>span]:snap-start">
                     <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20">
                       {ownershipLabelMap[driver.vehicleOwnership || 'COMPANY_FLEET']}
                     </span>
@@ -686,10 +787,16 @@ export const DriversPage: React.FC = () => {
               <div className="flex justify-between items-start mb-4">
                 <div className="flex items-center space-x-3">
                    <div className="w-10 h-10 rounded-xl bg-brand-900 flex items-center justify-center text-gold-400 font-black">{driver.name.charAt(0)}</div>
-                   <div>
-                      <h4 className="text-sm font-black text-brand-900 dark:text-white uppercase leading-none">{driver.name}</h4>
-                      <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-widest">{driver.plateNumber}</p>
-                   </div>
+                   <button
+                    type="button"
+                    onClick={() => setUnitSnapshotDriverId(driver.id)}
+                    className="text-left hover:opacity-85 transition-opacity"
+                    title={`Open unit snapshot for ${driver.name}`}
+                    aria-label={`Open unit snapshot for ${driver.name}`}
+                   >
+                     <h4 className="text-sm font-black text-brand-900 dark:text-white uppercase leading-none">{driver.name}</h4>
+                     <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-widest">{driver.plateNumber}</p>
+                   </button>
                 </div>
                 <div className="text-right">
                    <p className="text-[10px] font-black text-brand-900 dark:text-gold-500">${driver.stats.totalRevenue}</p>
@@ -709,7 +816,7 @@ export const DriversPage: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 gap-2 pt-4 border-t border-slate-50 dark:border-brand-800 mt-4">
-                <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50/80 dark:bg-brand-950/70 px-1.5 py-1 flex-nowrap overflow-x-auto snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>span]:shrink-0 [&>span]:snap-start">
                   <span className="text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20">
                     {ownershipLabelMap[driver.vehicleOwnership || 'COMPANY_FLEET']}
                   </span>
@@ -749,6 +856,36 @@ export const DriversPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {unitSnapshotDriver && unitSnapshotMetrics && (
+        <div
+          className="fixed inset-0 z-[95] bg-brand-950/55 backdrop-blur-sm p-3 md:p-4 flex items-center justify-center"
+          onClick={() => setUnitSnapshotDriverId(null)}
+        >
+          <div
+            className="w-full max-w-xl rounded-[1.75rem] border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-2xl overflow-hidden"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 flex items-center justify-between">
+              <div>
+                <p className="text-[8px] font-black uppercase tracking-[0.18em] text-slate-400">Unit Snapshot</p>
+                <p className="text-[11px] font-black uppercase tracking-tight text-brand-900 dark:text-white mt-1">{unitSnapshotDriver.name}</p>
+                <p className="text-[8px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-300 mt-0.5">{unitSnapshotDriver.carModel} · {unitSnapshotDriver.plateNumber}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUnitSnapshotDriverId(null)}
+                className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+              >
+                Close
+              </button>
+            </div>
+            <div className="p-4 max-h-[70vh] overflow-y-auto">
+              <UnitSnapshotCard driver={unitSnapshotDriver} metrics={unitSnapshotMetrics} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {isFormOpen && (
         <div className="fixed inset-0 bg-brand-950/80 backdrop-blur-sm z-50 flex items-start md:items-center justify-center p-4 overflow-y-auto">

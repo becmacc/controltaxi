@@ -1,6 +1,6 @@
 
 import { format, parseISO } from 'date-fns';
-import { Trip, Driver } from '../types';
+import { Trip, Driver, Settings } from '../types';
 import { SPECIAL_REQUIREMENTS } from '../constants';
 
 const isCoordinateLike = (value?: string): boolean => {
@@ -51,6 +51,17 @@ const formatLocationText = (addressText?: string, lat?: number, lng?: number, di
   return fallbackLabel;
 };
 
+const normalizeExternalUrl = (value?: string): string => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    return new URL(candidate).href;
+  } catch {
+    return '';
+  }
+};
+
 export const formatTripPickup = (trip: Trip): string => {
   return formatLocationText(trip.pickupText, trip.pickupLat, trip.pickupLng, trip.pickupOriginalLink, 'Pickup Location');
 };
@@ -72,7 +83,7 @@ export const formatTripDestination = (trip: Trip): string => {
   return `${destination}\nStops:\n${stopsText}`;
 };
 
-export const replacePlaceholders = (template: string, trip: Trip, drivers: Driver[]): string => {
+export const replacePlaceholders = (template: string, trip: Trip, drivers: Driver[], settings?: Settings): string => {
   const driver = drivers.find(d => d.id === trip.driverId);
 
   const driverName = driver ? driver.name : 'our driver';
@@ -93,6 +104,21 @@ export const replacePlaceholders = (template: string, trip: Trip, drivers: Drive
   const stopsBlock = stopsText ? `Stops: ${stopsText.replace(/\n/g, ' | ')}` : '';
   
   const notesText = trip.notes ? `Notes: ${trip.notes}` : '';
+  const bookingFlowUrl = normalizeExternalUrl(settings?.bookingFlowUrl);
+  const fareEstimatorUrl = normalizeExternalUrl(settings?.fareEstimatorUrl);
+  const customRequestUrl = normalizeExternalUrl(settings?.customRequestUrl);
+  const promotionalOfferUrl = normalizeExternalUrl(settings?.promotionalOfferUrl);
+  const couponProgramUrl = normalizeExternalUrl(settings?.couponProgramUrl);
+  const loyaltyProgramUrl = normalizeExternalUrl(settings?.loyaltyProgramUrl);
+  const serviceLinks = [
+    bookingFlowUrl ? `Book: ${bookingFlowUrl}` : '',
+    fareEstimatorUrl ? `Fare Estimator: ${fareEstimatorUrl}` : '',
+    customRequestUrl ? `Custom Request: ${customRequestUrl}` : '',
+    promotionalOfferUrl ? `Promo Offer: ${promotionalOfferUrl}` : '',
+    couponProgramUrl ? `Coupon Program: ${couponProgramUrl}` : '',
+    loyaltyProgramUrl ? `Loyalty Rewards: ${loyaltyProgramUrl}` : '',
+  ].filter(Boolean);
+  const serviceLinksBlock = serviceLinks.join('\n');
   
   // Combine for a clean block
   const detailsBlock = [requirementsText, stopsBlock, notesText].filter(Boolean).join('. ');
@@ -115,6 +141,13 @@ export const replacePlaceholders = (template: string, trip: Trip, drivers: Drive
     '{requirements_text}': requirementsText,
     '{notes}': notesText,
     '{details_block}': detailsBlock
+    ,'{booking_url}': bookingFlowUrl,
+    '{fare_estimator_url}': fareEstimatorUrl,
+    '{custom_request_url}': customRequestUrl,
+    '{promotional_offer_url}': promotionalOfferUrl,
+    '{coupon_program_url}': couponProgramUrl,
+    '{loyalty_program_url}': loyaltyProgramUrl,
+    '{service_links_block}': serviceLinksBlock,
   };
 
   let result = template;

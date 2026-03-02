@@ -758,11 +758,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const normalizedPhone = customerPhoneKey(tripData.customerPhone);
     const existingCustomer = customers.find(c => customerPhoneKey(c.phone) === normalizedPhone);
     const shouldAppendTripNote = Boolean(newTrip.notes?.trim());
+    const existingDefaultPaymentMode: TripPaymentMode = existingCustomer?.defaultPaymentMode === 'CREDIT' ? 'CREDIT' : 'CASH';
+    const shouldSyncCustomerPaymentPreference = Boolean(existingCustomer && existingDefaultPaymentMode !== normalizedPaymentMode);
     const tripCustomer = buildCustomerFromTrip(newTrip, { includeTimelineEvent: shouldAppendTripNote });
 
     if (!existingCustomer) {
       addCustomers([tripCustomer]);
-    } else if (shouldAppendTripNote || existingCustomer.name !== newTrip.customerName) {
+    } else if (shouldAppendTripNote || existingCustomer.name !== newTrip.customerName || shouldSyncCustomerPaymentPreference) {
       addCustomers([tripCustomer]);
     }
 

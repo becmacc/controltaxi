@@ -1,5 +1,6 @@
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useStore } from '../context/StoreContext';
 import { Trip, TripStatus, Driver, Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, DriverFuelLogEntry, DriverCostResponsibility, DriverVehicleOwnership, Settings, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle, TripPaymentMode, TripSettlementStatus } from '../types';
 import { 
@@ -261,6 +262,7 @@ const getLoyaltyTierTone = (tier?: 'VIP' | 'VVIP' | 'REGULAR' | 'NEW') => {
 
 export const CRMPage: React.FC = () => {
   const { trips, drivers, customers, creditLedger, receipts, alerts, settings, editDriver, addDriver, addCustomers, removeCustomerByPhone, addCreditLedgerEntry, settleCreditLedgerEntry, removeDriver, refreshData, hardResetCloudSync } = useStore();
+  const location = useLocation();
   const [activeView, setActiveView] = useState<ViewMode>('CUSTOMERS');
   const [metricsWindow, setMetricsWindow] = useState<'TODAY' | '7D' | '30D' | 'ALL'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
@@ -288,6 +290,30 @@ export const CRMPage: React.FC = () => {
   const syncChannel = useMemo(() => getCloudSyncDocId(), [vaultStatusMessage]);
   const contactPickerSupported = typeof navigator !== 'undefined' && typeof (navigator as any).contacts?.select === 'function';
   const savedPlacesSectionId = (phone: string) => `saved-places-${customerPhoneKey(phone)}`;
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const tab = String(params.get('tab') || '').toLowerCase();
+
+    if (tab === 'vault') {
+      setActiveView('VAULT');
+      return;
+    }
+
+    if (tab === 'finance') {
+      setActiveView('FINANCE');
+      return;
+    }
+
+    if (tab === 'fleet') {
+      setActiveView('FLEET');
+      return;
+    }
+
+    if (tab === 'customers') {
+      setActiveView('CUSTOMERS');
+    }
+  }, [location.search]);
 
   const jumpToSavedPlaces = (phone: string) => {
     const targetId = savedPlacesSectionId(phone);

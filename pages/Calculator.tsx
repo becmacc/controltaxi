@@ -17,6 +17,7 @@ import {
   Repeat, Hourglass, ChevronDown, ChevronUp, AlertCircle,
   Calendar, Settings, Car, Crosshair, RefreshCcw, Info, InfoIcon,
   Layers, Search, X, Star, Loader2, Radar, ShieldCheck, Zap, UserX, MessageCircle,
+  Gauge,
   House, Building2, ArrowRightLeft,
   VolumeX, Moon, Briefcase, Users, Baby, Bus, PawPrint, Accessibility, Cigarette, CigaretteOff,
   Smartphone, KeyRound
@@ -36,7 +37,7 @@ import {
   sanitizeCommunicationText,
 } from '../services/whatsapp';
 import { buildCustomerSnapshot, buildCustomerSnapshotForTrip } from '../services/customerSnapshot';
-import { customerPhoneKey } from '../services/customerProfile';
+import { customerPhoneKey, getCustomerPreferredPaymentMode } from '../services/customerProfile';
 import { clampTrafficIndex, computeTrafficIndex } from '../services/trafficMetrics';
 import { truncateUiText, UI_TAG_MAX_CHARS, UI_LOCATION_MAX_CHARS } from '../services/uiText';
 
@@ -122,6 +123,12 @@ export const CalculatorPage: React.FC = () => {
   const pickupInputRef = useRef<HTMLInputElement>(null);
   const destInputRef = useRef<HTMLInputElement>(null);
   const searchDirectoryInputRef = useRef<HTMLInputElement>(null);
+  const driverSearchInputRef = useRef<HTMLInputElement>(null);
+  const panelScrollRef = useRef<HTMLDivElement>(null);
+  const workflowControlsRef = useRef<HTMLDivElement>(null);
+  const saveDispatchAnchorRef = useRef<HTMLDivElement>(null);
+  const sequenceDockStageButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const notesTextareaRef = useRef<HTMLTextAreaElement>(null);
   const mapRef = useRef<HTMLDivElement>(null);
   
   // Maps Objects Refs
@@ -142,18 +149,32 @@ export const CalculatorPage: React.FC = () => {
   const [stopsDraft, setStopsDraft] = useState<string[]>([]);
   const [stopCandidates, setStopCandidates] = useState<Array<TripStop | null>>([]);
   const [resolvedStops, setResolvedStops] = useState<TripStop[]>([]);
+  const [isStopsCollapsed, setIsStopsCollapsed] = useState(true);
   const [pendingLocation, setPendingLocation] = useState<{ lat: number, lng: number } | null>(null);
   
   // Time State
   const [tripDate, setTripDate] = useState<string>('');
   const [dateRequiredError, setDateRequiredError] = useState(false);
   const [todayTimeQuickInput, setTodayTimeQuickInput] = useState('');
+  const [isTodayTimeQuickCollapsed, setIsTodayTimeQuickCollapsed] = useState(true);
+  const [isFareModifiersCollapsed, setIsFareModifiersCollapsed] = useState(true);
+  const [isQuoteQuickPicksCollapsed, setIsQuoteQuickPicksCollapsed] = useState(true);
+  const [isFrequentPlacesCollapsed, setIsFrequentPlacesCollapsed] = useState(true);
+  const [isQuickMarkersCollapsed, setIsQuickMarkersCollapsed] = useState(true);
+  const [isPassengerRequirementsCollapsed, setIsPassengerRequirementsCollapsed] = useState(true);
+  const [isQuickSaveCollapsed, setIsQuickSaveCollapsed] = useState(true);
+  const [isPaymentModeCollapsed, setIsPaymentModeCollapsed] = useState(true);
+  const [isSpecificNotesCollapsed, setIsSpecificNotesCollapsed] = useState(true);
+  const [isSequenceWorkflowDockCollapsed, setIsSequenceWorkflowDockCollapsed] = useState(true);
+  const [isOutputReadinessPanelDismissed, setIsOutputReadinessPanelDismissed] = useState(false);
   const [navigationMode, setNavigationMode] = useState<CalculatorNavigationMode>('SEQUENCE');
   const [activeSequenceStage, setActiveSequenceStage] = useState<CalculatorSequenceStage>('ROUTE');
+  const [isNavigationControlsCollapsed, setIsNavigationControlsCollapsed] = useState(true);
 
   // Directory / Customer State
   const [searchDirectory, setSearchDirectory] = useState('');
   const [showDirectoryResults, setShowDirectoryResults] = useState(false);
+  const [selectedQuoteDirectoryCustomerId, setSelectedQuoteDirectoryCustomerId] = useState<string | null>(null);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerPhoneIntlEnabled, setCustomerPhoneIntlEnabled] = useState(false);
@@ -162,6 +183,9 @@ export const CalculatorPage: React.FC = () => {
   const [customerPhoneCustomDialCode, setCustomerPhoneCustomDialCode] = useState('');
   const [canUseMobileContactPicker, setCanUseMobileContactPicker] = useState(false);
   const [selectedDriverId, setSelectedDriverId] = useState('');
+  const [driverSearchQuery, setDriverSearchQuery] = useState('');
+  const [debouncedDriverSearchQuery, setDebouncedDriverSearchQuery] = useState('');
+  const [showDriverSuggestions, setShowDriverSuggestions] = useState(false);
   const [paymentMode, setPaymentMode] = useState<TripPaymentMode>('CASH');
   const [result, setResult] = useState<RouteResult | null>(null);
 
@@ -211,6 +235,7 @@ export const CalculatorPage: React.FC = () => {
         return;
       }
 
+      setSelectedQuoteDirectoryCustomerId(null);
       if (nextName) setCustomerName(nextName);
       if (nextPhone) {
         setCustomerPhone(nextPhone);
@@ -234,6 +259,238 @@ export const CalculatorPage: React.FC = () => {
     [drivers, selectedDriverId]
   );
 
+  const normalizedQuoteCustomerPhone = customerPhoneKey(customerPhone.trim());
+
+  const driverIntelligenceById = useMemo(() => {
+    const intelligence = new Map<string, {
+      overall: number;
+      availabilityScore: number;
+      readinessScore: number;
+      tripFitScore: number;
+      performanceScore: number;
+      governanceScore: number;
+      isGovernanceBlocked: boolean;
+      customerAffinityTrips: number;
+      completedTrips: number;
+      totalTrips: number;
+      fairnessPenalty: number;
+      recentTrips30: number;
+      fuelRangeKm: number;
+      kmSinceOilChange: number;
+      kmSinceCheckup: number;
+      governanceAlerts: string[];
+      readinessAlerts: string[];
+      reasons: string[];
+    }>();
+    const customerTripCountsByDriver = new Map<string, number>();
+    const now = Date.now();
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const NINETY_MIN_MS = 90 * 60 * 1000;
+    const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+    const parseTripTimestamp = (trip: Trip) => {
+      const sourceDate = trip.tripDate || trip.createdAt;
+      const timestamp = sourceDate ? new Date(sourceDate).getTime() : Number.NaN;
+      return Number.isFinite(timestamp) ? timestamp : Number.NaN;
+    };
+
+    if (normalizedQuoteCustomerPhone) {
+      trips.forEach(trip => {
+        if (!trip.driverId) return;
+        if (customerPhoneKey(trip.customerPhone) !== normalizedQuoteCustomerPhone) return;
+        customerTripCountsByDriver.set(trip.driverId, (customerTripCountsByDriver.get(trip.driverId) || 0) + 1);
+      });
+    }
+
+    activeDrivers.forEach(driver => {
+      const driverTrips = trips.filter(trip => trip.driverId === driver.id);
+      const totalTrips = driverTrips.length;
+      const completedTrips = driverTrips.filter(trip => trip.status === TripStatus.COMPLETED).length;
+
+      const recentTrips30 = driverTrips.filter(trip => {
+        const sourceDate = trip.tripDate || trip.createdAt;
+        const timestamp = sourceDate ? new Date(sourceDate).getTime() : Number.NaN;
+        return Number.isFinite(timestamp) && now - timestamp <= THIRTY_DAYS_MS;
+      }).length;
+
+      const customerAffinityTrips = customerTripCountsByDriver.get(driver.id) || 0;
+      const customerAffinityScore = Math.min(100, customerAffinityTrips * 22);
+
+      const availabilityScore = driver.currentStatus === 'AVAILABLE' ? 100 : driver.currentStatus === 'BUSY' ? 55 : 10;
+
+      const kmSinceOilChange = Math.max(0, (driver.baseMileage || 0) - (driver.lastOilChangeKm || 0));
+      const kmSinceCheckup = Math.max(0, (driver.baseMileage || 0) - (driver.lastCheckupKm || 0));
+      const fuelRangeKm = Math.max(0, Number(driver.fuelRangeKm) || 0);
+
+      const readinessAlerts: string[] = [];
+      if (fuelRangeKm < 60) readinessAlerts.push('Critical fuel range');
+      else if (fuelRangeKm < 120) readinessAlerts.push('Low fuel range');
+      if (kmSinceOilChange > 7000) readinessAlerts.push('Oil service overdue');
+      else if (kmSinceOilChange > 4500) readinessAlerts.push('Oil service approaching');
+      if (kmSinceCheckup > 12000) readinessAlerts.push('Checkup overdue');
+      else if (kmSinceCheckup > 7000) readinessAlerts.push('Checkup approaching');
+
+      const readinessPenalty =
+        (fuelRangeKm < 50 ? 38 : fuelRangeKm < 110 ? 18 : 0) +
+        (kmSinceOilChange > 7000 ? 34 : kmSinceOilChange > 4500 ? 16 : 0) +
+        (kmSinceCheckup > 12000 ? 34 : kmSinceCheckup > 7000 ? 16 : 0);
+      const readinessScore = clamp(100 - readinessPenalty, 5, 100);
+
+      const governanceAlerts: string[] = [];
+      if (driver.currentStatus === 'OFF_DUTY') governanceAlerts.push('Driver is off duty');
+      if (driver.status !== 'ACTIVE') governanceAlerts.push('Driver profile inactive');
+      const isGovernanceBlocked = driver.currentStatus === 'OFF_DUTY' || driver.status !== 'ACTIVE';
+
+      const governancePenalty =
+        (driver.currentStatus === 'OFF_DUTY' ? 60 : 0) +
+        (driver.status !== 'ACTIVE' ? 60 : 0);
+      const governanceScore = clamp(100 - governancePenalty, 0, 100);
+
+      const completionConsistency = totalTrips > 0 ? (completedTrips / totalTrips) * 100 : 72;
+      const performanceScore = clamp(58 + Math.min(42, completionConsistency * 0.42), 58, 100);
+
+      const trafficFitScore = result
+        ? result.trafficIndex >= 70
+          ? (driver.currentStatus === 'AVAILABLE' ? 86 : driver.currentStatus === 'BUSY' ? 52 : 20)
+          : (driver.currentStatus === 'AVAILABLE' ? 74 : driver.currentStatus === 'BUSY' ? 57 : 25)
+        : 58;
+      const tripFitScore = clamp(customerAffinityScore * 0.58 + trafficFitScore * 0.42, 0, 100);
+
+      const recentTrips90 = driverTrips.filter(trip => {
+        const timestamp = parseTripTimestamp(trip);
+        return Number.isFinite(timestamp) && now - timestamp <= NINETY_MIN_MS;
+      }).length;
+
+      const lastTripTimestamp = driverTrips
+        .map(parseTripTimestamp)
+        .filter(timestamp => Number.isFinite(timestamp))
+        .sort((a, b) => b - a)[0];
+      const lastTripAgeMin = Number.isFinite(lastTripTimestamp)
+        ? Math.max(0, (now - lastTripTimestamp) / 60000)
+        : Number.POSITIVE_INFINITY;
+
+      let fairnessPenalty = 0;
+      if (recentTrips90 >= 2) fairnessPenalty += Math.min(10, (recentTrips90 - 1) * 3);
+      if (lastTripAgeMin < 30) fairnessPenalty += 6;
+      else if (lastTripAgeMin < 60) fairnessPenalty += 3;
+      if (customerAffinityTrips >= 3) fairnessPenalty += 2;
+
+      const assignedBoost = selectedDriverId === driver.id ? 4 : 0;
+      const weightedOverall =
+        availabilityScore * 0.32 +
+        readinessScore * 0.24 +
+        tripFitScore * 0.16 +
+        performanceScore * 0.14 +
+        governanceScore * 0.14 +
+        assignedBoost -
+        fairnessPenalty;
+      const overall = Math.round(isGovernanceBlocked ? Math.min(weightedOverall, 38) : weightedOverall);
+
+      const reasons: string[] = [];
+      if (driver.currentStatus === 'AVAILABLE') reasons.push('Available now');
+      if (customerAffinityTrips > 0) reasons.push(`Handled ${customerAffinityTrips} trips for this customer`);
+      if (readinessScore >= 80) reasons.push('Unit readiness healthy');
+      if (performanceScore >= 80) reasons.push('Strong completion consistency');
+      if (governanceScore >= 80) reasons.push('Governance profile clean');
+      if (fairnessPenalty > 0) reasons.push('Rotation balancing applied');
+
+      intelligence.set(driver.id, {
+        overall,
+        availabilityScore,
+        readinessScore,
+        tripFitScore,
+        performanceScore,
+        governanceScore,
+        isGovernanceBlocked,
+        customerAffinityTrips,
+        completedTrips,
+        totalTrips,
+        fairnessPenalty,
+        recentTrips30,
+        fuelRangeKm,
+        kmSinceOilChange,
+        kmSinceCheckup,
+        governanceAlerts,
+        readinessAlerts,
+        reasons: reasons.slice(0, 3),
+      });
+    });
+
+    return intelligence;
+  }, [activeDrivers, trips, normalizedQuoteCustomerPhone, selectedDriverId, result]);
+
+  const driverRecommendationScoreById = useMemo(() => {
+    const scores = new Map<string, number>();
+    activeDrivers.forEach(driver => {
+      scores.set(driver.id, driverIntelligenceById.get(driver.id)?.overall || 0);
+    });
+    return scores;
+  }, [activeDrivers, driverIntelligenceById]);
+
+  const recommendedDrivers = useMemo(() => {
+    return [...activeDrivers]
+      .sort((a, b) => {
+        const scoreDelta = (driverRecommendationScoreById.get(b.id) || 0) - (driverRecommendationScoreById.get(a.id) || 0);
+        if (scoreDelta !== 0) return scoreDelta;
+        return a.name.localeCompare(b.name);
+      })
+      .slice(0, 4);
+  }, [activeDrivers, driverRecommendationScoreById]);
+
+  const driverSuggestions = useMemo(() => {
+    const query = driverSearchQuery.trim().toLowerCase();
+    const source = query
+      ? activeDrivers.filter(driver => {
+          return (
+            driver.name.toLowerCase().includes(query) ||
+            driver.plateNumber.toLowerCase().includes(query) ||
+            driver.currentStatus.toLowerCase().includes(query)
+          );
+        })
+      : activeDrivers;
+
+    return [...source]
+      .sort((a, b) => {
+        const scoreDelta = (driverRecommendationScoreById.get(b.id) || 0) - (driverRecommendationScoreById.get(a.id) || 0);
+        if (scoreDelta !== 0) return scoreDelta;
+        return a.name.localeCompare(b.name);
+      })
+      .slice(0, 8);
+  }, [activeDrivers, driverRecommendationScoreById, driverSearchQuery]);
+
+  useEffect(() => {
+    if (!driverSearchQuery.trim()) {
+      setDebouncedDriverSearchQuery('');
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedDriverSearchQuery(driverSearchQuery);
+    }, 150);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [driverSearchQuery]);
+
+  const outputDriverInsightTarget = useMemo(() => {
+    if (selectedDriverId) {
+      return activeDrivers.find(driver => driver.id === selectedDriverId) || null;
+    }
+    if (showDriverSuggestions || debouncedDriverSearchQuery.trim()) {
+      return driverSuggestions[0] || recommendedDrivers[0] || null;
+    }
+    return null;
+  }, [selectedDriverId, activeDrivers, showDriverSuggestions, debouncedDriverSearchQuery, driverSuggestions, recommendedDrivers]);
+
+  const outputDriverInsightMode = selectedDriverId
+    ? 'ASSIGNED'
+    : outputDriverInsightTarget
+      ? 'RECOMMENDED'
+      : 'NONE';
+
+  const outputDriverInsight = outputDriverInsightTarget
+    ? driverIntelligenceById.get(outputDriverInsightTarget.id) || null
+    : null;
+
   useEffect(() => {
     if (!selectedDriverId) return;
     const stillAssignable = drivers.some(
@@ -243,6 +500,14 @@ export const CalculatorPage: React.FC = () => {
       setSelectedDriverId('');
     }
   }, [drivers, selectedDriverId]);
+
+  useEffect(() => {
+    if (!assignedDriver) {
+      setDriverSearchQuery('');
+      return;
+    }
+    setDriverSearchQuery(`${assignedDriver.name} (${assignedDriver.plateNumber})`);
+  }, [assignedDriver]);
 
   useEffect(() => {
     const contactsApi = (navigator as Navigator & { contacts?: { select?: unknown } }).contacts;
@@ -378,6 +643,22 @@ export const CalculatorPage: React.FC = () => {
     return buildCustomerSnapshot(name, phone, customers, trips, drivers, creditLedger, receipts, { driverContextId: selectedDriverId || undefined });
   }, [customerName, customerPhone, customers, trips, drivers, creditLedger, receipts, selectedDriverId]);
 
+  const hasExistingCustomerSnapshotInfo = useMemo(() => {
+    if (!quoteCustomerSnapshot) return false;
+    return (
+      quoteCustomerSnapshot.totalTrips > 0 ||
+      quoteCustomerSnapshot.receiptCount > 0 ||
+      quoteCustomerSnapshot.frequentPlacesCount > 0 ||
+      quoteCustomerSnapshot.recentTimeline.length > 0 ||
+      quoteCustomerSnapshot.commonDestinations.length > 0 ||
+      Boolean(quoteCustomerSnapshot.lastContactAt) ||
+      Boolean(quoteCustomerSnapshot.homeAddress) ||
+      Boolean(quoteCustomerSnapshot.businessAddress) ||
+      quoteCustomerSnapshot.openCreditUsd > 0 ||
+      quoteCustomerSnapshot.paidCreditUsd > 0
+    );
+  }, [quoteCustomerSnapshot]);
+
   const quoteDirectoryCustomer = useMemo(() => {
     const normalizedPhone = customerPhoneKey(customerPhone.trim());
     if (normalizedPhone) {
@@ -389,6 +670,16 @@ export const CalculatorPage: React.FC = () => {
     if (!normalizedName) return null;
     return customers.find(c => c.name.trim().toLowerCase() === normalizedName) || null;
   }, [customerPhone, customerName, customers]);
+
+  const quotePreferredPaymentMode = useMemo(
+    () => getCustomerPreferredPaymentMode(quoteDirectoryCustomer, trips),
+    [quoteDirectoryCustomer, trips]
+  );
+
+  const isQuoteDirectorySelectionActive = Boolean(
+    selectedQuoteDirectoryCustomerId &&
+    quoteDirectoryCustomer?.id === selectedQuoteDirectoryCustomerId
+  );
 
   const operatorIndexMarkers = ['NEW', 'CORP', 'AIRPORT', 'PRIORITY', 'FOLLOWUP', 'VIP', 'VVIP'] as const;
 
@@ -505,6 +796,17 @@ export const CalculatorPage: React.FC = () => {
   const calculationStartedAtRef = useRef(0);
   const calculationRequestIdRef = useRef(0);
   const MIN_CALC_LOADING_MS = 800;
+
+  const resizeNotesTextarea = (el?: HTMLTextAreaElement | null) => {
+    const target = el || notesTextareaRef.current;
+    if (!target) return;
+    target.style.height = 'auto';
+    const minHeight = 32;
+    const maxHeight = 128;
+    const nextHeight = Math.min(maxHeight, Math.max(minHeight, target.scrollHeight));
+    target.style.height = `${nextHeight}px`;
+    target.style.overflowY = target.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  };
 
   const hasAnyOperatorMarker = operatorIndexMarkers.some(marker => hasOperatorMarker(marker));
   const shouldShowQuickMarkers =
@@ -887,6 +1189,10 @@ export const CalculatorPage: React.FC = () => {
       setError("Engine configuration required.");
     }
   }, [settings.googleMapsApiKey]);
+
+  useEffect(() => {
+    resizeNotesTextarea();
+  }, [notes]);
 
   useEffect(() => {
     if (draftHydrated.current) return;
@@ -1323,23 +1629,35 @@ export const CalculatorPage: React.FC = () => {
   };
 
   const handleSelectCustomer = (c: Customer) => {
+    setSelectedQuoteDirectoryCustomerId(c.id);
     setCustomerName(c.name);
     setCustomerPhone(c.phone);
     syncCustomerPhoneDialState(c.phone);
+    setPaymentMode(getCustomerPreferredPaymentMode(c, trips));
     setSearchDirectory('');
     setShowDirectoryResults(false);
   };
 
   const handleQuickPickCustomer = (pick: { name: string; phone: string }) => {
+    const normalizedPhone = customerPhoneKey(pick.phone);
+    const matchedCustomer = customers.find(entry => {
+      const samePhone = normalizedPhone && customerPhoneKey(entry.phone) === normalizedPhone;
+      const sameName = entry.name.trim().toLowerCase() === pick.name.trim().toLowerCase();
+      return Boolean(samePhone || sameName);
+    }) || null;
+
+    setSelectedQuoteDirectoryCustomerId(null);
     setCustomerName(pick.name);
     setCustomerPhone(pick.phone);
     syncCustomerPhoneDialState(pick.phone);
+    setPaymentMode(getCustomerPreferredPaymentMode(matchedCustomer, trips));
     setSearchDirectory('');
     setShowDirectoryResults(false);
     showCalculatorActionToast('Customer loaded from quick picks.');
   };
 
   const handleResetPreQuoteCustomer = () => {
+    setSelectedQuoteDirectoryCustomerId(null);
     setCustomerName('');
     setCustomerPhone('');
     setCustomerPhoneIntlEnabled(false);
@@ -1385,6 +1703,12 @@ export const CalculatorPage: React.FC = () => {
     }
 
     showCalculatorActionToast('Directions refreshed. Customer profile kept.');
+  };
+
+  const handleSelectDriverFromSuggestions = (driver: Driver) => {
+    setSelectedDriverId(driver.id);
+    setDriverSearchQuery(`${driver.name} (${driver.plateNumber})`);
+    setShowDriverSuggestions(false);
   };
 
   const handleSetCustomerPriority = (tier: 'VIP' | 'VVIP') => {
@@ -1625,6 +1949,7 @@ export const CalculatorPage: React.FC = () => {
       setTripSaved(true);
       setDateRequiredError(false);
       setError(null);
+      setSelectedQuoteDirectoryCustomerId(null);
       setCustomerName('');
       setCustomerPhone('');
       setCustomerPhoneIntlEnabled(false);
@@ -1651,7 +1976,7 @@ export const CalculatorPage: React.FC = () => {
       return;
     }
     const tempTrip = buildCurrentTripData();
-    const quoteMsg = replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers);
+    const quoteMsg = replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers, settings);
     navigator.clipboard.writeText(sanitizeCommunicationText(quoteMsg));
     setQuickCopied(true);
     setTimeout(() => setQuickCopied(false), 2000);
@@ -1665,7 +1990,7 @@ export const CalculatorPage: React.FC = () => {
       return;
     }
     const tempTrip = buildCurrentTripData();
-    const quoteMsg = sanitizeCommunicationText(replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers));
+    const quoteMsg = sanitizeCommunicationText(replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers, settings));
     const link = buildWhatsAppLink(customerPhone, quoteMsg);
 
     if (!link) {
@@ -1684,7 +2009,7 @@ export const CalculatorPage: React.FC = () => {
       return;
     }
     const tempTrip = buildCurrentTripData();
-    const quoteMsg = sanitizeCommunicationText(replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers));
+    const quoteMsg = sanitizeCommunicationText(replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers, settings));
     const link = buildWhatsAppLink(settings.operatorWhatsApp, quoteMsg);
 
     if (!link) {
@@ -1868,13 +2193,274 @@ export const CalculatorPage: React.FC = () => {
     return index >= 0 ? index : 0;
   }, [activeSequenceStage, sequenceStages]);
 
+  const activeSequenceStageLabel = useMemo(() => {
+    return sequenceStages[activeSequenceIndex]?.label || 'Route + Map';
+  }, [activeSequenceIndex, sequenceStages]);
+
   const moveSequenceStage = (direction: 'next' | 'prev') => {
     const offset = direction === 'next' ? 1 : -1;
     const nextIndex = Math.max(0, Math.min(sequenceStages.length - 1, activeSequenceIndex + offset));
     setActiveSequenceStage(sequenceStages[nextIndex].key);
   };
 
+  const stageElementIdByKey: Record<CalculatorSequenceStage, string> = {
+    ROUTE: 'calc-stage-route',
+    CUSTOMER: 'calc-stage-customer',
+    OUTPUT: 'calc-stage-dispatch',
+  };
+
+  const focusAndActivateSequenceDockStage = (nextIndex: number) => {
+    const boundedIndex = Math.max(0, Math.min(sequenceStages.length - 1, nextIndex));
+    const nextStage = sequenceStages[boundedIndex];
+    if (!nextStage) return;
+    setActiveSequenceStage(nextStage.key);
+    sequenceDockStageButtonRefs.current[boundedIndex]?.focus();
+  };
+
+  const handleSequenceDockGridKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, currentIndex: number) => {
+    const total = sequenceStages.length;
+    if (total <= 0) return;
+
+    const columns = window.matchMedia('(min-width: 640px)').matches ? Math.min(3, total) : 1;
+    let nextIndex = currentIndex;
+
+    if (event.key === 'ArrowRight') {
+      nextIndex = currentIndex + 1;
+    } else if (event.key === 'ArrowLeft') {
+      nextIndex = currentIndex - 1;
+    } else if (event.key === 'ArrowDown') {
+      nextIndex = currentIndex + columns;
+    } else if (event.key === 'ArrowUp') {
+      nextIndex = currentIndex - columns;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = total - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    focusAndActivateSequenceDockStage(nextIndex);
+  };
+
+  const renderSequenceWorkflowDock = () => {
+    if (navigationMode !== 'SEQUENCE') return null;
+
+    return (
+      <div className={`mt-4 rounded-2xl border border-gold-500/30 bg-brand-950/90 ring-1 ring-gold-500/15 shadow-lg shadow-brand-950/30 backdrop-blur-sm ${isSequenceWorkflowDockCollapsed ? 'p-1.5' : 'p-2.5 sm:p-3'}`}>
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => setIsSequenceWorkflowDockCollapsed(prev => !prev)}
+            aria-expanded={!isSequenceWorkflowDockCollapsed}
+            className="flex-1 min-w-0 text-left inline-flex items-center gap-1.5 text-[8px] sm:text-[9px] font-black uppercase tracking-widest text-gold-300"
+            title={isSequenceWorkflowDockCollapsed ? 'Expand workflow dock' : 'Collapse workflow dock'}
+          >
+            <span className="inline-flex h-1.5 w-1.5 rounded-full bg-gold-400" />
+            <span className="truncate">
+              Workflow Dock · Step {activeSequenceIndex + 1}/{sequenceStages.length}
+              {isSequenceWorkflowDockCollapsed ? ` · ${activeSequenceStageLabel}` : ''}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsSequenceWorkflowDockCollapsed(prev => !prev)}
+            className={`${isSequenceWorkflowDockCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-300 hover:bg-white/10' : 'h-6 px-2 text-[7px] rounded-full border border-gold-500/30 bg-white/10 text-gold-200 hover:border-gold-400/50'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+            title={isSequenceWorkflowDockCollapsed ? 'Expand workflow dock' : 'Collapse workflow dock'}
+          >
+            {isSequenceWorkflowDockCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+            {!isSequenceWorkflowDockCollapsed && 'Hide'}
+          </button>
+        </div>
+
+        {!isSequenceWorkflowDockCollapsed && (
+          <>
+            <div className="mt-2 flex items-center justify-end">
+              <div className="inline-flex items-center rounded-lg border border-gold-500/30 bg-brand-900/60 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setNavigationMode('SCROLL')}
+                  className={`h-7 px-2.5 rounded-md text-[8px] font-black uppercase tracking-widest transition-colors ${navigationMode === 'SCROLL' ? 'bg-gold-500/20 text-gold-300' : 'text-slate-300'}`}
+                >
+                  Scroll
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNavigationMode('SEQUENCE')}
+                  className={`h-7 px-2.5 rounded-md text-[8px] font-black uppercase tracking-widest transition-colors ${navigationMode === 'SEQUENCE' ? 'bg-gold-500/20 text-gold-300' : 'text-slate-300'}`}
+                >
+                  Sequence
+                </button>
+              </div>
+            </div>
+
+            <div role="grid" aria-label="Workflow stages" className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+              {sequenceStages.map((stage, index) => {
+                const isActive = stage.key === activeSequenceStage;
+                return (
+                  <button
+                    key={`dock-${stage.key}`}
+                    ref={element => {
+                      sequenceDockStageButtonRefs.current[index] = element;
+                    }}
+                    type="button"
+                    onClick={() => {
+                      setActiveSequenceStage(stage.key);
+                      setIsSequenceWorkflowDockCollapsed(true);
+                    }}
+                    onKeyDown={event => handleSequenceDockGridKeyDown(event, index)}
+                    aria-current={isActive ? 'step' : undefined}
+                    className={`h-9 sm:h-10 w-full px-3 rounded-lg border text-[8px] sm:text-[9px] font-black uppercase tracking-widest transition-all active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-500/70 ${isActive ? 'border-gold-400 bg-gold-500/15 text-gold-200 shadow-sm shadow-gold-500/10' : 'border-brand-700 bg-brand-900/50 text-slate-300 hover:border-gold-500/30 hover:text-gold-200'}`}
+                  >
+                    {stage.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  moveSequenceStage('prev');
+                  setIsSequenceWorkflowDockCollapsed(true);
+                }}
+                disabled={activeSequenceIndex === 0}
+                className="h-8 px-3 rounded-lg border border-brand-700 bg-brand-900/50 text-[8px] font-black uppercase tracking-widest text-slate-200 hover:border-gold-500/30 hover:text-gold-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Previous step"
+              >
+                ← Prev
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  moveSequenceStage('next');
+                  setIsSequenceWorkflowDockCollapsed(true);
+                }}
+                disabled={activeSequenceIndex >= sequenceStages.length - 1}
+                className="h-8 px-3 rounded-lg border border-brand-700 bg-brand-900/50 text-[8px] font-black uppercase tracking-widest text-slate-200 hover:border-gold-500/30 hover:text-gold-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Next step"
+              >
+                Next →
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const scrollElementIntoViewForMode = (element: HTMLElement | null, behavior: ScrollBehavior = 'smooth') => {
+    const panel = panelScrollRef.current;
+    const workflow = workflowControlsRef.current;
+    if (!element) return;
+
+    const spacing = 10;
+    const panelCanScroll = Boolean(panel && panel.scrollHeight > panel.clientHeight + 1);
+    if (panel && panelCanScroll) {
+      const panelRect = panel.getBoundingClientRect();
+      const elementRect = element.getBoundingClientRect();
+      const elementTopWithinPanel = elementRect.top - panelRect.top + panel.scrollTop;
+      let targetScrollTop = Math.max(0, elementTopWithinPanel - spacing);
+
+      if (navigationMode === 'SCROLL' && workflow) {
+        const workflowRect = workflow.getBoundingClientRect();
+        const workflowBottomWithinPanel = workflowRect.bottom - panelRect.top + panel.scrollTop;
+        targetScrollTop = Math.max(0, elementTopWithinPanel - workflowBottomWithinPanel - spacing);
+      }
+
+      panel.scrollTo({ top: targetScrollTop, behavior });
+      return;
+    }
+
+    const elementRect = element.getBoundingClientRect();
+    let targetWindowTop = Math.max(0, window.scrollY + elementRect.top - spacing);
+    if (navigationMode === 'SCROLL' && workflow) {
+      const workflowRect = workflow.getBoundingClientRect();
+      targetWindowTop = Math.max(0, window.scrollY + (elementRect.top - workflowRect.bottom) - spacing);
+    }
+
+    window.scrollTo({ top: targetWindowTop, behavior });
+  };
+
   const isRouteStageVisible = navigationMode !== 'SEQUENCE' || activeSequenceStage === 'ROUTE';
+  const isCustomerSequenceSnapshotPanelVisible = Boolean(
+    navigationMode === 'SEQUENCE' &&
+    activeSequenceStage === 'CUSTOMER' &&
+    isQuoteDirectorySelectionActive &&
+    quoteCustomerSnapshot &&
+    hasExistingCustomerSnapshotInfo
+  );
+  const outputChecklist = [
+    { label: 'Trip date selected', ready: Boolean(tripDate) },
+    { label: 'Customer identified', ready: Boolean(customerName.trim() || customerPhone.trim()) },
+    { label: 'Driver assigned', ready: Boolean(selectedDriverId) },
+    { label: 'Payment mode selected', ready: paymentMode === 'CASH' || paymentMode === 'CREDIT' },
+    { label: 'Route computed', ready: Boolean(result) },
+  ];
+  const outputBlockingChecks = outputChecklist.filter(check => !check.ready);
+  const outputRiskFlags = [
+    result && result.trafficIndex >= 70
+      ? { key: 'traffic-index', label: `Traffic index ${Math.round(result.trafficIndex)}/100`, icon: 'TRAFFIC' as const }
+      : null,
+    result && result.surplusMin >= 12
+      ? { key: 'traffic-surplus', label: `Traffic surplus +${Math.max(0, Math.round(result.surplusMin))} min`, icon: 'DELAY' as const }
+      : null,
+    fareComputation.minimumFareApplied
+      ? { key: 'min-fare', label: `Minimum fare floor applied ($${fareComputation.minimumFareUsd})`, icon: 'FARE' as const }
+      : null,
+    paymentMode === 'CREDIT' && !customerPhone.trim()
+      ? { key: 'credit-phone', label: 'Credit mode selected without customer phone', icon: 'PAYMENT' as const }
+      : null,
+  ].filter((flag): flag is NonNullable<typeof flag> => Boolean(flag));
+  const outputNeedsAttention = outputBlockingChecks.length > 0 || outputRiskFlags.length > 0;
+  const isOutputSequenceDriverInsightPanelVisible = Boolean(
+    navigationMode === 'SEQUENCE' &&
+    activeSequenceStage === 'OUTPUT' &&
+    result &&
+    Boolean(outputDriverInsightTarget) &&
+    (showDriverSuggestions || Boolean(selectedDriverId) || Boolean(debouncedDriverSearchQuery.trim()))
+  );
+  const isOutputSequenceReadinessPanelVisible = Boolean(
+    navigationMode === 'SEQUENCE' &&
+    activeSequenceStage === 'OUTPUT' &&
+    result &&
+    outputNeedsAttention &&
+    !isOutputReadinessPanelDismissed &&
+    !isOutputSequenceDriverInsightPanelVisible
+  );
+  const hasSequenceRightCompanionPanel = Boolean(
+    navigationMode === 'SEQUENCE' && (
+      activeSequenceStage === 'ROUTE' ||
+      isCustomerSequenceSnapshotPanelVisible ||
+      isOutputSequenceDriverInsightPanelVisible ||
+      isOutputSequenceReadinessPanelVisible
+    )
+  );
+  const outputNotesPreview = notes.trim();
+  const shouldRenderPreOutputStages = navigationMode === 'SCROLL' || activeSequenceStage !== 'OUTPUT';
+  const calculatorPanelWidthClass = navigationMode === 'SEQUENCE'
+    ? (hasSequenceRightCompanionPanel
+      ? 'lg:w-[44%] xl:w-[42%] 2xl:w-[40%] lg:max-w-[44rem] border-r border-slate-200 dark:border-brand-800 min-w-0'
+      : 'lg:flex-1 border-r-0 min-w-0')
+    : (isRouteStageVisible ? 'lg:w-96 border-r border-slate-200 dark:border-brand-800 min-w-0' : 'lg:flex-1 border-r-0 min-w-0');
+
+  useEffect(() => {
+    if (!outputNeedsAttention) {
+      setIsOutputReadinessPanelDismissed(false);
+    }
+  }, [outputNeedsAttention]);
+
+  useEffect(() => {
+    if (navigationMode !== 'SEQUENCE' || activeSequenceStage !== 'OUTPUT') return;
+    if (outputNeedsAttention && isOutputReadinessPanelDismissed) {
+      return;
+    }
+    if (!outputNeedsAttention) {
+      setIsOutputReadinessPanelDismissed(false);
+    }
+  }, [navigationMode, activeSequenceStage, outputNeedsAttention, isOutputReadinessPanelDismissed]);
 
   useEffect(() => {
     const isTypingTarget = (target: EventTarget | null): boolean => {
@@ -1900,9 +2486,34 @@ export const CalculatorPage: React.FC = () => {
     return () => window.removeEventListener('keydown', handleSequenceArrowKeys);
   }, [navigationMode, moveSequenceStage]);
 
+  useEffect(() => {
+    if (navigationMode === 'SEQUENCE' && activeSequenceStage === 'OUTPUT') {
+      return;
+    }
+
+    let raf1 = 0;
+    let raf2 = 0;
+
+    raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        const targetElement = navigationMode === 'SCROLL'
+          ? workflowControlsRef.current
+          : activeSequenceStage === 'OUTPUT'
+            ? saveDispatchAnchorRef.current
+            : document.getElementById(stageElementIdByKey[activeSequenceStage]);
+        scrollElementIntoViewForMode(targetElement, 'smooth');
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+    };
+  }, [navigationMode, activeSequenceStage]);
+
   return (
-    <div className="flex flex-col lg:flex-row min-h-screen lg:h-full bg-slate-50 dark:bg-brand-950 transition-all duration-300">
-      <div className={`${isRouteStageVisible ? 'lg:w-96 border-r border-slate-200 dark:border-brand-800' : 'lg:flex-1 border-r-0'} flex flex-col h-auto lg:h-full bg-white dark:bg-brand-900 z-10 shadow-xl overflow-y-auto transition-all duration-300`}>
+    <div className="flex flex-col lg:flex-row min-h-screen lg:min-h-0 lg:h-full lg:overflow-hidden bg-slate-50 dark:bg-brand-950 transition-all duration-300">
+      <div ref={panelScrollRef} className={`${calculatorPanelWidthClass} flex flex-col h-auto lg:h-full min-h-0 bg-white dark:bg-brand-900 z-10 shadow-xl overflow-y-auto overscroll-contain scroll-smooth [scrollbar-gutter:stable] transition-all duration-300`}>
         <div className="bg-brand-950 px-4 py-2 flex justify-between items-center border-b border-brand-800">
            <div className="flex items-center space-x-2">
              <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
@@ -1911,7 +2522,7 @@ export const CalculatorPage: React.FC = () => {
            <span className="text-[8px] font-black text-slate-400 uppercase tracking-[0.2em]">{settings.exchangeRate.toLocaleString()} LBP/$</span>
         </div>
 
-        <div className="p-5 space-y-6">
+        <div className={`p-4 sm:p-5 space-y-6 ${navigationMode === 'SEQUENCE' ? 'xl:px-7 2xl:px-9' : ''}`}>
            {error && (
              <div className="p-3 rounded-xl border border-red-200 bg-red-50 text-red-700 text-[10px] font-black uppercase tracking-wide">
                {error}
@@ -1922,68 +2533,98 @@ export const CalculatorPage: React.FC = () => {
                {locationStatusMessage}
              </div>
            )}
-           <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-2.5 space-y-2">
+           {navigationMode === 'SCROLL' && (
+           <div ref={workflowControlsRef} className={`rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 ${isNavigationControlsCollapsed ? 'p-1 space-y-0.5' : 'p-2.5 space-y-2'}`}>
              <div className="flex items-center justify-between gap-2">
-               <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 p-0.5">
-                 <button
-                   type="button"
-                   onClick={() => setNavigationMode('SCROLL')}
-                   className={`h-7 px-2.5 rounded-md text-[8px] font-black uppercase tracking-widest transition-colors ${navigationMode === 'SCROLL' ? 'bg-brand-900 text-gold-400' : 'text-slate-500 dark:text-slate-300'}`}
-                 >
-                   Scroll
-                 </button>
-                 <button
-                   type="button"
-                   onClick={() => setNavigationMode('SEQUENCE')}
-                   className={`h-7 px-2.5 rounded-md text-[8px] font-black uppercase tracking-widest transition-colors ${navigationMode === 'SEQUENCE' ? 'bg-brand-900 text-gold-400' : 'text-slate-500 dark:text-slate-300'}`}
-                 >
-                   Sequence
-                 </button>
-               </div>
-
-               {navigationMode === 'SEQUENCE' && (
-                 <div className="inline-flex items-center gap-1">
-                   <button
-                     type="button"
-                     onClick={() => moveSequenceStage('prev')}
-                     disabled={activeSequenceIndex === 0}
-                     className="h-7 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
-                     title="Previous step (←)"
-                   >
-                     ← Prev
-                   </button>
-                   <button
-                     type="button"
-                     onClick={() => moveSequenceStage('next')}
-                     disabled={activeSequenceIndex >= sequenceStages.length - 1}
-                     className="h-7 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
-                     title="Next step (→)"
-                   >
-                     Next →
-                   </button>
-                 </div>
-               )}
+               <button
+                 type="button"
+                 onClick={() => setIsNavigationControlsCollapsed(prev => !prev)}
+                 aria-expanded={!isNavigationControlsCollapsed}
+                 className="flex-1 min-w-0 text-left text-[9px] font-black text-slate-500 dark:text-slate-300 uppercase tracking-widest"
+                 title={isNavigationControlsCollapsed ? 'Expand workflow controls' : 'Minimize workflow controls'}
+               >
+                 <span className="truncate inline-block max-w-full">
+                   Workflow Mode{isNavigationControlsCollapsed ? ` · ${navigationMode === 'SEQUENCE' ? `Sequence${activeSequenceStageLabel ? `/${activeSequenceStageLabel}` : ''}` : 'Scroll'}` : ''}
+                 </span>
+               </button>
+               <button
+                 type="button"
+                 onClick={() => setIsNavigationControlsCollapsed(prev => !prev)}
+                 className={`${isNavigationControlsCollapsed ? 'h-5 px-1.5 text-[6px] rounded-md border-transparent bg-transparent text-slate-500/80 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-900/60' : 'h-6 px-2 text-[7px] rounded-full border border-slate-200/80 dark:border-brand-700 bg-white/90 dark:bg-brand-900/80 text-slate-500 dark:text-slate-300 hover:border-slate-300 dark:hover:border-brand-600'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                 title={isNavigationControlsCollapsed ? 'Expand workflow controls' : 'Minimize workflow controls'}
+               >
+                 {isNavigationControlsCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                 {isNavigationControlsCollapsed ? 'Expand' : 'Minimize'}
+               </button>
              </div>
 
-             {navigationMode === 'SEQUENCE' && (
-               <div className="flex flex-wrap gap-1">
-                 {sequenceStages.map(stage => {
-                   const isActive = stage.key === activeSequenceStage;
-                   return (
+             {!isNavigationControlsCollapsed && (
+               <>
+                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2">
+                   <div className="inline-flex w-full sm:w-auto items-center rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 p-0.5">
                      <button
-                       key={stage.key}
                        type="button"
-                       onClick={() => setActiveSequenceStage(stage.key)}
-                       className={`h-7 px-2 rounded-md border text-[7px] font-black uppercase tracking-widest transition-colors ${isActive ? 'border-gold-400 bg-gold-500/15 text-gold-700 dark:text-gold-300' : 'border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-500 dark:text-slate-300'}`}
+                       onClick={() => setNavigationMode('SCROLL')}
+                       className={`h-8 lg:h-9 flex-1 sm:flex-none px-3 lg:px-3.5 rounded-md text-[8px] lg:text-[9px] font-black uppercase tracking-widest transition-colors ${navigationMode === 'SCROLL' ? 'bg-brand-900 text-gold-400' : 'text-slate-500 dark:text-slate-300'}`}
                      >
-                       {stage.label}
+                       Scroll
                      </button>
-                   );
-                 })}
-               </div>
+                     <button
+                       type="button"
+                       onClick={() => setNavigationMode('SEQUENCE')}
+                       className={`h-8 lg:h-9 flex-1 sm:flex-none px-3 lg:px-3.5 rounded-md text-[8px] lg:text-[9px] font-black uppercase tracking-widest transition-colors ${navigationMode === 'SEQUENCE' ? 'bg-brand-900 text-gold-400' : 'text-slate-500 dark:text-slate-300'}`}
+                     >
+                       Sequence
+                     </button>
+                   </div>
+
+                   {navigationMode === 'SEQUENCE' && (
+                     <div className="inline-flex w-full lg:w-auto items-center gap-1">
+                       <button
+                         type="button"
+                         onClick={() => moveSequenceStage('prev')}
+                         disabled={activeSequenceIndex === 0}
+                         className="h-8 lg:h-9 flex-1 lg:flex-none px-3 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] lg:text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                         title="Previous step (←)"
+                       >
+                         ← Prev
+                       </button>
+                       <button
+                         type="button"
+                         onClick={() => moveSequenceStage('next')}
+                         disabled={activeSequenceIndex >= sequenceStages.length - 1}
+                         className="h-8 lg:h-9 flex-1 lg:flex-none px-3 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] lg:text-[9px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                         title="Next step (→)"
+                       >
+                         Next →
+                       </button>
+                     </div>
+                   )}
+                 </div>
+
+                 {navigationMode === 'SEQUENCE' && (
+                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                     {sequenceStages.map(stage => {
+                       const isActive = stage.key === activeSequenceStage;
+                       return (
+                         <button
+                           key={stage.key}
+                           type="button"
+                           onClick={() => setActiveSequenceStage(stage.key)}
+                           className={`h-8 lg:h-9 w-full px-3 rounded-md border text-[8px] lg:text-[9px] font-black uppercase tracking-widest transition-colors ${isActive ? 'border-gold-400 bg-gold-500/15 text-gold-700 dark:text-gold-300' : 'border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-500 dark:text-slate-300'}`}
+                         >
+                           {stage.label}
+                         </button>
+                       );
+                     })}
+                   </div>
+                 )}
+               </>
              )}
            </div>
+             )}
 
+           {shouldRenderPreOutputStages && (
            <div className="space-y-4">
              {(navigationMode === 'SCROLL' || activeSequenceStage === 'ROUTE') && (
              <div className={`space-y-4 ${navigationMode === 'SEQUENCE' ? 'animate-in fade-in slide-in-from-right-2 duration-200' : ''}`}>
@@ -2024,22 +2665,33 @@ export const CalculatorPage: React.FC = () => {
                       }}
                     />
                  </div>
-                 <div className="space-y-2 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-3">
+                 <div className={`space-y-2 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 ${isStopsCollapsed ? 'p-1.5' : 'p-3'}`}>
                    <div className="flex items-center justify-between">
                      <label className="inline-flex items-center gap-1 text-[9px] font-black text-slate-500 uppercase tracking-widest">
                        <MapPin size={11} />
-                       Stops (Optional)
+                       Stops (Optional){isStopsCollapsed ? ` · ${stopsDraft.length}` : ''}
                      </label>
-                     <button
-                       type="button"
-                       onClick={addStopField}
-                       className="h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 text-[7px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center gap-1"
-                     >
-                       <MapPin size={10} />
-                       Add Stop
-                     </button>
+                     <div className="flex items-center gap-1">
+                       <button
+                         type="button"
+                         onClick={() => setIsStopsCollapsed(prev => !prev)}
+                         className={`${isStopsCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-500/80 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-900/60' : 'h-6 px-2 text-[7px] rounded-full border border-slate-200/80 dark:border-brand-700 bg-white/90 dark:bg-brand-900/80 text-slate-500 dark:text-slate-300 hover:border-slate-300 dark:hover:border-brand-600'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                         title={isStopsCollapsed ? 'Expand stops' : 'Collapse stops'}
+                       >
+                         {isStopsCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                         {!isStopsCollapsed && 'Hide'}
+                       </button>
+                       <button
+                         type="button"
+                         onClick={addStopField}
+                         className={`${isStopsCollapsed ? 'h-5 px-1.5 text-[6px]' : 'h-6 px-2 text-[7px]'} rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center gap-1`}
+                       >
+                         <MapPin size={10} />
+                         Add Stop
+                       </button>
+                     </div>
                    </div>
-                   {stopsDraft.length > 0 ? (
+                   {isStopsCollapsed ? null : stopsDraft.length > 0 ? (
                      <div className="space-y-2">
                        {stopsDraft.map((stopValue, index) => {
                          const isResolved = Boolean(stopCandidates[index] && Number.isFinite(stopCandidates[index]?.lat) && Number.isFinite(stopCandidates[index]?.lng));
@@ -2122,27 +2774,47 @@ export const CalculatorPage: React.FC = () => {
                         <Calendar size={11} />
                         Scheduled Mission
                       </label>
-                      <div className="flex items-center gap-1">
+                      <div className={`flex items-center ${isTodayTimeQuickCollapsed
+                        ? navigationMode === 'SEQUENCE'
+                          ? 'flex-nowrap gap-1 overflow-x-auto px-1 pb-1 pr-1 snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+                          : 'flex-wrap gap-1'
+                        : 'flex-wrap gap-1'}`}>
                         <button
                           type="button"
                           onClick={() => setMissionTimePreset(0)}
-                          className="h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 text-[7px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+                          className={`${isTodayTimeQuickCollapsed ? 'h-6 px-2 text-[7px]' : 'h-6 px-2 text-[7px]'} rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 ${isTodayTimeQuickCollapsed ? 'shrink-0 snap-start' : ''}`}
                           title={`Set to now window (+${DISPATCH_NOW_MIN_MINUTES} to +${DISPATCH_NOW_MAX_MINUTES} min)`}
                         >
                           Now
                         </button>
                         <button
                           type="button"
+                          onClick={() => setMissionTimePreset(15)}
+                          className={`${isTodayTimeQuickCollapsed ? 'h-6 px-2 text-[7px]' : 'h-6 px-2 text-[7px]'} rounded-md border border-cyan-300 dark:border-cyan-900/40 bg-cyan-50 dark:bg-cyan-900/10 font-black uppercase tracking-widest text-cyan-700 dark:text-cyan-300 ${isTodayTimeQuickCollapsed ? 'shrink-0 snap-start' : ''}`}
+                          title="Set to 15 minutes from now"
+                        >
+                          +15m
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => setMissionTimePreset(30)}
-                          className="h-6 px-2 rounded-md border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[7px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300"
+                          className={`${isTodayTimeQuickCollapsed ? 'h-6 px-2 text-[7px]' : 'h-6 px-2 text-[7px]'} rounded-md border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 ${isTodayTimeQuickCollapsed ? 'shrink-0 snap-start' : ''}`}
                           title="Set to 30 minutes from now"
                         >
                           +30m
                         </button>
                         <button
                           type="button"
+                          onClick={() => setMissionTimePreset(45)}
+                          className={`${isTodayTimeQuickCollapsed ? 'h-6 px-2 text-[7px]' : 'h-6 px-2 text-[7px]'} rounded-md border border-sky-300 dark:border-sky-900/40 bg-sky-50 dark:bg-sky-900/10 font-black uppercase tracking-widest text-sky-700 dark:text-sky-300 ${isTodayTimeQuickCollapsed ? 'shrink-0 snap-start' : ''}`}
+                          title="Set to 45 minutes from now"
+                        >
+                          +45m
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => setMissionTimePreset(60)}
-                          className="h-6 px-2 rounded-md border border-indigo-300 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-900/10 text-[7px] font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300"
+                          className={`${isTodayTimeQuickCollapsed ? 'h-6 px-2 text-[7px]' : 'h-6 px-2 text-[7px]'} rounded-md border border-indigo-300 dark:border-indigo-900/40 bg-indigo-50 dark:bg-indigo-900/10 font-black uppercase tracking-widest text-indigo-700 dark:text-indigo-300 ${isTodayTimeQuickCollapsed ? 'shrink-0 snap-start' : ''}`}
                           title="Set to 1 hour from now"
                         >
                           +1h
@@ -2150,7 +2822,7 @@ export const CalculatorPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => setMissionTimePreset(120)}
-                          className="h-6 px-2 rounded-md border border-violet-300 dark:border-violet-900/40 bg-violet-50 dark:bg-violet-900/10 text-[7px] font-black uppercase tracking-widest text-violet-700 dark:text-violet-300"
+                          className={`${isTodayTimeQuickCollapsed ? 'h-6 px-2 text-[7px]' : 'h-6 px-2 text-[7px]'} rounded-md border border-violet-300 dark:border-violet-900/40 bg-violet-50 dark:bg-violet-900/10 font-black uppercase tracking-widest text-violet-700 dark:text-violet-300 ${isTodayTimeQuickCollapsed ? 'shrink-0 snap-start' : ''}`}
                           title="Set to 2 hours from now"
                         >
                           +2h
@@ -2158,7 +2830,7 @@ export const CalculatorPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => setMissionTimePreset(90)}
-                          className="h-6 px-2 rounded-md border border-fuchsia-300 dark:border-fuchsia-900/40 bg-fuchsia-50 dark:bg-fuchsia-900/10 text-[7px] font-black uppercase tracking-widest text-fuchsia-700 dark:text-fuchsia-300"
+                          className={`${isTodayTimeQuickCollapsed ? 'h-6 px-2 text-[7px]' : 'h-6 px-2 text-[7px]'} rounded-md border border-fuchsia-300 dark:border-fuchsia-900/40 bg-fuchsia-50 dark:bg-fuchsia-900/10 font-black uppercase tracking-widest text-fuchsia-700 dark:text-fuchsia-300 ${isTodayTimeQuickCollapsed ? 'shrink-0 snap-start' : ''}`}
                           title="Set to 1 hour 30 minutes from now"
                         >
                           +1.5h
@@ -2166,101 +2838,188 @@ export const CalculatorPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => setMissionTimePreset(180)}
-                          className="h-6 px-2 rounded-md border border-purple-300 dark:border-purple-900/40 bg-purple-50 dark:bg-purple-900/10 text-[7px] font-black uppercase tracking-widest text-purple-700 dark:text-purple-300"
+                          className={`${isTodayTimeQuickCollapsed ? 'h-6 px-2 text-[7px]' : 'h-6 px-2 text-[7px]'} rounded-md border border-purple-300 dark:border-purple-900/40 bg-purple-50 dark:bg-purple-900/10 font-black uppercase tracking-widest text-purple-700 dark:text-purple-300 ${isTodayTimeQuickCollapsed ? 'shrink-0 snap-start' : ''}`}
                           title="Set to 3 hours from now"
                         >
                           +3h
                         </button>
+                        {isTodayTimeQuickCollapsed && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setMissionTimePreset(240)}
+                              className="h-6 px-2 text-[7px] rounded-md border border-amber-300 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 font-black uppercase tracking-widest text-amber-700 dark:text-amber-300 shrink-0 snap-start"
+                              title="Set to 4 hours from now"
+                            >
+                              +4h
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMissionTimePreset(300)}
+                              className="h-6 px-2 text-[7px] rounded-md border border-lime-300 dark:border-lime-900/40 bg-lime-50 dark:bg-lime-900/10 font-black uppercase tracking-widest text-lime-700 dark:text-lime-300 shrink-0 snap-start"
+                              title="Set to 5 hours from now"
+                            >
+                              +5h
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMissionTimePreset(360)}
+                              className="h-6 px-2 text-[7px] rounded-md border border-orange-300 dark:border-orange-900/40 bg-orange-50 dark:bg-orange-900/10 font-black uppercase tracking-widest text-orange-700 dark:text-orange-300 shrink-0 snap-start"
+                              title="Set to 6 hours from now"
+                            >
+                              +6h
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMissionTimePreset(480)}
+                              className="h-6 px-2 text-[7px] rounded-md border border-rose-300 dark:border-rose-900/40 bg-rose-50 dark:bg-rose-900/10 font-black uppercase tracking-widest text-rose-700 dark:text-rose-300 shrink-0 snap-start"
+                              title="Set to 8 hours from now"
+                            >
+                              +8h
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMissionTimePreset(720)}
+                              className="h-6 px-2 text-[7px] rounded-md border border-red-300 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 font-black uppercase tracking-widest text-red-700 dark:text-red-300 shrink-0 snap-start"
+                              title="Set to 12 hours from now"
+                            >
+                              +12h
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                     <div className="relative">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500"><Clock size={13} /></div>
                       <input type="datetime-local" value={tripDate} onChange={e => {setTripDate(e.target.value); setDateRequiredError(false);}} className={`w-full h-11 pl-9 pr-3 rounded-xl border bg-slate-50 dark:bg-brand-950 text-xs font-bold transition-all ${dateRequiredError ? 'border-red-500' : 'border-slate-200 dark:border-brand-800'}`} />
                     </div>
-                    <div className="flex items-center gap-2">
-                      <div className="relative flex-1">
-                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500"><Timer size={12} /></div>
-                        <input
-                          type="text"
-                          value={todayTimeQuickInput}
-                          onChange={e => setTodayTimeQuickInput(e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              applyTodayTimeQuickInput();
-                            }
-                          }}
-                          placeholder="Today time (e.g. 14:30 or 2:30pm)"
-                          className="w-full h-9 pl-9 pr-3 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[9px] font-bold"
-                        />
-                      </div>
+                    <div className="flex items-center justify-between gap-2 px-1">
+                      <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300 inline-flex items-center gap-1">
+                        <Timer size={10} />
+                        Typed Time Shortcut
+                      </p>
                       <button
                         type="button"
-                        onClick={applyTodayTimeQuickInput}
-                        className="h-9 px-3 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1"
-                        title="Apply typed time for today"
+                        onClick={() => setIsTodayTimeQuickCollapsed(prev => !prev)}
+                          className={`${isTodayTimeQuickCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-500/80 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-900/60' : 'h-6 px-2 text-[7px] rounded-full border border-slate-200/80 dark:border-brand-700 bg-white/90 dark:bg-brand-900/80 text-slate-500 dark:text-slate-300 hover:border-slate-300 dark:hover:border-brand-600'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                        title={isTodayTimeQuickCollapsed ? 'Expand typed time form' : 'Collapse typed time form'}
                       >
-                        <Check size={10} />
-                        Apply
+                        {isTodayTimeQuickCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                          {!isTodayTimeQuickCollapsed && 'Hide'}
                       </button>
                     </div>
-                    <p className="text-[7px] font-black uppercase tracking-widest text-slate-400 px-1">Now uses a {DISPATCH_NOW_MIN_MINUTES}-{DISPATCH_NOW_MAX_MINUTES} minute operational window.</p>
+                    {!isTodayTimeQuickCollapsed && (
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500"><Timer size={12} /></div>
+                          <input
+                            type="text"
+                            value={todayTimeQuickInput}
+                            onChange={e => setTodayTimeQuickInput(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                applyTodayTimeQuickInput();
+                              }
+                            }}
+                            placeholder="Today time (e.g. 14:30 or 2:30pm)"
+                            className="w-full h-9 pl-9 pr-3 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[9px] font-bold"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={applyTodayTimeQuickInput}
+                          className="h-9 px-3 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1"
+                          title="Apply typed time for today"
+                        >
+                          <Check size={10} />
+                          Apply
+                        </button>
+                      </div>
+                    )}
+                    {!isTodayTimeQuickCollapsed && (
+                      <p className="text-[7px] font-black uppercase tracking-widest text-slate-400 px-1">Now uses a {DISPATCH_NOW_MIN_MINUTES}-{DISPATCH_NOW_MAX_MINUTES} minute operational window.</p>
+                    )}
                   </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                 <button onClick={() => setIsRoundTrip(!isRoundTrip)} className={`h-11 rounded-xl text-[9px] font-black uppercase tracking-widest border-2 transition-all flex items-center justify-center ${isRoundTrip ? 'bg-brand-900 text-gold-400 border-brand-900' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
-                   <Repeat size={14} className="mr-2"/> {isRoundTrip ? 'Round Trip' : 'One Way'}
-                 </button>
-                 <div className="flex bg-slate-50 rounded-xl p-0.5 border-2 border-slate-100 dark:bg-brand-950 dark:border-brand-800">
-                    <button
-                      onClick={() => {
-                        setAddWaitTime(prev => {
-                          const next = !prev;
-                          if (!next) {
+              <div className={`space-y-2 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 ${isFareModifiersCollapsed ? 'p-1' : 'p-2.5'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">
+                    Fare Modifiers{isFareModifiersCollapsed ? ` · ${isRoundTrip ? 'Round Trip' : 'One Way'} · ${addWaitTime && waitTimeHours > 0 ? `Wait ${waitTimeHours}h` : 'No Wait'}` : ''}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsFareModifiersCollapsed(prev => !prev)}
+                    className={`${isFareModifiersCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-500/80 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-900/60' : 'h-6 px-2 text-[7px] rounded-full border border-slate-200/80 dark:border-brand-700 bg-white/90 dark:bg-brand-900/80 text-slate-500 dark:text-slate-300 hover:border-slate-300 dark:hover:border-brand-600'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                    title={isFareModifiersCollapsed ? 'Expand fare modifiers' : 'Collapse fare modifiers'}
+                  >
+                    {isFareModifiersCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                    {!isFareModifiersCollapsed && 'Hide'}
+                  </button>
+                </div>
+
+                {isFareModifiersCollapsed ? null : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button onClick={() => setIsRoundTrip(!isRoundTrip)} className={`h-11 rounded-xl text-[9px] font-black uppercase tracking-widest border-2 transition-all flex items-center justify-center ${isRoundTrip ? 'bg-brand-900 text-gold-400 border-brand-900' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
+                      <Repeat size={14} className="mr-2"/> {isRoundTrip ? 'Round Trip' : 'One Way'}
+                    </button>
+                    <div className="flex bg-slate-50 rounded-xl p-0.5 border-2 border-slate-100 dark:bg-brand-950 dark:border-brand-800">
+                      <button
+                        onClick={() => {
+                          setAddWaitTime(prev => {
+                            const next = !prev;
+                            if (!next) {
+                              setWaitTimeHours(0);
+                              setWaitTimeInput('');
+                            }
+                            if (next && waitTimeHours > 0) {
+                              setWaitTimeInput(String(waitTimeHours));
+                            }
+                            return next;
+                          });
+                        }}
+                        className={`h-9 w-9 rounded-lg flex items-center justify-center ${addWaitTime ? 'bg-gold-600 text-brand-950' : 'text-slate-300'}`}
+                      ><Clock size={14}/></button>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="0.25"
+                        disabled={!addWaitTime}
+                        value={waitTimeInput}
+                        onChange={e => {
+                          const raw = e.target.value;
+                          if (!/^\d*(\.\d{0,2})?$/.test(raw)) return;
+                          setWaitTimeInput(raw);
+                          const parsed = Number(raw);
+                          setWaitTimeHours(Number.isFinite(parsed) ? Math.max(0, parsed) : 0);
+                        }}
+                        onBlur={() => {
+                          if (!waitTimeInput.trim()) {
                             setWaitTimeHours(0);
                             setWaitTimeInput('');
+                            return;
                           }
-                          if (next && waitTimeHours > 0) {
-                            setWaitTimeInput(String(waitTimeHours));
+                          const parsed = Number(waitTimeInput);
+                          if (!Number.isFinite(parsed) || parsed <= 0) {
+                            setWaitTimeHours(0);
+                            setWaitTimeInput('');
+                            return;
                           }
-                          return next;
-                        });
-                      }}
-                      className={`h-9 w-9 rounded-lg flex items-center justify-center ${addWaitTime ? 'bg-gold-600 text-brand-950' : 'text-slate-300'}`}
-                    ><Clock size={14}/></button>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      disabled={!addWaitTime}
-                      value={waitTimeInput}
-                      onChange={e => {
-                        const raw = e.target.value;
-                        if (!/^\d*(\.\d{0,2})?$/.test(raw)) return;
-                        setWaitTimeInput(raw);
-                        const parsed = Number(raw);
-                        setWaitTimeHours(Number.isFinite(parsed) ? Math.max(0, parsed) : 0);
-                      }}
-                      onBlur={() => {
-                        if (!waitTimeInput.trim()) {
-                          setWaitTimeHours(0);
-                          setWaitTimeInput('');
-                          return;
-                        }
-                        const parsed = Number(waitTimeInput);
-                        if (!Number.isFinite(parsed) || parsed <= 0) {
-                          setWaitTimeHours(0);
-                          setWaitTimeInput('');
-                          return;
-                        }
-                        const normalized = Math.round(parsed * 100) / 100;
-                        setWaitTimeHours(normalized);
-                        setWaitTimeInput(String(normalized));
-                      }}
-                      className="flex-1 bg-transparent text-center text-[10px] font-black border-none focus:ring-0"
-                      placeholder="Hrs"
-                    />
-                 </div>
+                          const normalized = Math.round(parsed * 100) / 100;
+                          setWaitTimeHours(normalized);
+                          setWaitTimeInput(String(normalized));
+                        }}
+                        className="flex-1 bg-transparent text-center text-[10px] font-black border-none focus:ring-0"
+                        placeholder="Hrs"
+                        title="Wait time in hours"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
+
+              {renderSequenceWorkflowDock()}
 
                   </div>
                   )}
@@ -2340,46 +3099,62 @@ export const CalculatorPage: React.FC = () => {
                     )}
                   </div>
                   {quickCustomerPicks.length > 0 && (
-                    <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-2">
-                      <p className="text-[7px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300 px-1 inline-flex items-center gap-1">
-                        <Zap size={10} />
-                        Quick Picks
-                      </p>
-                      <div className={`mt-1.5 ${navigationMode === 'SEQUENCE' ? 'grid grid-cols-2 lg:grid-cols-4 gap-1.5' : 'flex flex-wrap gap-1.5'}`}>
-                        {quickCustomerPicks.map(pick => (
-                          <button
-                            key={pick.id}
-                            type="button"
-                            onClick={() => handleQuickPickCustomer(pick)}
-                            title={`${pick.name} · ${pick.phone}`}
-                            className={`h-7 px-2 rounded-lg border text-[7px] font-black uppercase tracking-widest inline-flex items-center ${navigationMode === 'SEQUENCE' ? 'justify-center gap-0.5 min-w-0' : 'gap-1'} ${pick.fromDirectory
-                              ? 'border-gold-300 bg-gold-50 text-gold-700 dark:border-gold-700/40 dark:bg-gold-900/10 dark:text-gold-300'
-                              : 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/10 dark:text-blue-300'}`}
-                          >
-                            <User size={10} />
-                            {pick.affinity > 0 && (
-                              <span className="inline-flex items-center px-1 rounded border text-[6px] tracking-widest border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10">
-                                Route
-                              </span>
-                            )}
-                            {pick.tier && (
-                              <span className={`inline-flex items-center px-1 rounded border text-[6px] tracking-widest ${pick.tier === 'VVIP'
-                                ? 'border-pink-300 text-pink-700 bg-pink-50 dark:border-pink-900/40 dark:text-pink-300 dark:bg-pink-900/10'
-                                : 'border-violet-300 text-violet-700 bg-violet-50 dark:border-violet-900/40 dark:text-violet-300 dark:bg-violet-900/10'}`}
-                              >
-                                {pick.tier === 'VVIP' ? <ShieldCheck size={8} className="mr-0.5" /> : <Star size={8} className="mr-0.5" />}
-                                {pick.tier}
-                              </span>
-                            )}
-                            <span className="truncate">{truncateUiText(pick.name, 14)}</span>
-                          </button>
-                        ))}
+                    <div className={`rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 ${isQuoteQuickPicksCollapsed ? 'p-0.5' : 'p-2'}`}>
+                      <div className="flex items-center justify-between gap-2 px-1">
+                        <p className="text-[6px] font-black uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300 inline-flex items-center gap-1">
+                          <Zap size={10} />
+                          Quick Picks ({quickCustomerPicks.length})
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setIsQuoteQuickPicksCollapsed(prev => !prev)}
+                          className={`${isQuoteQuickPicksCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-500/80 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-900/60' : 'h-6 px-2 text-[7px] rounded-full border border-slate-200/80 dark:border-brand-700 bg-white/90 dark:bg-brand-900/80 text-slate-500 dark:text-slate-300 hover:border-slate-300 dark:hover:border-brand-600'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                          title={isQuoteQuickPicksCollapsed ? 'Expand quick picks' : 'Collapse quick picks'}
+                        >
+                          {isQuoteQuickPicksCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                          {!isQuoteQuickPicksCollapsed && 'Hide'}
+                        </button>
                       </div>
+                      {!isQuoteQuickPicksCollapsed && (
+                        <div className={`mt-1.5 ${navigationMode === 'SEQUENCE' ? 'flex flex-nowrap gap-1.5 overflow-x-auto px-1 pb-1 snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden' : 'flex flex-wrap gap-1.5'}`}>
+                          {quickCustomerPicks.map(pick => (
+                            <button
+                              key={pick.id}
+                              type="button"
+                              onClick={() => handleQuickPickCustomer(pick)}
+                              title={`${pick.name} · ${pick.phone}`}
+                              className={`h-7 px-2 rounded-lg border text-[7px] font-black uppercase tracking-widest inline-flex items-center ${navigationMode === 'SEQUENCE' ? 'justify-center gap-0.5 shrink-0 snap-start min-w-[9rem] max-w-[12rem]' : 'gap-1'} ${pick.fromDirectory
+                                ? 'border-gold-300 bg-gold-50 text-gold-700 dark:border-gold-700/40 dark:bg-gold-900/10 dark:text-gold-300'
+                                : 'border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/10 dark:text-blue-300'}`}
+                            >
+                              <User size={10} />
+                              {pick.affinity > 0 && (
+                                <span className="inline-flex items-center px-1 rounded border text-[6px] tracking-widest border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10">
+                                  Route
+                                </span>
+                              )}
+                              {pick.tier && (
+                                <span className={`inline-flex items-center px-1 rounded border text-[6px] tracking-widest ${pick.tier === 'VVIP'
+                                  ? 'border-pink-300 text-pink-700 bg-pink-50 dark:border-pink-900/40 dark:text-pink-300 dark:bg-pink-900/10'
+                                  : 'border-violet-300 text-violet-700 bg-violet-50 dark:border-violet-900/40 dark:text-violet-300 dark:bg-violet-900/10'}`}
+                                >
+                                  {pick.tier === 'VVIP' ? <ShieldCheck size={8} className="mr-0.5" /> : <Star size={8} className="mr-0.5" />}
+                                  {pick.tier}
+                                </span>
+                              )}
+                              <span className="truncate">{truncateUiText(pick.name, 14)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   <div className="flex items-center bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-10">
                     <User size={13} className="text-gold-600 mr-2.5" />
-                    <input type="text" placeholder="Client Name" value={customerName} onChange={e => setCustomerName(e.target.value)} className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-[10px] flex-1 h-full" />
+                    <input type="text" placeholder="Client Name" value={customerName} onChange={e => {
+                      setSelectedQuoteDirectoryCustomerId(null);
+                      setCustomerName(e.target.value);
+                    }} className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-[10px] flex-1 h-full" />
                   </div>
                   <div className="flex items-center bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-10">
                     <Phone size={13} className="text-blue-500 mr-2.5" />
@@ -2389,6 +3164,7 @@ export const CalculatorPage: React.FC = () => {
                       value={customerPhone}
                       onChange={e => {
                         const nextPhone = e.target.value;
+                        setSelectedQuoteDirectoryCustomerId(null);
                         setCustomerPhone(nextPhone);
                         syncCustomerPhoneDialState(nextPhone);
                       }}
@@ -2501,17 +3277,31 @@ export const CalculatorPage: React.FC = () => {
                   </button>
                 </div>
                 {frequentPlaceSuggestions.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 px-1">
-                      <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Frequent Place Suggestions</p>
-                      <span
-                        title="Saved places from CRM appear in order: Home, Business, then Frequent places. Use Set Pickup or Set Dropoff to apply instantly."
-                        className="inline-flex items-center text-slate-400"
+                  <div className={`space-y-2 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 ${isFrequentPlacesCollapsed ? 'p-0.5' : 'p-2'}`}>
+                    <div className="flex items-center justify-between gap-2 px-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-[6px] font-black uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Frequent Place Suggestions ({frequentPlaceSuggestions.length})</p>
+                        <span
+                          title="Saved places from CRM appear in order: Home, Business, then Frequent places. Use Set Pickup or Set Dropoff to apply instantly."
+                          className="inline-flex items-center text-slate-400"
+                        >
+                          <Info size={11} />
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsFrequentPlacesCollapsed(prev => !prev)}
+                        className={`${isFrequentPlacesCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-500/80 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-900/60' : 'h-6 px-2 text-[7px] rounded-full border border-slate-200/80 dark:border-brand-700 bg-white/90 dark:bg-brand-900/80 text-slate-500 dark:text-slate-300 hover:border-slate-300 dark:hover:border-brand-600'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                        title={isFrequentPlacesCollapsed ? 'Expand frequent places' : 'Collapse frequent places'}
                       >
-                        <Info size={11} />
-                      </span>
+                        {isFrequentPlacesCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                        {!isFrequentPlacesCollapsed && 'Hide'}
+                      </button>
                     </div>
-                    <div className="space-y-2 max-h-32 overflow-auto pr-1">
+                    {!isFrequentPlacesCollapsed && (
+                      <div className={`${navigationMode === 'SEQUENCE'
+                        ? 'flex flex-nowrap items-stretch gap-2 overflow-x-auto px-1 pb-1 snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+                        : 'space-y-2 max-h-32 overflow-auto pr-1'}`}>
                       {frequentPlaceSuggestions.slice(0, 8).map((location, index) => {
                         const normalizedLabel = (location.label || '').trim().toLowerCase();
                         const isHome = normalizedLabel === 'home';
@@ -2523,7 +3313,7 @@ export const CalculatorPage: React.FC = () => {
                           <div
                             key={`${location.address}-${location.mapsLink || ''}-${index}`}
                             title={`${location.helperText} ${location.address}`}
-                            className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-3 py-2"
+                            className={`rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-3 py-2 ${navigationMode === 'SEQUENCE' ? 'shrink-0 snap-start w-[18rem]' : ''}`}
                           >
                             <div className="flex items-center justify-between gap-2">
                               <p
@@ -2566,20 +3356,36 @@ export const CalculatorPage: React.FC = () => {
                           </div>
                         );
                       })}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {quoteDirectoryCustomer && quoteCustomerSnapshot && (
-                  <CustomerSnapshotCard snapshot={quoteCustomerSnapshot} />
+                {isQuoteDirectorySelectionActive && quoteCustomerSnapshot && hasExistingCustomerSnapshotInfo && (
+                  <div className={navigationMode === 'SEQUENCE' && activeSequenceStage === 'CUSTOMER' ? 'lg:hidden' : ''}>
+                    <CustomerSnapshotCard snapshot={quoteCustomerSnapshot} />
+                  </div>
                 )}
 
                 {shouldShowQuickMarkers && (
-                  <div className="rounded-2xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 p-3 space-y-2">
-                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1">
-                      <Layers size={10} aria-hidden="true" />
-                      Quick Operator Markers
-                    </p>
+                  <div className={`rounded-2xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 ${isQuickMarkersCollapsed ? 'p-0.5 space-y-0.5' : 'p-3 space-y-2'}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[6px] font-black uppercase tracking-[0.14em] text-slate-400 inline-flex items-center gap-1">
+                        <Layers size={10} aria-hidden="true" />
+                        Quick Operator Markers
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setIsQuickMarkersCollapsed(prev => !prev)}
+                        className={`${isQuickMarkersCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-500/80 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-900/60' : 'h-6 px-2 text-[7px] rounded-full border border-slate-200/80 dark:border-brand-700 bg-white/90 dark:bg-brand-900/80 text-slate-500 dark:text-slate-300 hover:border-slate-300 dark:hover:border-brand-600'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                        title={isQuickMarkersCollapsed ? 'Expand quick markers' : 'Collapse quick markers'}
+                      >
+                        {isQuickMarkersCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                        {!isQuickMarkersCollapsed && 'Hide'}
+                      </button>
+                    </div>
+                    {!isQuickMarkersCollapsed && (
+                      <>
                     <p className="text-[9px] font-bold text-slate-500 dark:text-slate-300">New customer detected. Tag quickly for indexing.</p>
                     <div className={`${navigationMode === 'SEQUENCE' ? 'grid grid-cols-2 lg:grid-cols-4 gap-1.5' : 'flex flex-wrap gap-1.5'}`}>
                       {operatorIndexMarkers.map(marker => {
@@ -2613,20 +3419,24 @@ export const CalculatorPage: React.FC = () => {
                         );
                       })}
                     </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
+                {renderSequenceWorkflowDock()}
               </div>
               )}
            </div>
+           )}
         <div
           id="calc-stage-dispatch"
           className={`${navigationMode === 'SEQUENCE' && activeSequenceStage !== 'OUTPUT' ? 'hidden' : 'block'} ${navigationMode === 'SEQUENCE' ? 'animate-in fade-in slide-in-from-right-2 duration-200' : ''}`}
         >
         {result ? (
           <div className="bg-brand-900 rounded-2xl shadow-2xl p-5 border-t-4 border-gold-600 animate-fade-in relative overflow-visible">
-                 <div className="flex justify-between items-start mb-6">
-                    <div>
+                  <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="lg:pr-3">
                        <div className="flex items-baseline space-x-1 text-white">
                           <span className="text-gold-400 font-black text-lg">$</span>
                           <span className="text-4xl font-black tracking-tighter">{fareUsd}</span>
@@ -2638,12 +3448,12 @@ export const CalculatorPage: React.FC = () => {
                          </span>
                         )}
                     </div>
-                    <div className="text-right space-y-1.5 min-w-[132px]">
+                    <div className="grid w-full grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-4 lg:w-auto lg:min-w-0">
                        <button
                          onClick={handleQuickCopyQuote}
                          aria-label={quickCopied ? 'Quote copied' : 'Copy quote'}
                          title={quickCopied ? 'Quote copied' : 'Copy quote'}
-                         className={`w-full h-7 flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest px-2 rounded-lg border transition-all ${quickCopied ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-brand-950 text-slate-400 border-brand-800 hover:text-white'}`}
+                         className={`h-7 w-full lg:w-auto min-w-0 flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest px-2 rounded-lg border transition-all ${quickCopied ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-brand-950 text-slate-400 border-brand-800 hover:text-white'}`}
                        >
                          {quickCopied ? <Check size={10} /> : <Copy size={10} />}
                          <span>{quickCopied ? 'Done' : 'Copy'}</span>
@@ -2652,25 +3462,25 @@ export const CalculatorPage: React.FC = () => {
                          onClick={handleQuickWhatsAppQuote}
                          aria-label="Send quote to customer on WhatsApp"
                          title="Customer WhatsApp"
-                         className="w-full h-7 flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest px-2 rounded-lg border transition-all bg-brand-950 text-emerald-400 border-brand-800 hover:text-emerald-300"
+                         className="h-7 w-full lg:w-auto min-w-0 flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest px-2 rounded-lg border transition-all bg-brand-950 text-emerald-400 border-brand-800 hover:text-emerald-300"
                        >
                          <LinkIcon size={10} />
-                         <span className="hidden sm:inline">Customer WA</span>
-                         <span className="sm:hidden">Cust WA</span>
+                         <span className="hidden sm:inline truncate">Customer WA</span>
+                         <span className="sm:hidden truncate">Cust WA</span>
                        </button>
                        <button
                          onClick={handleQuickOperatorWhatsAppQuote}
                          aria-label="Send quote to operator on WhatsApp"
                          title="Operator WhatsApp"
                          disabled={!settings.operatorWhatsApp.trim()}
-                         className="w-full h-7 flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest px-2 rounded-lg border transition-all bg-brand-950 text-blue-400 border-brand-800 hover:text-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                         className="h-7 w-full lg:w-auto min-w-0 flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest px-2 rounded-lg border transition-all bg-brand-950 text-blue-400 border-brand-800 hover:text-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
                        >
                          <MessageCircle size={10} />
                          <span>Op WA</span>
                        </button>
-                       <span className="w-full h-7 inline-flex items-center justify-center gap-1 text-[8px] font-black text-slate-400 uppercase tracking-widest bg-brand-950 px-2 rounded-lg border border-brand-800">
-                         <Clock size={10} />
-                         <span>{result.durationInTrafficText} ETA</span>
+                       <span className="h-7 w-full lg:w-auto min-w-0 inline-flex items-center justify-center gap-1 text-[8px] font-black uppercase tracking-widest px-2 rounded-full border border-gold-600/40 bg-gold-500/10 text-gold-300">
+                         <Clock size={10} className="text-gold-400" />
+                         <span className="truncate">{result.durationInTrafficText} ETA</span>
                        </span>
                     </div>
                  </div>
@@ -2690,7 +3500,10 @@ export const CalculatorPage: React.FC = () => {
                  {showBreakdown && (
                    <div className="mt-4 mb-5 rounded-xl border border-brand-800 bg-brand-950/70 p-3 space-y-2 animate-fade-in">
                      <div className="flex items-center justify-between">
-                       <span className="text-[8px] font-black uppercase tracking-widest text-slate-400">Traffic Index</span>
+                       <span className="text-[8px] font-black uppercase tracking-widest text-slate-400 inline-flex items-center gap-1">
+                         <Gauge size={10} className="text-cyan-400" />
+                         Traffic Index
+                       </span>
                        <span className="text-[10px] font-black uppercase tracking-widest text-gold-400">{Math.round(result.trafficIndex)}/100</span>
                      </div>
                      <div className="flex items-center justify-between">
@@ -2720,22 +3533,35 @@ export const CalculatorPage: React.FC = () => {
                  )}
 
                  {/* Special Requirements Selection */}
-                 <div className="py-5 border-b border-brand-800">
-                    <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-3 px-1">Passenger Requirements</label>
-                    <div className={`${navigationMode === 'SEQUENCE' ? 'grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-1.5' : 'flex flex-wrap gap-1.5'}`}>
-                       {SPECIAL_REQUIREMENTS.map(req => (
-                         <button 
-                           key={req.id} 
-                           onClick={() => toggleRequirement(req.id)}
-                           title={req.label}
-                           aria-label={req.label}
-                           className={`px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-tight transition-all border inline-flex items-center justify-center gap-1.5 ${selectedRequirements.includes(req.id) ? 'bg-gold-600 border-gold-600 text-brand-900 shadow-lg shadow-gold-600/10' : 'bg-brand-950 border-brand-800 text-slate-500 hover:border-slate-600'}`}
-                         >
-                           {requirementIcon(req.id)}
-                           {req.short}
-                         </button>
-                       ))}
+                   <div className={`${isPassengerRequirementsCollapsed ? 'py-1' : 'py-5'} border-b border-brand-800`}>
+                    <div className={`flex items-center justify-between gap-2 px-1 ${isPassengerRequirementsCollapsed ? 'mb-0' : 'mb-2'}`}>
+                      <label className="text-[7px] font-black text-slate-500 uppercase tracking-[0.14em]">Passenger Requirements</label>
+                      <button
+                        type="button"
+                        onClick={() => setIsPassengerRequirementsCollapsed(prev => !prev)}
+                        className={`${isPassengerRequirementsCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-400/90 hover:bg-white/10' : 'h-6 px-2 text-[7px] rounded-full border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                        title={isPassengerRequirementsCollapsed ? 'Expand passenger requirements' : 'Collapse passenger requirements'}
+                      >
+                        {isPassengerRequirementsCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                        {!isPassengerRequirementsCollapsed && 'Hide'}
+                      </button>
                     </div>
+                    {!isPassengerRequirementsCollapsed && (
+                      <div className={`${navigationMode === 'SEQUENCE' ? 'flex flex-nowrap gap-1.5 overflow-x-auto px-1 pb-1 snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden' : 'flex flex-wrap gap-1.5'}`}>
+                         {SPECIAL_REQUIREMENTS.map(req => (
+                           <button 
+                             key={req.id} 
+                             onClick={() => toggleRequirement(req.id)}
+                             title={req.label}
+                             aria-label={req.label}
+                             className={`px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-tight transition-all border inline-flex items-center justify-center gap-1.5 ${navigationMode === 'SEQUENCE' ? 'shrink-0 snap-start min-w-[6.5rem]' : ''} ${selectedRequirements.includes(req.id) ? 'bg-gold-600 border-gold-600 text-brand-900 shadow-lg shadow-gold-600/10' : 'bg-brand-950 border-brand-800 text-slate-500 hover:border-slate-600'}`}
+                           >
+                             {requirementIcon(req.id)}
+                             {req.short}
+                           </button>
+                         ))}
+                      </div>
+                    )}
                  </div>
 
                  <div className="pt-5 space-y-4">
@@ -2746,59 +3572,206 @@ export const CalculatorPage: React.FC = () => {
                     </div>
 
                     <div className="grid grid-cols-1 gap-2">
-                      <div className="flex items-center bg-white dark:bg-brand-950 border border-slate-200 dark:border-brand-800 rounded-xl px-2 h-11">
-                        <DollarSign size={14} className="text-gold-500 mr-2" />
-                        <div className="grid grid-cols-2 gap-1 w-full">
+                      <div className={`rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-950 ${isPaymentModeCollapsed ? 'p-0.5' : 'p-2'}`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[7px] font-black uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300 inline-flex items-center gap-1">
+                            <DollarSign size={10} className="text-gold-500" />
+                            Payment Mode{isPaymentModeCollapsed ? ` · ${paymentMode}` : ''}
+                          </p>
                           <button
                             type="button"
-                            onClick={() => setPaymentMode('CASH')}
-                            aria-label="Cash payment mode"
-                            className={`h-8 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors inline-flex items-center justify-center gap-1 ${paymentMode === 'CASH' ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
+                            onClick={() => setIsPaymentModeCollapsed(prev => !prev)}
+                            className={`${isPaymentModeCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-500/80 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-900/60' : 'h-6 px-2 text-[7px] rounded-full border border-slate-200/80 dark:border-brand-700 bg-white/90 dark:bg-brand-900/80 text-slate-500 dark:text-slate-300 hover:border-slate-300 dark:hover:border-brand-600'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                            title={isPaymentModeCollapsed ? 'Expand payment mode' : 'Collapse payment mode'}
                           >
-                            <DollarSign size={10} aria-hidden="true" />
-                            Cash
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setPaymentMode('CREDIT')}
-                            aria-label="Credit payment mode"
-                            className={`h-8 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors inline-flex items-center justify-center gap-1 ${paymentMode === 'CREDIT' ? 'bg-blue-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
-                          >
-                            <ArrowRightLeft size={10} aria-hidden="true" />
-                            Credit
+                            {isPaymentModeCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                            {!isPaymentModeCollapsed && 'Hide'}
                           </button>
                         </div>
+                        {!isPaymentModeCollapsed && (
+                          <div className="mt-1 grid grid-cols-2 gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setPaymentMode('CASH')}
+                              aria-label="Cash payment mode"
+                              className={`h-7 rounded-lg text-[8px] font-black uppercase tracking-widest transition-colors inline-flex items-center justify-center gap-1 ${paymentMode === 'CASH' ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
+                              title={quoteDirectoryCustomer ? `Default for this customer: ${quotePreferredPaymentMode}` : 'Set payment mode to Cash'}
+                            >
+                              <DollarSign size={10} aria-hidden="true" />
+                              Cash
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPaymentMode('CREDIT')}
+                              aria-label="Credit payment mode"
+                              className={`h-7 rounded-lg text-[8px] font-black uppercase tracking-widest transition-colors inline-flex items-center justify-center gap-1 ${paymentMode === 'CREDIT' ? 'bg-blue-600 text-white' : 'bg-slate-100 dark:bg-brand-900 text-slate-500 dark:text-slate-300'}`}
+                              title={quoteDirectoryCustomer ? `Default for this customer: ${quotePreferredPaymentMode}` : 'Set payment mode to Credit'}
+                            >
+                              <ArrowRightLeft size={10} aria-hidden="true" />
+                              Credit
+                            </button>
+                          </div>
+                        )}
                       </div>
-                      <div className="flex items-center bg-white dark:bg-brand-950 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-11">
+                      <div className="relative flex items-center bg-white dark:bg-brand-950 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-11">
                         <Car size={14} className="text-emerald-500 mr-3" />
-                        <select
-                          value={selectedDriverId}
-                          onChange={e => setSelectedDriverId(e.target.value)}
-                          className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-xs flex-1 h-full"
-                        >
-                          <option value="" className="text-brand-900">Assign Driver (Optional)</option>
-                          {activeDrivers.map(driver => (
-                            <option key={driver.id} value={driver.id} className="text-brand-900">{driver.name} ({driver.plateNumber}) [{driver.currentStatus}]</option>
-                          ))}
-                        </select>
+                        <input
+                          ref={driverSearchInputRef}
+                          type="text"
+                          value={driverSearchQuery}
+                          onFocus={() => setShowDriverSuggestions(true)}
+                          onClick={() => {
+                            const isAlreadyFocused = driverSearchInputRef.current === document.activeElement;
+                            if (isAlreadyFocused && showDriverSuggestions) {
+                              setShowDriverSuggestions(false);
+                              return;
+                            }
+                            setShowDriverSuggestions(true);
+                          }}
+                          onBlur={() => setTimeout(() => setShowDriverSuggestions(false), 120)}
+                          onChange={event => {
+                            const nextQuery = event.target.value;
+                            setDriverSearchQuery(nextQuery);
+                            setShowDriverSuggestions(true);
+                            if (selectedDriverId) {
+                              setSelectedDriverId('');
+                            }
+                          }}
+                          placeholder="Assign Driver (type name/plate/status)"
+                          className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-[10px] flex-1 h-full"
+                        />
+                        {driverSearchQuery.trim().length > 0 && (
+                          <button
+                            type="button"
+                            onMouseDown={event => event.preventDefault()}
+                            onClick={() => {
+                              setDriverSearchQuery('');
+                              setSelectedDriverId('');
+                              setShowDriverSuggestions(false);
+                            }}
+                            className="h-6 w-6 rounded-md border border-slate-200 dark:border-brand-700 bg-slate-50 dark:bg-brand-900 text-slate-500 dark:text-slate-300 inline-flex items-center justify-center"
+                            title="Clear selected driver"
+                            aria-label="Clear selected driver"
+                          >
+                            <X size={10} />
+                          </button>
+                        )}
+                        {showDriverSuggestions && (
+                          <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-30 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-xl max-h-64 overflow-y-auto">
+                            {!driverSearchQuery.trim() && recommendedDrivers.length > 0 && (
+                              <div className="px-2.5 pt-2 pb-1 border-b border-slate-100 dark:border-brand-800">
+                                <p className="text-[7px] font-black uppercase tracking-widest text-slate-400">Recommended</p>
+                                <div className="mt-1 grid grid-cols-1 gap-1">
+                                  {recommendedDrivers.map(driver => {
+                                    const insight = driverIntelligenceById.get(driver.id);
+                                    return (
+                                      <button
+                                        key={`recommended-${driver.id}`}
+                                        type="button"
+                                        onMouseDown={event => event.preventDefault()}
+                                        onClick={() => handleSelectDriverFromSuggestions(driver)}
+                                        className="min-h-8 px-2 rounded-lg border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300"
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="truncate">{driver.name} ({driver.plateNumber})</span>
+                                          <span className="ml-2 text-[7px] shrink-0">S{insight?.overall ?? 0}</span>
+                                        </div>
+                                        {insight?.reasons?.[0] && (
+                                          <div className="text-left text-[6px] tracking-[0.12em] text-emerald-600/90 dark:text-emerald-300/90 truncate mt-0.5">
+                                            {insight.reasons[0]}
+                                          </div>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                            <div className="p-2 space-y-1">
+                              {driverSuggestions.length > 0 ? driverSuggestions.map(driver => {
+                                const insight = driverIntelligenceById.get(driver.id);
+                                return (
+                                  <button
+                                    key={driver.id}
+                                    type="button"
+                                    onMouseDown={event => event.preventDefault()}
+                                    onClick={() => handleSelectDriverFromSuggestions(driver)}
+                                    className="w-full min-h-8 px-2 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200"
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="truncate">{driver.name} ({driver.plateNumber})</span>
+                                      <span className="ml-2 text-[7px] text-slate-500 dark:text-slate-300 shrink-0">S{insight?.overall ?? 0}</span>
+                                    </div>
+                                  </button>
+                                );
+                              }) : (
+                                <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 px-1 py-2">No matching active drivers</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <div className="flex items-start bg-white dark:bg-brand-950 border border-slate-200 dark:border-brand-800 rounded-xl px-3 py-2 min-h-20">
-                        <FileText size={14} className="text-slate-500 mr-3 mt-1" />
-                        <textarea placeholder="Specific notes..." value={notes} onChange={e => setNotes(e.target.value)} className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-xs flex-1 h-full resize-none" />
+                      <div className={`rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-950 ${isSpecificNotesCollapsed ? 'p-0.5' : 'p-2'}`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[7px] font-black uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300 inline-flex items-center gap-1">
+                            <FileText size={10} />
+                            Specific Notes{isSpecificNotesCollapsed ? ` · ${notes.trim() ? `${notes.trim().length} chars` : 'Empty'}` : ''}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setIsSpecificNotesCollapsed(prev => !prev)}
+                            className={`${isSpecificNotesCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-500/80 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-900/60' : 'h-6 px-2 text-[7px] rounded-full border border-slate-200/80 dark:border-brand-700 bg-white/90 dark:bg-brand-900/80 text-slate-500 dark:text-slate-300 hover:border-slate-300 dark:hover:border-brand-600'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                            title={isSpecificNotesCollapsed ? 'Expand specific notes' : 'Collapse specific notes'}
+                          >
+                            {isSpecificNotesCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                            {!isSpecificNotesCollapsed && 'Hide'}
+                          </button>
+                        </div>
+                        {!isSpecificNotesCollapsed && (
+                          <div className="mt-1 flex items-start bg-slate-50 dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl px-3 py-2">
+                            <FileText size={14} className="text-slate-500 mr-3 mt-1" />
+                            <textarea
+                              ref={notesTextareaRef}
+                              placeholder="Specific notes..."
+                              value={notes}
+                              rows={1}
+                              onFocus={e => resizeNotesTextarea(e.currentTarget)}
+                              onChange={e => {
+                                setNotes(e.target.value);
+                                resizeNotesTextarea(e.currentTarget);
+                              }}
+                              className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-xs flex-1 h-8 min-h-[2rem] max-h-32 resize-none"
+                            />
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Quick Save to CRM</p>
-                        <span
-                          title="Save current pickup/dropoff into CRM: Home, Business, or Frequent places."
-                          className="inline-flex items-center text-slate-400"
+                    <div className={`rounded-xl border border-brand-800 ${isQuickSaveCollapsed ? 'p-0.5 space-y-0.5' : 'p-2.5 space-y-2'} bg-brand-950/40`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <p className="text-[7px] font-black uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">Quick Save to CRM</p>
+                          <span
+                            title="Save current pickup/dropoff into CRM: Home, Business, or Frequent places."
+                            className="inline-flex items-center text-slate-400"
+                          >
+                            <Info size={11} />
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setIsQuickSaveCollapsed(prev => !prev)}
+                          className={`${isQuickSaveCollapsed ? 'h-5 w-5 px-0 justify-center rounded-md border-transparent bg-transparent text-slate-400/90 hover:bg-white/10' : 'h-6 px-2 text-[7px] rounded-full border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'} font-black uppercase tracking-widest inline-flex items-center gap-1 transition-colors`}
+                          title={isQuickSaveCollapsed ? 'Expand quick save actions' : 'Collapse quick save actions'}
                         >
-                          <Info size={11} />
-                        </span>
+                          {isQuickSaveCollapsed ? <ChevronDown size={10} /> : <ChevronUp size={10} />}
+                          {!isQuickSaveCollapsed && 'Hide'}
+                        </button>
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {!isQuickSaveCollapsed && (
+                      <div className={`${navigationMode === 'SEQUENCE'
+                        ? 'flex flex-nowrap items-stretch gap-2 overflow-x-auto px-1 pb-1 snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+                        : 'grid grid-cols-1 sm:grid-cols-2 gap-2'}`}>
                       <button
                         type="button"
                         onClick={() => upsertCustomerLocation('HOME', {
@@ -2809,7 +3782,7 @@ export const CalculatorPage: React.FC = () => {
                         })}
                         title="Save current pickup as Home location in CRM."
                         aria-label="Save pickup as home"
-                        className="h-10 rounded-xl border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 inline-flex items-center justify-center gap-1"
+                        className={`h-10 rounded-xl border border-blue-300 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[9px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 inline-flex items-center justify-center gap-1 ${navigationMode === 'SEQUENCE' ? 'shrink-0 snap-start min-w-[11.5rem]' : ''}`}
                       >
                         <House size={12} aria-hidden="true" />
                         Pickup → Home
@@ -2824,7 +3797,7 @@ export const CalculatorPage: React.FC = () => {
                         })}
                         title="Save current pickup to Frequent places in CRM."
                         aria-label="Save pickup as frequent place"
-                        className="h-10 rounded-xl border border-cyan-300 dark:border-cyan-900/40 bg-cyan-50 dark:bg-cyan-900/10 text-[9px] font-black uppercase tracking-widest text-cyan-700 dark:text-cyan-300 inline-flex items-center justify-center gap-1"
+                        className={`h-10 rounded-xl border border-cyan-300 dark:border-cyan-900/40 bg-cyan-50 dark:bg-cyan-900/10 text-[9px] font-black uppercase tracking-widest text-cyan-700 dark:text-cyan-300 inline-flex items-center justify-center gap-1 ${navigationMode === 'SEQUENCE' ? 'shrink-0 snap-start min-w-[11.5rem]' : ''}`}
                       >
                         <MapPin size={12} aria-hidden="true" />
                         Pickup → Frequent
@@ -2839,7 +3812,7 @@ export const CalculatorPage: React.FC = () => {
                         })}
                         title="Save current dropoff as Business location in CRM."
                         aria-label="Save dropoff as business"
-                        className="h-10 rounded-xl border border-amber-300 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[9px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300 inline-flex items-center justify-center gap-1"
+                        className={`h-10 rounded-xl border border-amber-300 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[9px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300 inline-flex items-center justify-center gap-1 ${navigationMode === 'SEQUENCE' ? 'shrink-0 snap-start min-w-[11.5rem]' : ''}`}
                       >
                         <Building2 size={12} aria-hidden="true" />
                         Dropoff → Business
@@ -2854,20 +3827,38 @@ export const CalculatorPage: React.FC = () => {
                         })}
                         title="Save current dropoff to Frequent places in CRM."
                         aria-label="Save dropoff as frequent place"
-                        className="h-10 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[9px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center justify-center gap-1"
+                        className={`h-10 rounded-xl border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[9px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center justify-center gap-1 ${navigationMode === 'SEQUENCE' ? 'shrink-0 snap-start min-w-[11.5rem]' : ''}`}
                       >
                         <Navigation size={12} aria-hidden="true" />
                         Dropoff → Frequent
                       </button>
+                      </div>
+                      )}
                     </div>
                     </div>
 
-                    <Button onClick={handleSaveTrip} className="w-full h-12 shadow-xl inline-flex items-center justify-center gap-2" variant={tripSaved ? 'secondary' : 'gold'}>
+                    <div ref={saveDispatchAnchorRef}>
+                    <Button onClick={handleSaveTrip} className="mt-4 w-full h-12 shadow-xl inline-flex items-center justify-center gap-2" variant={tripSaved ? 'secondary' : 'gold'}>
                       {tripSaved ? <Check size={14} /> : <Save size={14} />}
                       {tripSaved ? 'Committed to Log' : 'Save Dispatch'}
                     </Button>
+                    </div>
+
+                    {navigationMode === 'SEQUENCE' && activeSequenceStage === 'OUTPUT' && outputNeedsAttention && isOutputReadinessPanelDismissed && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsOutputReadinessPanelDismissed(false);
+                        }}
+                        className="mt-2 h-9 px-3 rounded-xl border border-amber-300 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[8px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300 inline-flex items-center justify-center gap-1"
+                      >
+                        <AlertCircle size={11} />
+                        Open Readiness Panel
+                      </button>
+                    )}
+
+                    {renderSequenceWorkflowDock()}
                  </div>
-              </div>
            ) : (
               <div className="py-20 text-center flex flex-col items-center">
                  <div className="w-16 h-16 bg-slate-100 dark:bg-brand-950 rounded-3xl flex items-center justify-center text-slate-300 mb-4 border border-slate-200 dark:border-brand-800">
@@ -2880,7 +3871,7 @@ export const CalculatorPage: React.FC = () => {
         </div>
       </div>
 
-         <div id="calc-stage-map" className={`relative bg-slate-200 dark:bg-brand-950 h-[45vh] min-h-[300px] lg:h-auto lg:min-h-0 lg:flex-1 transition-all duration-300 ${isRouteStageVisible ? 'opacity-100' : 'hidden opacity-0'}`}>
+         <div id="calc-stage-map" className={`relative min-w-0 overflow-hidden bg-slate-200 dark:bg-brand-950 h-[45vh] min-h-[300px] lg:h-full lg:min-h-0 lg:flex-1 transition-all duration-300 ${isRouteStageVisible ? 'opacity-100' : 'hidden opacity-0'}`}>
          <div ref={mapRef} className="w-full h-full" />
          
          {calculating && (
@@ -2924,12 +3915,231 @@ export const CalculatorPage: React.FC = () => {
          )}
       </div>
 
+      {isCustomerSequenceSnapshotPanelVisible && quoteCustomerSnapshot && (
+        <div className="hidden lg:flex lg:flex-1 lg:h-full min-h-0 min-w-0 overflow-hidden border-l-2 border-slate-300 dark:border-brand-800 bg-slate-100/70 dark:bg-brand-950">
+          <div className="w-full h-full overflow-y-auto overscroll-contain scroll-smooth [scrollbar-gutter:stable] p-5 xl:p-6">
+            <div className="rounded-2xl border border-slate-200 dark:border-brand-800 border-t-2 border-t-gold-500/40 bg-white dark:bg-brand-900 p-3 xl:p-4 shadow-xl">
+              <div className="mb-3 pb-2 border-b border-slate-200 dark:border-brand-800">
+                <p className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-300">Customer Snapshot</p>
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mt-1">Right Panel Intelligence</p>
+              </div>
+              <CustomerSnapshotCard snapshot={quoteCustomerSnapshot} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isOutputSequenceDriverInsightPanelVisible && outputDriverInsightTarget && outputDriverInsight && (
+        <div key={`output-driver-panel-${outputDriverInsightTarget.id}-${outputDriverInsightMode}`} className="hidden lg:flex lg:flex-1 lg:h-full min-h-0 min-w-0 overflow-hidden border-l-2 border-slate-300 dark:border-brand-800 bg-slate-100/70 dark:bg-brand-950">
+          <div className="w-full h-full overflow-y-auto overscroll-contain scroll-smooth [scrollbar-gutter:stable] px-5 pb-5 pt-16 xl:px-6 xl:pb-6 xl:pt-20">
+            <div className="rounded-2xl border border-slate-200 dark:border-brand-800 border-t-2 border-t-gold-500/40 bg-white dark:bg-brand-900 p-4 xl:p-5 shadow-xl space-y-4">
+              <div className="pb-3 border-b border-slate-200 dark:border-brand-800">
+                <p className="text-[8px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-300">Driver Intelligence</p>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-800 dark:text-slate-100">{outputDriverInsightTarget.name}</p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">{outputDriverInsightTarget.plateNumber} · {outputDriverInsightTarget.carModel}</p>
+                  </div>
+                  <span className="h-7 px-2 rounded-md border border-gold-300 dark:border-gold-900/40 bg-gold-50 dark:bg-gold-900/10 text-[8px] font-black uppercase tracking-widest text-gold-700 dark:text-gold-300 inline-flex items-center">
+                    Smart Score {outputDriverInsight.overall}
+                  </span>
+                </div>
+                <p className="mt-1 text-[7px] font-black uppercase tracking-widest text-slate-400">
+                  {outputDriverInsightMode === 'ASSIGNED' ? 'Assigned Driver View' : 'Top Recommendation View'}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 text-[8px] font-black uppercase tracking-widest">
+                <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-600 dark:text-slate-200 inline-flex items-center">Availability {outputDriverInsightTarget.currentStatus}</div>
+                <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-600 dark:text-slate-200 inline-flex items-center">Trip Fit {Math.round(outputDriverInsight.tripFitScore)}</div>
+                <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-600 dark:text-slate-200 inline-flex items-center">Readiness {Math.round(outputDriverInsight.readinessScore)}</div>
+                <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-600 dark:text-slate-200 inline-flex items-center">Governance {Math.round(outputDriverInsight.governanceScore)}</div>
+              </div>
+
+              {outputDriverInsight.reasons.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {outputDriverInsight.reasons.map(reason => (
+                    <span
+                      key={reason}
+                      className="h-7 px-2 rounded-md border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[7px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center"
+                    >
+                      {reason}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500 dark:text-slate-300">Driver Record</p>
+                <div className="grid grid-cols-2 gap-1.5 text-[8px] font-black uppercase tracking-widest">
+                  <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Trips {outputDriverInsight.totalTrips}</div>
+                  <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Recent 30d {outputDriverInsight.recentTrips30}</div>
+                  <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Completed {outputDriverInsight.completedTrips}</div>
+                  <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Performance {Math.round(outputDriverInsight.performanceScore)}</div>
+                </div>
+                {outputDriverInsight.fairnessPenalty > 0 && (
+                  <div className="h-8 px-2 rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[8px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-300 inline-flex items-center">
+                    Rotation penalty active ({outputDriverInsight.fairnessPenalty})
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500 dark:text-slate-300">Unit Readiness & Governance</p>
+                <div className="grid grid-cols-2 gap-1.5 text-[8px] font-black uppercase tracking-widest">
+                  <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Fuel {Math.round(outputDriverInsight.fuelRangeKm)} km</div>
+                  <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Oil +{Math.round(outputDriverInsight.kmSinceOilChange)} km</div>
+                  <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Checkup +{Math.round(outputDriverInsight.kmSinceCheckup)} km</div>
+                  <div className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Customer Affinity {outputDriverInsight.customerAffinityTrips}</div>
+                </div>
+                {(outputDriverInsight.readinessAlerts.length > 0 || outputDriverInsight.governanceAlerts.length > 0) && (
+                  <div className="space-y-1.5">
+                    {outputDriverInsight.readinessAlerts.map(alert => (
+                      <div
+                        key={`ready-${alert}`}
+                        className="min-h-8 px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[8px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300"
+                      >
+                        {alert}
+                      </div>
+                    ))}
+                    {outputDriverInsight.governanceAlerts.map(alert => (
+                      <div
+                        key={`gov-${alert}`}
+                        className="min-h-8 px-2.5 py-1.5 rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 text-[8px] font-black uppercase tracking-widest text-red-700 dark:text-red-300"
+                      >
+                        {alert}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {outputDriverInsight.isGovernanceBlocked && (
+                  <div className="min-h-8 px-2.5 py-1.5 rounded-lg border border-red-300 dark:border-red-900/40 bg-red-50 dark:bg-red-900/15 text-[8px] font-black uppercase tracking-widest text-red-700 dark:text-red-300">
+                    Governance blocked: assign another active/available unit.
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500 dark:text-slate-300">Recommended Drivers</p>
+                <div className="space-y-1.5">
+                  {recommendedDrivers.slice(0, 3).map(driver => {
+                    const insight = driverIntelligenceById.get(driver.id);
+                    const isActiveSelection = selectedDriverId === driver.id;
+                    return (
+                      <button
+                        key={`intel-recommend-${driver.id}`}
+                        type="button"
+                        onClick={() => handleSelectDriverFromSuggestions(driver)}
+                        className={`w-full min-h-9 px-2.5 py-1.5 rounded-lg border text-[8px] font-black uppercase tracking-widest inline-flex items-center justify-between gap-2 ${isActiveSelection
+                          ? 'border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-emerald-700 dark:text-emerald-300'
+                          : 'border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-600 dark:text-slate-200'}`}
+                      >
+                        <span className="truncate">{driver.name} ({driver.plateNumber})</span>
+                        <span className="shrink-0 text-[7px]">S{insight?.overall ?? 0}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isOutputSequenceReadinessPanelVisible && result && (
+        <div className="hidden lg:flex lg:flex-1 lg:h-full min-h-0 min-w-0 overflow-hidden border-l-2 border-slate-300 dark:border-brand-800 bg-slate-100/70 dark:bg-brand-950">
+          <div className="w-full h-full overflow-y-auto overscroll-contain scroll-smooth [scrollbar-gutter:stable] px-5 pb-5 pt-16 xl:px-6 xl:pb-6 xl:pt-20">
+            <div className="rounded-2xl border border-slate-200 dark:border-brand-800 border-t-2 border-t-gold-500/40 bg-white dark:bg-brand-900 p-4 xl:p-5 shadow-xl space-y-4">
+              <div className="pb-3 border-b border-slate-200 dark:border-brand-800">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-left text-[8px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-300">
+                    Dispatch Readiness
+                  </p>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsOutputReadinessPanelDismissed(true)}
+                      className="h-6 w-6 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-500 dark:text-slate-300 inline-flex items-center justify-center"
+                      title="Close readiness panel"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-2 inline-flex items-center gap-2 rounded-lg px-2.5 py-1.5 border text-[9px] font-black uppercase tracking-widest">
+                  {outputNeedsAttention ? (
+                    <>
+                      <AlertCircle size={12} className="text-amber-500" />
+                      <span className="text-amber-700 dark:text-amber-300">Needs Attention ({outputBlockingChecks.length + outputRiskFlags.length})</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck size={12} className="text-emerald-500" />
+                      <span className="text-emerald-700 dark:text-emerald-300">Ready to Dispatch</span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500 dark:text-slate-300">Risk Flags</p>
+                {outputRiskFlags.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {outputRiskFlags.map(flag => (
+                      <div
+                        key={flag.key}
+                        className="min-h-8 px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[8px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300 inline-flex items-center gap-1.5"
+                      >
+                        {flag.icon === 'TRAFFIC' && <Gauge size={10} className="text-cyan-500" />}
+                        {flag.icon === 'DELAY' && <Clock size={10} />}
+                        {flag.icon === 'FARE' && <DollarSign size={10} />}
+                        {flag.icon === 'PAYMENT' && <ArrowRightLeft size={10} />}
+                        <span>{flag.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="h-8 px-2.5 rounded-lg border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center">
+                    No active risk flags
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500 dark:text-slate-300">Route Frame</p>
+                <div className="rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 p-2 space-y-1.5">
+                  <div className="text-[7px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Pickup · {truncateUiText(result.pickupAddress || 'N/A', 42)}</div>
+                  <div className="text-[7px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Dropoff · {truncateUiText(result.destinationAddress || 'N/A', 42)}</div>
+                  <div className="grid grid-cols-2 gap-1.5 text-[7px] font-black uppercase tracking-widest">
+                    <span className="h-7 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Distance {result.distanceKm} km</span>
+                    <span className="h-7 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-slate-600 dark:text-slate-200 inline-flex items-center">Baseline {result.durationText}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500 dark:text-slate-300">Handoff Notes</p>
+                {outputNotesPreview ? (
+                  <div className="rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-2.5 py-2 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-200">
+                    {truncateUiText(outputNotesPreview, 140)}
+                  </div>
+                ) : (
+                  <div className="h-8 px-2.5 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300 inline-flex items-center">
+                    No specific notes
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {lastSavedTrip && (
         <MessageModal 
           isOpen={showMessageModal}
           onClose={() => setShowMessageModal(false)}
           title="Send Trip Confirmation"
-          initialMessage={replacePlaceholders(settings.templates.trip_confirmation, lastSavedTrip, drivers)}
+          initialMessage={replacePlaceholders(settings.templates.trip_confirmation, lastSavedTrip, drivers, settings)}
           recipientPhone={lastSavedTrip.customerPhone}
           operatorPhone={settings.operatorWhatsApp}
           customerSnapshot={savedTripSnapshot || undefined}

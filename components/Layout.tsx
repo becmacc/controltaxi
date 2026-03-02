@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { 
   Car, List, Settings as SettingsIcon, Users, Moon, Sun, 
@@ -17,6 +17,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [showWatch, setShowWatch] = useState(false);
   const MISSION_WATCH_UI_CHANNEL = 'control-mission-watch-ui';
   const MISSION_WATCH_UI_STORAGE_KEY = 'control_mission_watch_ui_event';
+  const navChordFirstKeyRef = useRef<string | null>(null);
+  const navChordTimerRef = useRef<number | null>(null);
 
   const isIntelligenceMode = location.pathname === '/crm';
   const activeAlerts = alerts
@@ -92,6 +94,153 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       window.removeEventListener('storage', handleStorageMessage);
     };
   }, [handleMissionWatchUiMessage]);
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(target.closest('[contenteditable="true"]'));
+    };
+
+    const resetChord = () => {
+      navChordFirstKeyRef.current = null;
+      if (navChordTimerRef.current !== null) {
+        window.clearTimeout(navChordTimerRef.current);
+        navChordTimerRef.current = null;
+      }
+    };
+
+    const armChord = (firstKey: 'g' | 'c', onTimeout?: () => void) => {
+      navChordFirstKeyRef.current = firstKey;
+      if (navChordTimerRef.current !== null) {
+        window.clearTimeout(navChordTimerRef.current);
+      }
+      navChordTimerRef.current = window.setTimeout(() => {
+        const activeFirst = navChordFirstKeyRef.current;
+        navChordFirstKeyRef.current = null;
+        navChordTimerRef.current = null;
+        if (activeFirst === firstKey) {
+          onTimeout?.();
+        }
+      }, 1200);
+    };
+
+    const handleGlobalNavChord = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.repeat) return;
+
+      const key = event.key.toLowerCase();
+      const first = navChordFirstKeyRef.current;
+
+      if (first === 'g' && (key === 'c' || key === 's')) {
+        event.preventDefault();
+        resetChord();
+        if (location.pathname !== '/settings') {
+          navigate('/settings');
+        }
+        return;
+      }
+
+      if (first === 'g' && key === 'm') {
+        event.preventDefault();
+        resetChord();
+        if (location.pathname !== '/brief') {
+          navigate('/brief');
+        }
+        return;
+      }
+
+      if (first === 'g' && key === 'f') {
+        event.preventDefault();
+        resetChord();
+        if (location.pathname !== '/drivers') {
+          navigate('/drivers');
+        }
+        return;
+      }
+
+      if (first === 'g' && key === 'y') {
+        event.preventDefault();
+        resetChord();
+        navigate('/brief?focus=yield');
+        return;
+      }
+
+      if (first === 'c' && key === 'o') {
+        event.preventDefault();
+        resetChord();
+        navigate(isIntelligenceMode ? '/brief' : '/crm');
+        return;
+      }
+
+      if (first === 'c' && key === 'm') {
+        event.preventDefault();
+        resetChord();
+        if (location.pathname !== '/crm') {
+          navigate('/crm');
+        }
+        return;
+      }
+
+      if (first === 'c' && key === 'f') {
+        event.preventDefault();
+        resetChord();
+        navigate('/crm?tab=fleet');
+        return;
+      }
+
+      if (!first && key === 'm') {
+        event.preventDefault();
+        if (location.pathname !== '/trips') {
+          navigate('/trips');
+        }
+        return;
+      }
+
+      if (!first && key === 'q') {
+        event.preventDefault();
+        if (location.pathname !== '/') {
+          navigate('/');
+        }
+        return;
+      }
+
+      if (!first && key === 'y') {
+        event.preventDefault();
+        navigate('/crm?tab=finance');
+        return;
+      }
+
+      if (!first && key === 'v') {
+        event.preventDefault();
+        navigate('/crm?tab=vault');
+        return;
+      }
+
+      if (key === 'g') {
+        armChord('g');
+        return;
+      }
+
+      if (key === 'c') {
+        armChord('c', () => {
+          if (location.pathname !== '/') {
+            navigate('/');
+          }
+        });
+        return;
+      }
+
+      resetChord();
+    };
+
+    window.addEventListener('keydown', handleGlobalNavChord);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalNavChord);
+      resetChord();
+    };
+  }, [isIntelligenceMode, location.pathname, navigate]);
 
   const handleOpenWatchWindow = () => {
     broadcastMissionWatchUi('POPUP_OPENED');

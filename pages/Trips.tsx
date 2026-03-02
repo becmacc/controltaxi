@@ -15,6 +15,7 @@ import { Button } from '../components/ui/Button';
 import { HorizontalScrollArea } from '../components/ui/HorizontalScrollArea';
 import { MessageModal } from '../components/MessageModal';
 import { CustomerSnapshotCard } from '../components/CustomerSnapshotCard';
+import { UnitSnapshotCard } from '../components/UnitSnapshotCard';
 import { MIN_RIDE_FARE_USD } from '../constants';
 import { formatTripDestination, formatTripPickup, formatTripStops, replacePlaceholders } from '../services/placeholderService';
 import { buildWhatsAppLink, sanitizeCommunicationText } from '../services/whatsapp';
@@ -23,10 +24,12 @@ import { customerPhoneKey } from '../services/customerProfile';
 import { parseGoogleMapsLink, parseGpsOrLatLngInput } from '../services/locationParser';
 import { loadGoogleMapsScript } from '../services/googleMapsLoader';
 import { computeTrafficIndex } from '../services/trafficMetrics';
+import { buildUnitSnapshotMetrics } from '../services/unitSnapshot';
 
 declare var google: any;
 
 type ViewMode = 'TABLE' | 'CARD';
+type TripModalFocusTarget = 'DEFAULT' | 'REQUOTE';
 const OPERATOR_INDEX_MARKERS = ['NEW', 'CORP', 'AIRPORT', 'PRIORITY', 'FOLLOWUP', 'VIP', 'VVIP'] as const;
 
 const extractIndexMarkers = (text?: string): string[] => {
@@ -67,6 +70,9 @@ export const TripsPage: React.FC = () => {
   ]);
   
   const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null);
+  const [snapshotPreviewTrip, setSnapshotPreviewTrip] = useState<Trip | null>(null);
+  const [unitSnapshotDriverId, setUnitSnapshotDriverId] = useState<string | null>(null);
+  const [modalFocusTarget, setModalFocusTarget] = useState<TripModalFocusTarget>('DEFAULT');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [copiedType, setCopiedType] = useState<string | null>(null);
   const [messagingContext, setMessagingContext] = useState<{ trip: Trip, type: 'FEEDBACK_REQ' | 'THANKS' } | null>(null);
@@ -78,6 +84,12 @@ export const TripsPage: React.FC = () => {
   const [deletedTripsCollapsed, setDeletedTripsCollapsed] = useState(true);
   const [handledDeepLinkKey, setHandledDeepLinkKey] = useState<string>('');
   const [isTableFullView, setIsTableFullView] = useState(false);
+  const [inlineAssignTripId, setInlineAssignTripId] = useState<number | null>(null);
+  const [inlineAssignQuery, setInlineAssignQuery] = useState('');
+  const [showInlineAssignSuggestions, setShowInlineAssignSuggestions] = useState(false);
+  const [inlineAssignHighlightedIndex, setInlineAssignHighlightedIndex] = useState(0);
+  const [inlineScheduleTripId, setInlineScheduleTripId] = useState<number | null>(null);
+  const [inlineScheduleDraft, setInlineScheduleDraft] = useState('');
 
   useEffect(() => {
     const isTypingTarget = (target: EventTarget | null): boolean => {
@@ -372,10 +384,38 @@ export const TripsPage: React.FC = () => {
     [drivers]
   );
 
+  const inlineAssignSuggestions = useMemo(() => {
+    const query = inlineAssignQuery.trim().toLowerCase();
+    if (!query) return activeDrivers.slice(0, 8);
+
+    return activeDrivers
+      .filter(driver => `${driver.name} ${driver.plateNumber} ${driver.carModel}`.toLowerCase().includes(query))
+      .slice(0, 8);
+  }, [activeDrivers, inlineAssignQuery]);
+
+  useEffect(() => {
+    setInlineAssignHighlightedIndex(0);
+  }, [inlineAssignSuggestions]);
+
   const selectedTripSnapshot = useMemo(() => {
     if (!selectedTrip) return null;
     return buildCustomerSnapshotForTrip(selectedTrip, customers, trips, drivers, creditLedger, receipts);
   }, [selectedTrip, customers, trips, drivers, creditLedger, receipts]);
+
+  const snapshotPreviewData = useMemo(() => {
+    if (!snapshotPreviewTrip) return null;
+    return buildCustomerSnapshotForTrip(snapshotPreviewTrip, customers, trips, drivers, creditLedger, receipts);
+  }, [snapshotPreviewTrip, customers, trips, drivers, creditLedger, receipts]);
+
+  const unitSnapshotDriver = useMemo(
+    () => (unitSnapshotDriverId ? drivers.find(driver => driver.id === unitSnapshotDriverId) || null : null),
+    [unitSnapshotDriverId, drivers]
+  );
+
+  const unitSnapshotMetrics = useMemo(() => {
+    if (!unitSnapshotDriver) return null;
+    return buildUnitSnapshotMetrics(unitSnapshotDriver, trips);
+  }, [unitSnapshotDriver, trips]);
 
   const getTripIndexMarkers = (trip: Trip): string[] => {
     const normalizedPhone = customerPhoneKey(trip.customerPhone);
@@ -409,6 +449,60 @@ export const TripsPage: React.FC = () => {
     return { label: 'Fluid', tone: 'text-emerald-600 dark:text-emerald-400' };
   };
 
+  const getTripTrafficMetrics = (trip: Trip) => {
+    const baselineMin = Number.isFinite(trip.durationMin) ? Math.max(0, Number(trip.durationMin)) : 0;
+    const etaMinRaw = Number.isFinite(trip.durationInTrafficMin)
+      ? Math.max(0, Number(trip.durationInTrafficMin))
+      : baselineMin;
+    const etaMin = etaMinRaw > 0 ? etaMinRaw : baselineMin;
+
+    const derivedSurplus = Number.isFinite(trip.surplusMin)
+      ? Math.max(0, Number(trip.surplusMin))
+      : Math.max(0, etaMin - baselineMin);
+
+    const trafficIndex = Number.isFinite(trip.trafficIndex)
+      ? Math.round(Number(trip.trafficIndex))
+      : Math.round(computeTrafficIndex(etaMin, baselineMin > 0 ? baselineMin : Math.max(1, etaMin || 1)));
+
+    const etaText = (trip.durationInTrafficText || '').trim()
+      || (Number.isFinite(etaMin) && etaMin > 0 ? `${Math.round(etaMin)} min` : (trip.durationText || 'N/A'));
+
+    return {
+      baselineMin,
+      etaMin,
+      etaText,
+      trafficIndex,
+      surplusMin: Math.round(derivedSurplus),
+    };
+  };
+
+  const getTripPaymentMode = (trip: Trip): TripPaymentMode => (trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH');
+  const isTripPaymentLocked = (trip: Trip): boolean => (trip.settlementStatus || 'PENDING') === 'RECEIPTED';
+
+  const handleTripPaymentModeUpdate = (trip: Trip, nextMode?: TripPaymentMode) => {
+    if (isTripPaymentLocked(trip)) {
+      showActionToast(`Trip #${trip.id.toString().slice(-4)} is receipted. Payment mode is locked.`, 'ERROR');
+      return;
+    }
+
+    const currentMode = getTripPaymentMode(trip);
+    const targetMode = nextMode || (currentMode === 'CREDIT' ? 'CASH' : 'CREDIT');
+    if (targetMode === currentMode) return;
+
+    const updatedTrip: Trip = {
+      ...trip,
+      paymentMode: targetMode,
+    };
+
+    updateFullTrip(updatedTrip);
+
+    if (selectedTrip?.id === trip.id) {
+      setSelectedTrip(updatedTrip);
+    }
+
+    showActionToast(`Trip #${trip.id.toString().slice(-4)} payment set to ${targetMode}.`);
+  };
+
   const handleApplyRequote = (updatedTrip: Trip) => {
     updateFullTrip(updatedTrip);
     setSelectedTrip(updatedTrip);
@@ -424,6 +518,29 @@ export const TripsPage: React.FC = () => {
     [settings.googleBusinessReviewUrl]
   );
 
+  const operationalServiceLinks = useMemo(() => {
+    return [
+      normalizeExternalUrl(settings.bookingFlowUrl) ? `Book: ${normalizeExternalUrl(settings.bookingFlowUrl)}` : '',
+      normalizeExternalUrl(settings.fareEstimatorUrl) ? `Fare Estimator: ${normalizeExternalUrl(settings.fareEstimatorUrl)}` : '',
+      normalizeExternalUrl(settings.customRequestUrl) ? `Custom Request: ${normalizeExternalUrl(settings.customRequestUrl)}` : '',
+      normalizeExternalUrl(settings.promotionalOfferUrl) ? `Promo Offer: ${normalizeExternalUrl(settings.promotionalOfferUrl)}` : '',
+      normalizeExternalUrl(settings.couponProgramUrl) ? `Coupon Program: ${normalizeExternalUrl(settings.couponProgramUrl)}` : '',
+      normalizeExternalUrl(settings.loyaltyProgramUrl) ? `Loyalty Rewards: ${normalizeExternalUrl(settings.loyaltyProgramUrl)}` : '',
+    ].filter(Boolean);
+  }, [
+    settings.bookingFlowUrl,
+    settings.fareEstimatorUrl,
+    settings.customRequestUrl,
+    settings.promotionalOfferUrl,
+    settings.couponProgramUrl,
+    settings.loyaltyProgramUrl,
+  ]);
+
+  const operationalServiceLinksBlock = useMemo(() => {
+    if (operationalServiceLinks.length === 0) return '';
+    return `\n\nLinks:\n${operationalServiceLinks.join('\n')}`;
+  }, [operationalServiceLinks]);
+
   const messagingInitialMessage = useMemo(() => {
     if (!messagingContext) return '';
 
@@ -431,7 +548,7 @@ export const TripsPage: React.FC = () => {
       ? settings.templates.feedback_request
       : settings.templates.feedback_thanks;
 
-    const baseMessage = replacePlaceholders(baseTemplate, messagingContext.trip, drivers);
+    const baseMessage = replacePlaceholders(baseTemplate, messagingContext.trip, drivers, settings);
     const withExplicitPlaceholder = baseMessage.split('{google_review_link}').join(reviewLink);
 
     const shouldIncludeReviewLink =
@@ -854,6 +971,7 @@ export const TripsPage: React.FC = () => {
     try {
       const activeRows = exportTrips.map(trip => {
         const driverName = drivers.find(d => d.id === trip.driverId)?.name || 'Unassigned';
+        const trafficMetrics = getTripTrafficMetrics(trip);
         return [
           trip.id,
           trip.status,
@@ -866,9 +984,9 @@ export const TripsPage: React.FC = () => {
           trip.destinationText,
           trip.distanceKm,
           trip.durationMin,
-          trip.durationInTrafficMin ?? trip.durationMin,
-          trip.trafficIndex ?? 0,
-          trip.surplusMin ?? 0,
+          trafficMetrics.etaMin,
+          trafficMetrics.trafficIndex,
+          trafficMetrics.surplusMin,
           trip.fareUsd,
           trip.fareLbp,
           trip.paymentMode || 'CASH',
@@ -890,6 +1008,7 @@ export const TripsPage: React.FC = () => {
       const deletedRows = exportDeleted.map(record => {
         const trip = record.trip;
         const driverName = drivers.find(d => d.id === trip.driverId)?.name || 'Unassigned';
+        const trafficMetrics = getTripTrafficMetrics(trip);
         return [
           trip.id,
           trip.status,
@@ -902,9 +1021,9 @@ export const TripsPage: React.FC = () => {
           trip.destinationText,
           trip.distanceKm,
           trip.durationMin,
-          trip.durationInTrafficMin ?? trip.durationMin,
-          trip.trafficIndex ?? 0,
-          trip.surplusMin ?? 0,
+          trafficMetrics.etaMin,
+          trafficMetrics.trafficIndex,
+          trafficMetrics.surplusMin,
           trip.fareUsd,
           trip.fareLbp,
           trip.paymentMode || 'CASH',
@@ -942,14 +1061,14 @@ export const TripsPage: React.FC = () => {
 
   const getDriverTemplate = (trip: Trip) => {
     const date = trip.tripDate ? format(parseISO(trip.tripDate), "d MMM, h:mm a") : format(parseISO(trip.createdAt), "d MMM, h:mm a");
-    return `MISSION ASSIGNED\nTime: ${date}\nClient: ${trip.customerName}\nCall: ${trip.customerPhone}\n\nPickup: ${formatTripPickup(trip)}\nDrop-off: ${formatTripDestination(trip)}\n\nPayment: ${trip.paymentMode || 'CASH'}\nSettlement: ${trip.settlementStatus || 'PENDING'}\n\nNotes: ${trip.notes || 'Standard pickup'}`;
+    return `MISSION ASSIGNED\nTime: ${date}\nClient: ${trip.customerName}\nCall: ${trip.customerPhone}\n\nPickup: ${formatTripPickup(trip)}\nDrop-off: ${formatTripDestination(trip)}\n\nPayment: ${trip.paymentMode || 'CASH'}\nSettlement: ${trip.settlementStatus || 'PENDING'}\n\nNotes: ${trip.notes || 'Standard pickup'}${operationalServiceLinksBlock}`;
   };
 
   const getCustomerTemplate = (trip: Trip) => {
     const driver = drivers.find(d => d.id === trip.driverId);
     const date = trip.tripDate ? format(parseISO(trip.tripDate), "d MMM, h:mm a") : format(parseISO(trip.createdAt), "d MMM, h:mm a");
     const driverInfo = driver ? `\nDriver: ${driver.name}` : '';
-    return `RIDE CONFIRMED\nDate: ${date}\nFrom: ${formatTripPickup(trip)}\nTo: ${formatTripDestination(trip)}\nFare: $${trip.fareUsd}${driverInfo}`;
+    return `RIDE CONFIRMED\nDate: ${date}\nFrom: ${formatTripPickup(trip)}\nTo: ${formatTripDestination(trip)}\nFare: $${trip.fareUsd}${driverInfo}${operationalServiceLinksBlock}`;
   };
 
   const getTripExtractTemplate = (trip: Trip) => {
@@ -966,11 +1085,104 @@ export const TripsPage: React.FC = () => {
       `Fare: $${trip.fareUsd}`,
       `Payment: ${trip.paymentMode || 'CASH'}`,
       `Settlement: ${trip.settlementStatus || 'PENDING'}`,
-      `Notes: ${trip.notes || '-'}`
+      `Notes: ${trip.notes || '-'}`,
+      ...(operationalServiceLinks.length > 0 ? ['', 'Links:', ...operationalServiceLinks] : []),
     ].join('\n');
   };
 
-  const openModal = (trip: Trip) => { setSelectedTrip(trip); setIsModalOpen(true); };
+  const openModal = (trip: Trip, focusTarget: TripModalFocusTarget = 'DEFAULT') => {
+    setSnapshotPreviewTrip(null);
+    setUnitSnapshotDriverId(null);
+    setModalFocusTarget(focusTarget);
+    setSelectedTrip(trip);
+    setIsModalOpen(true);
+  };
+
+  const handleInlineDriverAssign = (trip: Trip, nextDriverId: string) => {
+    const normalizedDriverId = nextDriverId.trim();
+    if (!normalizedDriverId) {
+      setInlineAssignTripId(null);
+      setInlineAssignQuery('');
+      setShowInlineAssignSuggestions(false);
+      setInlineAssignHighlightedIndex(0);
+      return;
+    }
+
+    const assignedDriver = drivers.find(driver => driver.id === normalizedDriverId);
+    if (!assignedDriver) {
+      showActionToast('Selected driver was not found.', 'ERROR');
+      setInlineAssignTripId(null);
+      setInlineAssignQuery('');
+      setShowInlineAssignSuggestions(false);
+      setInlineAssignHighlightedIndex(0);
+      return;
+    }
+
+    const updatedTrip: Trip = {
+      ...trip,
+      driverId: normalizedDriverId,
+    };
+
+    updateFullTrip(updatedTrip);
+
+    if (selectedTrip?.id === trip.id) {
+      setSelectedTrip(updatedTrip);
+    }
+
+    setInlineAssignTripId(null);
+    setInlineAssignQuery('');
+    setShowInlineAssignSuggestions(false);
+    setInlineAssignHighlightedIndex(0);
+    showActionToast(`Trip #${trip.id.toString().slice(-4)} assigned to ${assignedDriver.name}.`);
+  };
+
+  const buildDateTimeLocalValue = (isoValue?: string): string => {
+    const candidate = isoValue ? new Date(isoValue) : new Date();
+    if (Number.isNaN(candidate.getTime())) return '';
+    return format(candidate, "yyyy-MM-dd'T'HH:mm");
+  };
+
+  const openInlineScheduleEditor = (trip: Trip) => {
+    setInlineAssignTripId(null);
+    setInlineAssignQuery('');
+    setShowInlineAssignSuggestions(false);
+    setInlineAssignHighlightedIndex(0);
+    setInlineScheduleTripId(trip.id);
+    setInlineScheduleDraft(buildDateTimeLocalValue(trip.tripDate || trip.createdAt));
+  };
+
+  const closeInlineScheduleEditor = () => {
+    setInlineScheduleTripId(null);
+    setInlineScheduleDraft('');
+  };
+
+  const handleInlineScheduleSave = (trip: Trip) => {
+    const trimmed = inlineScheduleDraft.trim();
+    if (!trimmed) {
+      showActionToast('Pick a valid scheduled time.', 'ERROR');
+      return;
+    }
+
+    const candidateDate = new Date(trimmed);
+    if (Number.isNaN(candidateDate.getTime())) {
+      showActionToast('Pick a valid scheduled time.', 'ERROR');
+      return;
+    }
+
+    const updatedTrip: Trip = {
+      ...trip,
+      tripDate: candidateDate.toISOString(),
+    };
+
+    updateFullTrip(updatedTrip);
+
+    if (selectedTrip?.id === trip.id) {
+      setSelectedTrip(updatedTrip);
+    }
+
+    closeInlineScheduleEditor();
+    showActionToast(`Trip #${trip.id.toString().slice(-4)} schedule updated.`);
+  };
 
   const handleCommitPhase = (updatedTrip: Trip) => {
     if (!selectedTrip) return;
@@ -979,6 +1191,7 @@ export const TripsPage: React.FC = () => {
 
     updateFullTrip(updatedTrip);
     setIsModalOpen(false);
+    setModalFocusTarget('DEFAULT');
 
     if (wasCompleted) {
       setManifestState('DONE');
@@ -1188,17 +1401,18 @@ export const TripsPage: React.FC = () => {
              </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-2.5 py-1.5">
+          <div className="flex flex-col gap-1.5 w-full lg:flex-1 lg:min-w-0">
+          <div className="w-full flex flex-nowrap items-center gap-0.5 overflow-x-auto rounded-lg border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-1.5 py-1 pb-1.5 snap-x snap-mandatory scroll-px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>button]:shrink-0 [&>button]:snap-start [&>span]:shrink-0 [&>span]:snap-start">
             <button
               type="button"
               onClick={() => togglePaymentModeFilter('CASH')}
               title="Cash payment"
               aria-label={`Cash payment filter, ${filterOptionCounts.payment.CASH} missions`}
-              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${paymentModeFilters.includes('CASH')
+              className={`inline-flex items-center h-5 px-2 rounded-md border text-[7px] font-black tracking-[0.06em] leading-none transition-colors whitespace-nowrap ${paymentModeFilters.includes('CASH')
                 ? 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'
                 : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
             >
-              <DollarSign size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <DollarSign size={10} className="mr-1 opacity-90" aria-hidden="true" />
               <span>Cash</span>
               <span className="ml-1 tabular-nums">{filterOptionCounts.payment.CASH}</span>
             </button>
@@ -1207,11 +1421,11 @@ export const TripsPage: React.FC = () => {
               onClick={() => togglePaymentModeFilter('CREDIT')}
               title="Credit account payment"
               aria-label={`Credit payment filter, ${filterOptionCounts.payment.CREDIT} missions`}
-              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${paymentModeFilters.includes('CREDIT')
+              className={`inline-flex items-center h-5 px-2 rounded-md border text-[7px] font-black tracking-[0.06em] leading-none transition-colors whitespace-nowrap ${paymentModeFilters.includes('CREDIT')
                 ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10'
                 : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
             >
-              <ArrowRightLeft size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <ArrowRightLeft size={10} className="mr-1 opacity-90" aria-hidden="true" />
               <span>Credit</span>
               <span className="ml-1 tabular-nums">{filterOptionCounts.payment.CREDIT}</span>
             </button>
@@ -1220,11 +1434,11 @@ export const TripsPage: React.FC = () => {
               onClick={() => toggleSettlementFilter('PENDING')}
               title="Not settled yet"
               aria-label={`Pending settlement filter, ${filterOptionCounts.settlement.PENDING} missions`}
-              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${settlementFilters.includes('PENDING')
+              className={`inline-flex items-center h-5 px-2 rounded-md border text-[7px] font-black tracking-[0.06em] leading-none transition-colors whitespace-nowrap ${settlementFilters.includes('PENDING')
                 ? 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20'
                 : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
             >
-              <Clock size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <Clock size={10} className="mr-1 opacity-90" aria-hidden="true" />
               <span>Pending</span>
               <span className="ml-1 tabular-nums">{filterOptionCounts.settlement.PENDING}</span>
             </button>
@@ -1233,11 +1447,11 @@ export const TripsPage: React.FC = () => {
               onClick={() => toggleSettlementFilter('SETTLED')}
               title="Paid and settled"
               aria-label={`Settled filter, ${filterOptionCounts.settlement.SETTLED} missions`}
-              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${settlementFilters.includes('SETTLED')
+              className={`inline-flex items-center h-5 px-2 rounded-md border text-[7px] font-black tracking-[0.06em] leading-none transition-colors whitespace-nowrap ${settlementFilters.includes('SETTLED')
                 ? 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10'
                 : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
             >
-              <CheckCircle2 size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <CheckCircle2 size={10} className="mr-1 opacity-90" aria-hidden="true" />
               <span>Settled</span>
               <span className="ml-1 tabular-nums">{filterOptionCounts.settlement.SETTLED}</span>
             </button>
@@ -1246,25 +1460,25 @@ export const TripsPage: React.FC = () => {
               onClick={() => toggleSettlementFilter('RECEIPTED')}
               title="Receipt issued"
               aria-label={`Receipted filter, ${filterOptionCounts.settlement.RECEIPTED} missions`}
-              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${settlementFilters.includes('RECEIPTED')
+              className={`inline-flex items-center h-5 px-2 rounded-md border text-[7px] font-black tracking-[0.06em] leading-none transition-colors whitespace-nowrap ${settlementFilters.includes('RECEIPTED')
                 ? 'border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10'
                 : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
             >
-              <FileText size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <FileText size={10} className="mr-1 opacity-90" aria-hidden="true" />
               <span>Receipted</span>
               <span className="ml-1 tabular-nums">{filterOptionCounts.settlement.RECEIPTED}</span>
             </button>
-            <span className="mx-0.5 h-4 w-px bg-slate-200 dark:bg-brand-800" />
+            <span className="mx-0.5 h-3 w-px bg-slate-200 dark:bg-brand-800" />
             <button
               type="button"
               onClick={() => toggleStatusFilter(TripStatus.QUOTED)}
               title="Quote stage"
               aria-label={`Quoted status filter, ${filterOptionCounts.status[TripStatus.QUOTED]} missions`}
-              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.QUOTED)
+              className={`inline-flex items-center h-5 px-2 rounded-md border text-[7px] font-black tracking-[0.06em] leading-none transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.QUOTED)
                 ? 'border-slate-400 text-slate-700 bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:bg-slate-900/30'
                 : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
             >
-              <FileText size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <FileText size={10} className="mr-1 opacity-90" aria-hidden="true" />
               <span>Quoted</span>
               <span className="ml-1 tabular-nums">{filterOptionCounts.status[TripStatus.QUOTED]}</span>
             </button>
@@ -1273,11 +1487,11 @@ export const TripsPage: React.FC = () => {
               onClick={() => toggleStatusFilter(TripStatus.CONFIRMED)}
               title="Confirmed and planned"
               aria-label={`Confirmed status filter, ${filterOptionCounts.status[TripStatus.CONFIRMED]} missions`}
-              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.CONFIRMED)
+              className={`inline-flex items-center h-5 px-2 rounded-md border text-[7px] font-black tracking-[0.06em] leading-none transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.CONFIRMED)
                 ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10'
                 : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
             >
-              <CheckCircle2 size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <CheckCircle2 size={10} className="mr-1 opacity-90" aria-hidden="true" />
               <span>Confirmed</span>
               <span className="ml-1 tabular-nums">{filterOptionCounts.status[TripStatus.CONFIRMED]}</span>
             </button>
@@ -1286,11 +1500,11 @@ export const TripsPage: React.FC = () => {
               onClick={() => toggleStatusFilter(TripStatus.COMPLETED)}
               title="Mission completed"
               aria-label={`Completed status filter, ${filterOptionCounts.status[TripStatus.COMPLETED]} missions`}
-              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.COMPLETED)
+              className={`inline-flex items-center h-5 px-2 rounded-md border text-[7px] font-black tracking-[0.06em] leading-none transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.COMPLETED)
                 ? 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'
                 : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
             >
-              <Check size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <Check size={10} className="mr-1 opacity-90" aria-hidden="true" />
               <span>Completed</span>
               <span className="ml-1 tabular-nums">{filterOptionCounts.status[TripStatus.COMPLETED]}</span>
             </button>
@@ -1299,46 +1513,53 @@ export const TripsPage: React.FC = () => {
               onClick={() => toggleStatusFilter(TripStatus.CANCELLED)}
               title="Cancelled mission"
               aria-label={`Cancelled status filter, ${filterOptionCounts.status[TripStatus.CANCELLED]} missions`}
-              className={`inline-flex items-center h-6 px-2.5 rounded-md border text-[8px] font-black tracking-[0.08em] transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.CANCELLED)
+              className={`inline-flex items-center h-5 px-2 rounded-md border text-[7px] font-black tracking-[0.06em] leading-none transition-colors whitespace-nowrap ${statusFilters.includes(TripStatus.CANCELLED)
                 ? 'border-red-300 text-red-700 bg-red-50 dark:border-red-900/40 dark:text-red-300 dark:bg-red-900/10'
                 : 'border-slate-300 text-slate-400 bg-slate-50 dark:border-slate-700 dark:text-slate-500 dark:bg-slate-900/20'}`}
             >
-              <XCircle size={11} className="mr-1 opacity-90" aria-hidden="true" />
+              <XCircle size={10} className="mr-1 opacity-90" aria-hidden="true" />
               <span>Cancelled</span>
               <span className="ml-1 tabular-nums">{filterOptionCounts.status[TripStatus.CANCELLED]}</span>
             </button>
+            <span className="mx-0.5 h-3 w-px bg-slate-200 dark:bg-brand-800" />
+            <span className="inline-flex items-center h-5 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[7px] font-black tracking-[0.06em] leading-none whitespace-nowrap text-slate-500 dark:text-slate-300">
+              Active <span className="ml-1 tabular-nums">{activeTrips.length}</span>
+            </span>
+            <span className="inline-flex items-center h-5 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[7px] font-black tracking-[0.06em] leading-none whitespace-nowrap text-slate-500 dark:text-slate-300">
+              Completed <span className="ml-1 tabular-nums">{completedTrips.length}</span>
+            </span>
+            <span className="inline-flex items-center h-5 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[7px] font-black tracking-[0.06em] leading-none whitespace-nowrap text-slate-500 dark:text-slate-300">
+              Deleted <span className="ml-1 tabular-nums">{filteredDeletedTrips.length}</span>
+            </span>
+            {hasActiveFilters && (
+              <span className="inline-flex items-center h-5 px-2 rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 text-[7px] font-black tracking-[0.06em] leading-none whitespace-nowrap text-blue-700 dark:text-blue-300">Filtered View</span>
+            )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+          <div className="flex flex-wrap items-center gap-1.5 w-full lg:justify-end">
             <div className="relative flex-1 lg:w-64">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input type="text" placeholder="Search missions, customer profile, route..." className="w-full bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl h-10 pl-9 text-[10px] font-bold uppercase tracking-widest" value={filterText} onChange={e => setFilterText(e.target.value)} />
+              <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input type="text" placeholder="Search missions, customer profile, route..." aria-label="Search missions" className="w-full bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl h-10 pl-10 pr-3 text-[10px] md:text-[11px] font-bold uppercase tracking-[0.06em]" value={filterText} onChange={e => setFilterText(e.target.value)} />
             </div>
             <div className="relative">
-              <Calendar size={12} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <select value={timeFilter} onChange={e => setTimeFilter(e.target.value as any)} className="appearance-none bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl h-10 pl-8 pr-8 text-[9px] font-black uppercase tracking-widest outline-none">
+              <Calendar size={11} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <select value={timeFilter} onChange={e => setTimeFilter(e.target.value as any)} className="appearance-none bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl h-9 pl-7 pr-7 text-[8px] font-black uppercase tracking-[0.08em] outline-none">
                 <option value="ALL">Historical</option>
                 <option value="TODAY">Immediate</option>
                 <option value="UPCOMING">Forecast</option>
                 <option value="PAST">Archived</option>
               </select>
-              <ChevronDown size={12} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <ChevronDown size={11} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             </div>
-            <Button variant="outline" className="h-10 text-[9px] font-black" onClick={() => handleManifestDownload('FILTERED')}><Download size={14} className="mr-2" /> Manifest</Button>
-            <Button variant="outline" className="h-10 text-[9px] font-black" onClick={() => handleManifestDownload('ALL')}><Download size={14} className="mr-2" /> Manifest (All)</Button>
+          </div>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-1.5 w-full lg:justify-end">
+            <Button variant="outline" className="h-9 text-[8px] font-black w-full sm:w-auto sm:shrink-0" onClick={() => handleManifestDownload('FILTERED')}><Download size={13} className="mr-1.5" /> Manifest</Button>
+            <Button variant="outline" className="h-9 text-[8px] font-black w-full sm:w-auto sm:shrink-0" onClick={() => handleManifestDownload('ALL')}><Download size={13} className="mr-1.5" /> Manifest (All)</Button>
             {hasActiveFilters && (
-              <Button variant="outline" className="h-10 text-[9px] font-black" onClick={clearAllFilters}>Clear Filters</Button>
+              <Button variant="outline" className="h-9 text-[8px] font-black w-full sm:w-auto sm:shrink-0" onClick={clearAllFilters}>Clear Filters</Button>
             )}
           </div>
-        </div>
-
-        <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-3 py-2.5 flex flex-wrap items-center gap-2 text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">
-          <span className="inline-flex items-center rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-2 py-1">Active {activeTrips.length}</span>
-          <span className="inline-flex items-center rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-2 py-1">Completed {completedTrips.length}</span>
-          <span className="inline-flex items-center rounded-md border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-2 py-1">Deleted {filteredDeletedTrips.length}</span>
-          {hasActiveFilters && (
-            <span className="inline-flex items-center rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 px-2 py-1 text-blue-700 dark:text-blue-300">Filtered View</span>
-          )}
+          </div>
         </div>
 
         {manifestMessage && (
@@ -1385,32 +1606,59 @@ export const TripsPage: React.FC = () => {
             className={`${isTableFullView ? 'block h-[calc(100dvh-4.25rem)] bg-white dark:bg-brand-900 border-t border-slate-200 dark:border-brand-800 shadow-none rounded-none' : 'hidden md:block bg-white dark:bg-brand-900 rounded-[2rem] border border-slate-200 dark:border-brand-800 shadow-xl'}`}
             viewportClassName={isTableFullView ? 'h-full' : 'rounded-[2rem]'}
           >
-            <table className="w-full min-w-[1160px] text-left border-collapse">
+            <table className="w-full min-w-[760px] text-left border-separate border-spacing-0">
               <thead>
-                <tr className="bg-slate-50 dark:bg-brand-950/50 border-b border-slate-100 dark:border-brand-800">
-                  <th className="px-4 py-3 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">ID / Phase</th>
-                  <th className="px-4 py-3 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Scheduled</th>
-                  <th className="px-4 py-3 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Client</th>
-                  <th className="px-4 py-3 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Vector</th>
-                  <th className="px-4 py-3 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Metrics</th>
-                  <th className="px-4 py-3 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Traffic Delay</th>
-                  <th className="px-4 py-3 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Unit</th>
-                  <th className="px-4 py-3 text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Comms Audit</th>
-                  <th className="sticky right-0 z-20 px-4 py-3 text-right text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] bg-slate-50 dark:bg-brand-950/50 border-l border-slate-100 dark:border-brand-800">Command</th>
+                <tr className="bg-slate-50 dark:bg-brand-950 border-b border-slate-100 dark:border-brand-800">
+                  <th className="pl-0 pr-0.5 py-2.5 text-center text-[8px] font-black text-slate-400 uppercase tracking-[0.16em]">ID</th>
+                  <th className="w-[78px] pl-0 pr-0 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Date</th>
+                  <th className="w-[126px] pl-0 pr-0 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Client</th>
+                  <th className="w-[120px] pl-0.5 pr-0.5 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Vector</th>
+                  <th className="w-[96px] pl-0.5 pr-0 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Metrics</th>
+                  <th className="w-[100px] px-0.5 py-2.5 text-center text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Unit</th>
+                  <th className="px-0.5 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Comms</th>
+                  <th className="sticky right-0 z-20 w-[56px] px-0.5 py-2.5 text-right text-[8px] font-black text-slate-400 uppercase tracking-[0.14em] bg-slate-50 dark:bg-brand-950 border-l border-slate-100 dark:border-brand-800">
+                    <span className="sr-only">Action</span>
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50 dark:divide-brand-800/50">
                 {activeTrips.map(trip => {
                   const driver = drivers.find(d => d.id === trip.driverId);
+                  const clientNameParts = trip.customerName
+                    .split(' ')
+                    .filter(Boolean)
+                    .slice(0, 2);
+                  const unitNameParts = driver
+                    ? driver.name
+                        .split(' ')
+                        .filter(Boolean)
+                        .slice(0, 2)
+                    : [];
+                  const unitCarModel = driver?.carModel?.trim() || '';
+                  const unitFuelTag = driver
+                    ? driver.fuelCostResponsibility === 'COMPANY'
+                      ? 'Fuel Co'
+                      : driver.fuelCostResponsibility === 'DRIVER'
+                        ? 'Fuel Drv'
+                        : 'Fuel Shr'
+                    : '';
+                  const unitOwnershipTag = driver
+                    ? driver.vehicleOwnership === 'COMPANY_FLEET'
+                      ? 'Fleet'
+                      : driver.vehicleOwnership === 'OWNER_DRIVER'
+                        ? 'Owner'
+                        : 'Rental'
+                    : '';
                   const tripDate = parseISO(trip.tripDate || trip.createdAt);
                   const indexMarkers = getTripIndexMarkers(trip);
                   const stopPreview = getTripStopPreview(trip);
-                  const traffic = describeTraffic(trip.trafficIndex);
+                  const trafficMetrics = getTripTrafficMetrics(trip);
+                  const traffic = describeTraffic(trafficMetrics.trafficIndex);
                   return (
                     <tr key={trip.id} className="hover:bg-slate-50/50 dark:hover:bg-brand-800/20 transition-colors group">
-                      <td className="px-4 py-4">
-                         <div className="flex items-center space-x-3">
-                            <div className="flex items-center space-x-1">
+                       <td className="pl-0 pr-0.5 py-3 text-center">
+                         <div className="flex flex-col items-center gap-1.5">
+                           <div className="flex items-center justify-center space-x-1">
                               <button
                                 onClick={() => copyToClipboard(getTripExtractTemplate(trip), 'extract', trip.id)}
                                 className={`w-8 h-8 rounded-lg flex items-center justify-center border transition-all ${copiedType === `extract-${trip.id}` ? 'bg-emerald-500 text-white border-emerald-400' : statusConfig[trip.status].className}`}
@@ -1429,16 +1677,73 @@ export const TripsPage: React.FC = () => {
                                 <MessageCircle size={14} />
                               </button>
                             </div>
-                            <span className="text-[10px] font-black text-slate-300 tracking-widest">#{trip.id.toString().slice(-4)}</span>
+                             <span className="text-[10px] font-black text-slate-300 tracking-widest text-center">#{trip.id.toString().slice(-4)}</span>
                          </div>
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap">
-                         <div className="text-[10px] font-black text-brand-900 dark:text-white uppercase">{format(tripDate, 'MMM d')}</div>
-                         <div className="text-[10px] font-bold text-slate-400 mt-0.5">{format(tripDate, 'h:mm a')}</div>
+                       <td className="w-[78px] pl-0 pr-0 py-3 whitespace-nowrap relative overflow-visible">
+                          <button
+                            type="button"
+                            onClick={() => openInlineScheduleEditor(trip)}
+                            className={`text-left transition-colors ${inlineScheduleTripId === trip.id ? 'opacity-40 pointer-events-none' : 'hover:text-blue-700 dark:hover:text-blue-300'}`}
+                            title="Edit scheduled pickup time"
+                            aria-label={`Edit schedule for trip ${trip.id}`}
+                          >
+                            <div className="text-[10px] font-black text-brand-900 dark:text-white uppercase">{format(tripDate, 'MMM d')}</div>
+                            <div className="text-[10px] font-bold text-slate-400 mt-0.5">{format(tripDate, 'h:mm a')}</div>
+                          </button>
+
+                         {inlineScheduleTripId === trip.id && (
+                          <div className="absolute left-0 top-1/2 -translate-y-1/2 z-30 w-[182px] rounded-lg border border-blue-200 dark:border-blue-900/40 bg-white dark:bg-brand-900 shadow-lg shadow-blue-200/40 dark:shadow-black/30 p-1.5 space-y-1">
+                            <input
+                              type="datetime-local"
+                              value={inlineScheduleDraft}
+                              onChange={event => setInlineScheduleDraft(event.target.value)}
+                              onKeyDown={event => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  handleInlineScheduleSave(trip);
+                                }
+
+                                if (event.key === 'Escape') {
+                                  event.preventDefault();
+                                  closeInlineScheduleEditor();
+                                }
+                              }}
+                              className="h-8 w-full rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 px-1.5 text-[8px] font-black text-blue-700 dark:text-blue-300 outline-none"
+                              aria-label="Edit scheduled pickup time"
+                              autoFocus
+                            />
+                            <div className="inline-flex items-center justify-end gap-1 w-full">
+                              <button
+                                type="button"
+                                onClick={closeInlineScheduleEditor}
+                                className="h-5 px-1.5 rounded-md border border-slate-200 dark:border-brand-700 bg-white dark:bg-brand-900 text-[7px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleInlineScheduleSave(trip)}
+                                className="h-5 px-1.5 rounded-md border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[7px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300"
+                              >
+                                Save
+                              </button>
+                            </div>
+                          </div>
+                         )}
                       </td>
-                      <td className="px-4 py-4">
-                         <div className="text-[11px] font-black text-brand-900 dark:text-white uppercase leading-none">{trip.customerName}</div>
-                         <div className="text-[10px] font-bold text-slate-400 mt-1">{trip.customerPhone}</div>
+                       <td className="w-[126px] pl-0 pr-0 py-3 max-w-[126px]">
+                         <button
+                           type="button"
+                           onClick={() => setSnapshotPreviewTrip(trip)}
+                           className="inline-flex h-7 max-w-[124px] flex-col justify-center leading-none text-[10px] font-black text-brand-900 dark:text-white uppercase text-left hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                           title="Open customer snapshot"
+                           aria-label={`Open customer snapshot for ${trip.customerName}`}
+                         >
+                          <span className="truncate max-w-[124px]">{clientNameParts[0] || trip.customerName}</span>
+                          <span className="truncate max-w-[124px] mt-0.5">{clientNameParts[1] || ''}</span>
+                         </button>
+                         <div className="text-[9px] font-bold text-slate-400 mt-0.5 truncate">{trip.customerPhone}</div>
                          {indexMarkers.length > 0 && (
                           <div className="mt-1.5 flex flex-wrap gap-1">
                             {indexMarkers.map(marker => (
@@ -1452,17 +1757,24 @@ export const TripsPage: React.FC = () => {
                           </div>
                          )}
                       </td>
-                      <td className="px-4 py-4 max-w-[170px]">
-                         <div className="flex items-center text-[10px] font-bold text-slate-600 dark:text-slate-300">
-                            <MapPin size={10} className="text-gold-600 mr-2 flex-shrink-0" />
+                       <td className="w-[120px] pl-0.5 pr-0.5 py-3 max-w-[120px]">
+                         <button
+                           type="button"
+                           onClick={() => openModal(trip, 'REQUOTE')}
+                           className="w-full text-left"
+                           title="Open destination override and requote"
+                           aria-label={`Open destination override and requote for trip ${trip.id}`}
+                         >
+                         <div className="flex items-center text-[9px] font-bold text-slate-600 dark:text-slate-300">
+                           <MapPin size={10} className="text-gold-600 mr-1 flex-shrink-0" />
                             <span className="truncate">{trip.pickupText.split(',')[0]}</span>
                          </div>
-                         <div className="flex items-center text-[10px] font-bold text-slate-400 mt-1.5 ml-3">
-                            <Navigation size={10} className="text-blue-500 mr-2 flex-shrink-0" />
+                         <div className="flex items-center text-[9px] font-bold text-slate-400 mt-1 ml-1.5">
+                           <Navigation size={10} className="text-blue-500 mr-1 flex-shrink-0" />
                             <span className="truncate">{trip.destinationText.split(',')[0]}</span>
                          </div>
                          {(trip.stops?.length || 0) > 0 && (
-                          <div className="mt-1.5 ml-3 space-y-0.5">
+                          <div className="mt-1 ml-1.5 space-y-0.5">
                             <p className="text-[8px] font-black uppercase tracking-widest text-amber-600 dark:text-amber-400">
                               {trip.stops!.length} stop(s)
                             </p>
@@ -1473,51 +1785,202 @@ export const TripsPage: React.FC = () => {
                             )}
                           </div>
                          )}
+                           </button>
                       </td>
-                      <td className="px-4 py-4">
-                         <div className="text-[11px] font-black text-brand-900 dark:text-white">${trip.fareUsd}</div>
-                         <div className="text-[9px] font-bold text-slate-400 mt-0.5 uppercase tracking-tighter">{trip.distanceText}</div>
-                         <div className="text-[8px] font-black text-slate-500 dark:text-slate-300 mt-1 uppercase tracking-widest">ETA {trip.durationInTrafficText || trip.durationText}</div>
-                         <div className={`text-[8px] font-black mt-0.5 uppercase tracking-widest ${traffic.tone}`}>{traffic.label} · TI {Number.isFinite(trip.trafficIndex) ? trip.trafficIndex : 0}</div>
-                         <div className="mt-1.5 flex flex-wrap gap-1">
-                           <span className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest ${trip.paymentMode === 'CREDIT' ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10' : 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'}`}>
-                             {trip.paymentMode || 'CASH'}
+                      <td className="w-[96px] pl-0.5 pr-0 py-3 max-w-[96px]">
+                         <div className="inline-flex items-center gap-1.5">
+                           <div className="text-[10px] font-black text-brand-900 dark:text-white">${trip.fareUsd}</div>
+                           <div className="text-[10px] font-black text-brand-900 dark:text-white">+{trafficMetrics.surplusMin}m</div>
+                         </div>
+                         <div className="mt-0.5 text-[7px] font-bold text-slate-500 dark:text-slate-300 uppercase tracking-[0.06em]">
+                           {trip.distanceText} · ETA {trafficMetrics.etaText}
+                         </div>
+                         <div className="mt-0.5 inline-flex items-center gap-1">
+                           <span className={`inline-flex items-center h-3 px-1 rounded border text-[6px] font-black uppercase tracking-[0.06em] border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/20 ${traffic.tone}`}>
+                             {traffic.label}
                            </span>
-                           <span className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest ${trip.settlementStatus === 'RECEIPTED' ? 'border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10' : trip.settlementStatus === 'SETTLED' ? 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10' : 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20'}`}>
+                           <span className="inline-flex items-center h-3 px-1 rounded border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/20 text-[6px] font-black uppercase tracking-[0.06em] text-slate-600 dark:text-slate-300">
+                             TI {trafficMetrics.trafficIndex}
+                           </span>
+                         </div>
+                         <div className="mt-1 inline-flex items-center gap-1">
+                           <button
+                             type="button"
+                             disabled={isTripPaymentLocked(trip)}
+                             onClick={() => handleTripPaymentModeUpdate(trip)}
+                             title={isTripPaymentLocked(trip)
+                               ? 'Payment mode locked after receipting'
+                               : `Toggle payment mode (${getTripPaymentMode(trip)} → ${getTripPaymentMode(trip) === 'CREDIT' ? 'CASH' : 'CREDIT'})`}
+                             className={`inline-flex items-center h-3.5 px-1 rounded-md border text-[6px] font-black uppercase tracking-[0.06em] transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${trip.paymentMode === 'CREDIT' ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10 hover:bg-blue-100 dark:hover:bg-blue-900/20' : 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10 hover:bg-emerald-100 dark:hover:bg-emerald-900/20'}`}
+                           >
+                             {getTripPaymentMode(trip)}
+                           </button>
+                           <span className={`inline-flex items-center h-3.5 px-1 rounded-md border text-[6px] font-black uppercase tracking-[0.06em] ${trip.settlementStatus === 'RECEIPTED' ? 'border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10' : trip.settlementStatus === 'SETTLED' ? 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10' : 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20'}`}>
                              {trip.settlementStatus || 'PENDING'}
                            </span>
                          </div>
                       </td>
-                       <td className="px-4 py-4">
-                         <div className="text-[11px] font-black text-brand-900 dark:text-white">+{Number.isFinite(trip.surplusMin) ? trip.surplusMin : 0}m</div>
-                         <div className="text-[8px] font-black text-slate-500 dark:text-slate-300 mt-1 uppercase tracking-widest">Traffic Surplus</div>
-                       </td>
-                      <td className="px-4 py-4">
-                         <div className={`text-[10px] font-black uppercase tracking-widest ${!driver ? 'text-amber-500' : 'text-slate-900 dark:text-slate-300'}`}>
-                            {driver?.name.split(' ')[0] || 'Unassigned'}
+                       <td className="w-[100px] px-0.5 py-3 max-w-[100px] text-center">
+                         <div className="flex w-full items-center justify-center">
+                           {driver ? (
+                            <button
+                              type="button"
+                              onClick={() => setUnitSnapshotDriverId(driver.id)}
+                              className="inline-flex w-[90px] flex-col items-center gap-0.5 text-left hover:opacity-85 transition-opacity"
+                              title={`Open unit snapshot for ${driver.name}`}
+                              aria-label={`Open unit snapshot for ${driver.name}`}
+                            >
+                              <div className="inline-flex h-7 flex-col justify-center items-center leading-none text-[8px] font-black tracking-[0.06em] text-slate-700 dark:text-slate-200 uppercase">
+                                <span className="truncate max-w-[90px]">{unitNameParts[0] || ''}</span>
+                                <span className="truncate max-w-[90px] mt-0.5">{unitNameParts[1] || ''}</span>
+                              </div>
+                              <span className="max-w-[90px] truncate text-[7px] font-bold uppercase tracking-[0.06em] text-slate-500 dark:text-slate-400">
+                                {unitCarModel}
+                              </span>
+                              <div className="inline-flex flex-col items-center gap-0.5">
+                                <span className="inline-flex items-center h-3.5 px-1 rounded border border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10 text-[7px] font-black uppercase tracking-[0.06em]">
+                                  {unitFuelTag}
+                                </span>
+                                <span className="inline-flex items-center h-3.5 px-1 rounded border border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10 text-[7px] font-black uppercase tracking-[0.06em]">
+                                  {unitOwnershipTag}
+                                </span>
+                              </div>
+                            </button>
+                           ) : (
+                            <div className="inline-flex w-[90px] items-center justify-center">
+                              {inlineAssignTripId === trip.id ? (
+                                <div className="relative w-[88px]">
+                                  <input
+                                    autoFocus
+                                    value={inlineAssignQuery}
+                                    onFocus={() => setShowInlineAssignSuggestions(true)}
+                                    onChange={event => {
+                                      setInlineAssignQuery(event.target.value);
+                                      setShowInlineAssignSuggestions(true);
+                                      setInlineAssignHighlightedIndex(0);
+                                    }}
+                                    onBlur={() => {
+                                      setTimeout(() => {
+                                        setShowInlineAssignSuggestions(false);
+                                        setInlineAssignTripId(null);
+                                        setInlineAssignQuery('');
+                                        setInlineAssignHighlightedIndex(0);
+                                      }, 120);
+                                    }}
+                                    onKeyDown={event => {
+                                      if (event.key === 'Escape') {
+                                        setShowInlineAssignSuggestions(false);
+                                        setInlineAssignTripId(null);
+                                        setInlineAssignQuery('');
+                                        setInlineAssignHighlightedIndex(0);
+                                      }
+
+                                      if (event.key === 'ArrowDown') {
+                                        event.preventDefault();
+                                        if (inlineAssignSuggestions.length === 0) return;
+                                        setShowInlineAssignSuggestions(true);
+                                        setInlineAssignHighlightedIndex(prev =>
+                                          prev >= inlineAssignSuggestions.length - 1 ? 0 : prev + 1
+                                        );
+                                      }
+
+                                      if (event.key === 'ArrowUp') {
+                                        event.preventDefault();
+                                        if (inlineAssignSuggestions.length === 0) return;
+                                        setShowInlineAssignSuggestions(true);
+                                        setInlineAssignHighlightedIndex(prev =>
+                                          prev <= 0 ? inlineAssignSuggestions.length - 1 : prev - 1
+                                        );
+                                      }
+
+                                      if (event.key === 'Enter') {
+                                        const highlightedSuggestion = inlineAssignSuggestions[inlineAssignHighlightedIndex];
+                                        if (highlightedSuggestion) {
+                                          event.preventDefault();
+                                          handleInlineDriverAssign(trip, highlightedSuggestion.id);
+                                          return;
+                                        }
+
+                                        if (inlineAssignSuggestions.length === 1) {
+                                          event.preventDefault();
+                                          handleInlineDriverAssign(trip, inlineAssignSuggestions[0].id);
+                                        }
+                                      }
+                                    }}
+                                    placeholder="Find driver"
+                                    className="h-7 w-[88px] rounded-md border border-amber-200 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-500/10 text-[7px] font-black tracking-[0.06em] text-amber-700 dark:text-amber-300 px-1 outline-none placeholder:text-amber-500/70 dark:placeholder:text-amber-400/70"
+                                    aria-label="Find driver"
+                                  />
+                                  {showInlineAssignSuggestions && (
+                                    <div className="absolute left-0 right-0 top-[calc(100%+2px)] z-30 max-h-28 overflow-y-auto rounded-md border border-amber-200 dark:border-amber-700/40 bg-white dark:bg-brand-900 shadow-lg shadow-amber-200/40 dark:shadow-black/30">
+                                      {inlineAssignSuggestions.length > 0 ? (
+                                        inlineAssignSuggestions.map(driverOption => (
+                                          <button
+                                            key={`inline-assign-${trip.id}-${driverOption.id}`}
+                                            type="button"
+                                            onMouseDown={event => event.preventDefault()}
+                                            onMouseEnter={() => setInlineAssignHighlightedIndex(inlineAssignSuggestions.findIndex(candidate => candidate.id === driverOption.id))}
+                                            onClick={() => handleInlineDriverAssign(trip, driverOption.id)}
+                                            className={`w-full px-1.5 py-1 text-left text-[7px] font-black tracking-[0.06em] text-slate-700 dark:text-slate-200 ${inlineAssignSuggestions[inlineAssignHighlightedIndex]?.id === driverOption.id ? 'bg-amber-50 dark:bg-amber-500/10' : 'hover:bg-amber-50 dark:hover:bg-amber-500/10'}`}
+                                          >
+                                            <span className="block truncate uppercase">{driverOption.name}</span>
+                                            <span className="block truncate text-[6px] font-bold text-slate-500 dark:text-slate-400">{driverOption.plateNumber}</span>
+                                          </button>
+                                        ))
+                                      ) : (
+                                        <p className="px-1.5 py-1 text-[7px] font-black uppercase tracking-[0.06em] text-slate-500 dark:text-slate-400">
+                                          No drivers
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    closeInlineScheduleEditor();
+                                    setInlineAssignTripId(trip.id);
+                                    setInlineAssignQuery('');
+                                    setShowInlineAssignSuggestions(true);
+                                    setInlineAssignHighlightedIndex(0);
+                                  }}
+                                  className="inline-flex items-center justify-center min-w-7 h-7 px-1 rounded-md border text-[7px] font-black tracking-[0.06em] border-amber-200 text-amber-600 bg-amber-50 hover:bg-amber-100 dark:border-amber-700/40 dark:text-amber-400 dark:bg-amber-500/10 dark:hover:bg-amber-500/20"
+                                  title="Assign driver"
+                                  aria-label="Assign driver"
+                                >
+                                  —
+                                </button>
+                              )}
+                            </div>
+                           )}
                          </div>
                       </td>
-                      <td className="px-4 py-4">
-                         <div className="flex items-center space-x-3">
-                            <MailCheck size={14} className={trip.confirmation_sent_at ? 'text-emerald-500' : 'text-slate-200 dark:text-brand-800'} />
-                            <MessageCircle size={14} className={trip.feedback_request_sent_at ? 'text-blue-500' : 'text-slate-200 dark:text-brand-800'} />
-                            <HeartHandshake size={14} className={trip.thank_you_sent_at ? 'text-gold-500' : 'text-slate-200 dark:text-brand-800'} />
+                       <td className="px-0.5 py-3">
+                         <div className="flex items-center space-x-1">
+                            <MailCheck size={13} className={trip.confirmation_sent_at ? 'text-emerald-500' : 'text-slate-200 dark:text-brand-800'} />
+                            <MessageCircle size={13} className={trip.feedback_request_sent_at ? 'text-blue-500' : 'text-slate-200 dark:text-brand-800'} />
+                            <HeartHandshake size={13} className={trip.thank_you_sent_at ? 'text-gold-500' : 'text-slate-200 dark:text-brand-800'} />
                          </div>
                       </td>
-                       <td className="sticky right-0 z-10 px-4 py-4 text-right bg-white dark:bg-brand-900 group-hover:bg-slate-50/50 dark:group-hover:bg-brand-800/20 border-l border-slate-100 dark:border-brand-800">
-                         <div className="flex items-center justify-end space-x-1">
-                            <button onClick={() => copyToClipboard(getDriverTemplate(trip), 'driver', trip.id)} className={`p-2 rounded-lg transition-all ${copiedType === `driver-${trip.id}` ? 'bg-emerald-500 text-white' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-800'}`}>
-                               {copiedType === `driver-${trip.id}` ? <Check size={14}/> : <Car size={14}/>}
+                       <td className="sticky right-0 z-10 w-[56px] px-0.5 py-3 text-right bg-white dark:bg-brand-900 group-hover:bg-slate-50 dark:group-hover:bg-brand-800 border-l border-slate-100 dark:border-brand-800">
+                         <div className="flex items-center justify-end gap-0.5">
+                            <button
+                              onClick={() => copyToClipboard(getDriverTemplate(trip), 'driver', trip.id)}
+                              className={`p-1 rounded-md transition-all ${copiedType === `driver-${trip.id}` ? 'bg-emerald-500 text-white' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-brand-800'}`}
+                              title={copiedType === `driver-${trip.id}` ? 'Driver message copied' : 'Copy driver dispatch message'}
+                              aria-label={copiedType === `driver-${trip.id}` ? 'Driver message copied' : 'Copy driver dispatch message'}
+                            >
+                               {copiedType === `driver-${trip.id}` ? <Check size={13}/> : <Car size={13}/>} 
                             </button>
                             <button
                               onClick={() => openModal(trip)}
-                              className={`h-8 px-3 rounded-lg border text-[9px] font-black uppercase tracking-widest transition-all inline-flex items-center gap-1.5 ${!driver
+                              className={`h-6 w-6 rounded-md border transition-all inline-flex items-center justify-center ${!driver
                                 ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-700/40'
                                 : 'bg-slate-50 text-brand-900 border-slate-200 dark:bg-brand-950 dark:text-gold-500 dark:border-brand-800'}`}
                               title={!driver ? 'Assign Driver / Edit Trip' : 'Edit Trip'}
                             >
-                              <Settings size={12}/>
-                              {!driver ? 'Assign / Edit' : 'Edit'}
+                              <Settings size={11}/>
                             </button>
                          </div>
                       </td>
@@ -1538,7 +2001,8 @@ export const TripsPage: React.FC = () => {
               const driver = drivers.find(d => d.id === trip.driverId);
               const indexMarkers = getTripIndexMarkers(trip);
               const stopPreview = getTripStopPreview(trip);
-              const traffic = describeTraffic(trip.trafficIndex);
+              const trafficMetrics = getTripTrafficMetrics(trip);
+              const traffic = describeTraffic(trafficMetrics.trafficIndex);
               return (
                 <div key={trip.id} className="bg-white dark:bg-brand-900 rounded-[2rem] border border-slate-200 dark:border-brand-800 shadow-sm p-6 hover:shadow-xl transition-all group relative overflow-hidden">
                   {/* Visual Accent */}
@@ -1570,9 +2034,56 @@ export const TripsPage: React.FC = () => {
                           <h4 className="text-sm font-black text-brand-900 dark:text-white uppercase leading-none">#{trip.id.toString().slice(-4)}</h4>
                         </div>
                      </div>
-                     <div className="text-right">
-                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{format(tripDate, 'MMM d')}</p>
-                        <p className="text-xs font-black text-brand-900 dark:text-gold-400">{format(tripDate, 'h:mm a')}</p>
+                     <div className="text-right relative">
+                        <button
+                          type="button"
+                          onClick={() => openInlineScheduleEditor(trip)}
+                          className={`text-right transition-colors ${inlineScheduleTripId === trip.id ? 'opacity-40 pointer-events-none' : 'hover:text-blue-700 dark:hover:text-blue-300'}`}
+                          title="Edit scheduled pickup time"
+                          aria-label={`Edit schedule for trip ${trip.id}`}
+                        >
+                          <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{format(tripDate, 'MMM d')}</p>
+                          <p className="text-xs font-black text-brand-900 dark:text-gold-400">{format(tripDate, 'h:mm a')}</p>
+                        </button>
+                        {inlineScheduleTripId === trip.id && (
+                          <div className="absolute right-0 top-[calc(100%+0.35rem)] z-20 w-[188px] rounded-lg border border-blue-200 dark:border-blue-900/40 bg-white dark:bg-brand-900 shadow-lg shadow-blue-200/40 dark:shadow-black/30 p-1.5 space-y-1 text-left">
+                            <input
+                              type="datetime-local"
+                              value={inlineScheduleDraft}
+                              onChange={event => setInlineScheduleDraft(event.target.value)}
+                              onKeyDown={event => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  handleInlineScheduleSave(trip);
+                                }
+
+                                if (event.key === 'Escape') {
+                                  event.preventDefault();
+                                  closeInlineScheduleEditor();
+                                }
+                              }}
+                              className="h-8 w-full rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50 dark:bg-blue-900/10 px-1.5 text-[8px] font-black text-blue-700 dark:text-blue-300 outline-none"
+                              aria-label="Edit scheduled pickup time"
+                              autoFocus
+                            />
+                            <div className="inline-flex items-center justify-end gap-1 w-full">
+                              <button
+                                type="button"
+                                onClick={closeInlineScheduleEditor}
+                                className="h-5 px-1.5 rounded-md border border-slate-200 dark:border-brand-700 bg-white dark:bg-brand-900 text-[7px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleInlineScheduleSave(trip)}
+                                className="h-5 px-1.5 rounded-md border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[7px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300"
+                              >
+                                Save
+                              </button>
+                            </div>
+                          </div>
+                        )}
                      </div>
                   </div>
 
@@ -1600,7 +2111,15 @@ export const TripsPage: React.FC = () => {
                      <div className="flex justify-between items-end bg-white dark:bg-brand-900 px-2">
                         <div>
                            <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">Identity</p>
-                           <p className="text-xs font-black text-brand-900 dark:text-white uppercase truncate max-w-[150px]">{trip.customerName}</p>
+                           <button
+                             type="button"
+                             onClick={() => setSnapshotPreviewTrip(trip)}
+                             className="text-xs font-black text-brand-900 dark:text-white uppercase truncate max-w-[150px] hover:text-blue-700 dark:hover:text-blue-300 transition-colors text-left"
+                             title="Open customer snapshot"
+                             aria-label={`Open customer snapshot for ${trip.customerName}`}
+                           >
+                             {trip.customerName}
+                           </button>
                            {indexMarkers.length > 0 && (
                              <div className="mt-1.5 flex flex-wrap gap-1">
                                {indexMarkers.map(marker => (
@@ -1616,9 +2135,21 @@ export const TripsPage: React.FC = () => {
                         </div>
                         <div className="text-right">
                           <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">Traffic / Unit</p>
-                          <p className="text-[8px] font-black text-slate-500 dark:text-slate-300 uppercase tracking-widest">ETA {trip.durationInTrafficText || trip.durationText}</p>
-                          <p className={`text-[8px] font-black uppercase tracking-widest ${traffic.tone}`}>{traffic.label} · TI {Number.isFinite(trip.trafficIndex) ? trip.trafficIndex : 0}</p>
-                           <p className={`text-xs font-black uppercase ${!driver ? 'text-amber-500 animate-pulse' : 'text-slate-900 dark:text-slate-300'}`}>{driver?.name.split(' ')[0] || 'Awaiting'}</p>
+                          <p className="text-[8px] font-black text-slate-500 dark:text-slate-300 uppercase tracking-widest">ETA {trafficMetrics.etaText}</p>
+                          <p className={`text-[8px] font-black uppercase tracking-widest ${traffic.tone}`}>{traffic.label} · TI {trafficMetrics.trafficIndex}</p>
+                           {driver ? (
+                            <button
+                              type="button"
+                              onClick={() => setUnitSnapshotDriverId(driver.id)}
+                              className="text-xs font-black uppercase text-slate-900 dark:text-slate-300 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                              title={`Open unit snapshot for ${driver.name}`}
+                              aria-label={`Open unit snapshot for ${driver.name}`}
+                            >
+                              {driver.name.split(' ')[0]}
+                            </button>
+                           ) : (
+                            <p className="text-xs font-black uppercase text-amber-500 animate-pulse">Awaiting</p>
+                           )}
                         </div>
                      </div>
                   </div>
@@ -1630,9 +2161,17 @@ export const TripsPage: React.FC = () => {
                           <span className="text-lg font-black tracking-tighter">{trip.fareUsd}</span>
                        </div>
                        <div className="flex flex-wrap gap-1">
-                         <span className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest ${trip.paymentMode === 'CREDIT' ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10' : 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10'}`}>
-                           {trip.paymentMode || 'CASH'}
-                         </span>
+                         <button
+                           type="button"
+                           disabled={isTripPaymentLocked(trip)}
+                           onClick={() => handleTripPaymentModeUpdate(trip)}
+                           title={isTripPaymentLocked(trip)
+                             ? 'Payment mode locked after receipting'
+                             : `Toggle payment mode (${getTripPaymentMode(trip)} → ${getTripPaymentMode(trip) === 'CREDIT' ? 'CASH' : 'CREDIT'})`}
+                           className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${trip.paymentMode === 'CREDIT' ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10 hover:bg-blue-100 dark:hover:bg-blue-900/20' : 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10 hover:bg-emerald-100 dark:hover:bg-emerald-900/20'}`}
+                         >
+                           {getTripPaymentMode(trip)}
+                         </button>
                          <span className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest ${trip.settlementStatus === 'RECEIPTED' ? 'border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10' : trip.settlementStatus === 'SETTLED' ? 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10' : 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20'}`}>
                            {trip.settlementStatus || 'PENDING'}
                          </span>
@@ -1691,7 +2230,23 @@ export const TripsPage: React.FC = () => {
                         <p className="text-[10px] font-black uppercase tracking-widest text-brand-900 dark:text-white">#{trip.id.toString().slice(-4)} · {trip.customerName}</p>
                         <p className="text-[9px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-300 mt-1">{trip.customerPhone} · {driver?.name || 'Unassigned'}</p>
                         <p className="text-[9px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-300 mt-1">{trip.pickupText} → {trip.destinationText}</p>
-                        <p className="text-[8px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mt-1">Fare ${trip.fareUsd} · {trip.paymentMode || 'CASH'} · {trip.settlementStatus || 'PENDING'}</p>
+                        <div className="mt-1 flex flex-wrap items-center gap-1">
+                          <p className="text-[8px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400">Fare ${trip.fareUsd}</p>
+                          <button
+                            type="button"
+                            disabled={isTripPaymentLocked(trip)}
+                            onClick={() => handleTripPaymentModeUpdate(trip)}
+                            title={isTripPaymentLocked(trip)
+                              ? 'Payment mode locked after receipting'
+                              : `Toggle payment mode (${getTripPaymentMode(trip)} → ${getTripPaymentMode(trip) === 'CREDIT' ? 'CASH' : 'CREDIT'})`}
+                            className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${trip.paymentMode === 'CREDIT' ? 'border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-900/40 dark:text-blue-300 dark:bg-blue-900/10 hover:bg-blue-100 dark:hover:bg-blue-900/20' : 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-900/40 dark:text-emerald-300 dark:bg-emerald-900/10 hover:bg-emerald-100 dark:hover:bg-emerald-900/20'}`}
+                          >
+                            {getTripPaymentMode(trip)}
+                          </button>
+                          <span className={`inline-flex items-center h-4 px-1.5 rounded-md border text-[7px] font-black uppercase tracking-widest ${trip.settlementStatus === 'RECEIPTED' ? 'border-indigo-300 text-indigo-700 bg-indigo-50 dark:border-indigo-900/40 dark:text-indigo-300 dark:bg-indigo-900/10' : trip.settlementStatus === 'SETTLED' ? 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-900/40 dark:text-amber-300 dark:bg-amber-900/10' : 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:bg-slate-900/20'}`}>
+                            {trip.settlementStatus || 'PENDING'}
+                          </span>
+                        </div>
                       </div>
                       <div className="text-right">
                         <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-400">
@@ -1790,11 +2345,80 @@ export const TripsPage: React.FC = () => {
         </div>
       </div>
 
+      {snapshotPreviewTrip && (
+        <div
+          className="fixed inset-0 z-[95] bg-brand-950/55 backdrop-blur-sm p-3 md:p-4 flex items-center justify-center"
+          onClick={() => setSnapshotPreviewTrip(null)}
+        >
+          <div
+            className="w-full max-w-xl rounded-[1.75rem] border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-2xl overflow-hidden"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 flex items-center justify-between">
+              <div>
+                <p className="text-[8px] font-black uppercase tracking-[0.18em] text-slate-400">Customer Snapshot</p>
+                <p className="text-[11px] font-black uppercase tracking-tight text-brand-900 dark:text-white mt-1">{snapshotPreviewTrip.customerName}</p>
+                <p className="text-[8px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-300 mt-0.5">{snapshotPreviewTrip.customerPhone}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSnapshotPreviewTrip(null)}
+                className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+              >
+                Close
+              </button>
+            </div>
+            <div className="p-4 max-h-[70vh] overflow-y-auto">
+              {snapshotPreviewData ? (
+                <CustomerSnapshotCard snapshot={snapshotPreviewData} />
+              ) : (
+                <div className="rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-4 py-3 text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">
+                  Snapshot unavailable for this customer.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {unitSnapshotDriver && unitSnapshotMetrics && (
+        <div
+          className="fixed inset-0 z-[95] bg-brand-950/55 backdrop-blur-sm p-3 md:p-4 flex items-center justify-center"
+          onClick={() => setUnitSnapshotDriverId(null)}
+        >
+          <div
+            className="w-full max-w-xl rounded-[1.75rem] border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-2xl overflow-hidden"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 flex items-center justify-between">
+              <div>
+                <p className="text-[8px] font-black uppercase tracking-[0.18em] text-slate-400">Unit Snapshot</p>
+                <p className="text-[11px] font-black uppercase tracking-tight text-brand-900 dark:text-white mt-1">{unitSnapshotDriver.name}</p>
+                <p className="text-[8px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-300 mt-0.5">{unitSnapshotDriver.carModel} · {unitSnapshotDriver.plateNumber}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUnitSnapshotDriverId(null)}
+                className="h-8 px-2 rounded-md border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
+              >
+                Close
+              </button>
+            </div>
+            <div className="p-4 max-h-[70vh] overflow-y-auto">
+              <UnitSnapshotCard driver={unitSnapshotDriver} metrics={unitSnapshotMetrics} />
+            </div>
+          </div>
+        </div>
+      )}
+
       {isModalOpen && selectedTrip && (
          <TripUpdateModal 
             trip={selectedTrip} 
             drivers={activeDrivers} 
-            onClose={() => setIsModalOpen(false)}
+            onClose={() => {
+              setIsModalOpen(false);
+              setModalFocusTarget('DEFAULT');
+            }}
             onSave={handleCommitPhase}
             onCopy={copyToClipboard}
             onWhatsApp={openWhatsAppMessage}
@@ -1811,6 +2435,7 @@ export const TripsPage: React.FC = () => {
             onRequoteDestination={handleRequoteDestination}
             onApplyRequote={handleApplyRequote}
             onDeleteCancelled={handleDeleteCancelled}
+            initialFocusTarget={modalFocusTarget}
          />
       )}
 
@@ -1843,6 +2468,7 @@ export const TripsPage: React.FC = () => {
 const TripUpdateModal: React.FC<{ 
   trip: Trip; 
   drivers: Driver[]; 
+  initialFocusTarget?: TripModalFocusTarget;
   onClose: () => void;
   onSave: (trip: Trip) => void;
   onCopy: (text: string, type: string, id: number) => void;
@@ -1860,9 +2486,11 @@ const TripUpdateModal: React.FC<{
   onRequoteDestination: (trip: Trip, destinationInput: string, stopInputs: string[]) => Promise<{ ok: true; updatedTrip: Trip } | { ok: false; reason: string }>;
   onApplyRequote: (trip: Trip) => void;
   onDeleteCancelled: (trip: Trip) => void;
-}> = ({ trip, drivers, onClose, onSave, onCopy, onWhatsApp, customerPhone, operatorPhone, mapsApiKey, buildDriverTemplate, buildCustomerTemplate, buildOperatorTemplate, copiedType, customerSnapshot, onAssignLocation, onSetCustomerPriority, onRequoteDestination, onApplyRequote, onDeleteCancelled }) => {
+}> = ({ trip, drivers, initialFocusTarget = 'DEFAULT', onClose, onSave, onCopy, onWhatsApp, customerPhone, operatorPhone, mapsApiKey, buildDriverTemplate, buildCustomerTemplate, buildOperatorTemplate, copiedType, customerSnapshot, onAssignLocation, onSetCustomerPriority, onRequoteDestination, onApplyRequote, onDeleteCancelled }) => {
   const [status, setStatus] = useState<TripStatus>(trip.status);
   const [driverId, setDriverId] = useState<string>(trip.driverId || '');
+  const [driverSearchQuery, setDriverSearchQuery] = useState('');
+  const [showDriverSuggestions, setShowDriverSuggestions] = useState(false);
   const [paymentMode, setPaymentMode] = useState<TripPaymentMode>(trip.paymentMode === 'CREDIT' ? 'CREDIT' : 'CASH');
   const [settlementStatus, setSettlementStatus] = useState<TripSettlementStatus>(trip.settlementStatus || 'PENDING');
   const [notes, setNotes] = useState<string>(trip.notes || '');
@@ -1889,7 +2517,21 @@ const TripUpdateModal: React.FC<{
   const [requoteMessage, setRequoteMessage] = useState('');
   const [requoteBusy, setRequoteBusy] = useState(false);
   const destinationInputRef = useRef<HTMLInputElement>(null);
+  const requoteSectionRef = useRef<HTMLDivElement>(null);
   const stopInputRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const driverSearchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (initialFocusTarget !== 'REQUOTE') return;
+
+    const timerId = window.setTimeout(() => {
+      requoteSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      destinationInputRef.current?.focus();
+      destinationInputRef.current?.select();
+    }, 120);
+
+    return () => window.clearTimeout(timerId);
+  }, [initialFocusTarget, trip.id]);
 
   useEffect(() => {
     setStatus(trip.status);
@@ -1919,6 +2561,57 @@ const TripUpdateModal: React.FC<{
     setPriorityActionMessage('');
     setRequoteBusy(false);
   }, [trip]);
+
+  const recommendedDrivers = useMemo(() => {
+    return [...drivers]
+      .sort((a, b) => {
+        const availabilityDelta = (a.currentStatus === 'AVAILABLE' ? 1 : 0) - (b.currentStatus === 'AVAILABLE' ? 1 : 0);
+        if (availabilityDelta !== 0) return -availabilityDelta;
+        const assignedDelta = Number(b.id === (driverId || trip.driverId || '')) - Number(a.id === (driverId || trip.driverId || ''));
+        if (assignedDelta !== 0) return assignedDelta;
+        return a.name.localeCompare(b.name);
+      })
+      .slice(0, 5);
+  }, [drivers, driverId, trip.driverId]);
+
+  const driverSuggestions = useMemo(() => {
+    const query = driverSearchQuery.trim().toLowerCase();
+    const source = query
+      ? drivers.filter(driver => (
+          driver.name.toLowerCase().includes(query) ||
+          driver.plateNumber.toLowerCase().includes(query) ||
+          driver.currentStatus.toLowerCase().includes(query)
+        ))
+      : drivers;
+
+    return [...source]
+      .sort((a, b) => {
+        const aAssigned = a.id === (driverId || trip.driverId || '');
+        const bAssigned = b.id === (driverId || trip.driverId || '');
+        if (aAssigned !== bAssigned) return Number(bAssigned) - Number(aAssigned);
+        if (a.currentStatus !== b.currentStatus) {
+          if (a.currentStatus === 'AVAILABLE') return -1;
+          if (b.currentStatus === 'AVAILABLE') return 1;
+        }
+        return a.name.localeCompare(b.name);
+      })
+      .slice(0, 10);
+  }, [drivers, driverSearchQuery, driverId, trip.driverId]);
+
+  useEffect(() => {
+    const selectedDriver = drivers.find(d => d.id === driverId);
+    if (!selectedDriver) {
+      setDriverSearchQuery('');
+      return;
+    }
+    setDriverSearchQuery(`${selectedDriver.name} (${selectedDriver.plateNumber})`);
+  }, [driverId, drivers]);
+
+  const handleSelectDriverSuggestion = (driver: Driver) => {
+    setDriverId(driver.id);
+    setDriverSearchQuery(`${driver.name} (${driver.plateNumber})`);
+    setShowDriverSuggestions(false);
+  };
 
   const liveTrip: Trip = {
     ...trip,
@@ -2094,10 +2787,100 @@ const TripUpdateModal: React.FC<{
              <div><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Phase Status</label><select value={status} onChange={e => setStatus(e.target.value as TripStatus)} className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 px-4 bg-slate-50 dark:bg-brand-950 text-brand-900 dark:text-white text-[11px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all">
                {Object.values(TripStatus).map(s => <option key={s} value={s} className="text-brand-900">{s}</option>)}
              </select></div>
-             <div><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Active Unit</label><select value={driverId} onChange={e => setDriverId(e.target.value)} className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 px-4 bg-slate-50 dark:bg-brand-950 text-brand-900 dark:text-white text-[11px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all">
-               <option value="" className="text-brand-900">Unassigned</option>
-                {drivers.map(d => <option key={d.id} value={d.id} className="text-brand-900">{d.name} ({d.plateNumber}) [{d.currentStatus}]</option>)}
-             </select></div>
+             <div>
+               <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Active Unit</label>
+               <div className="relative">
+                 <input
+                   ref={driverSearchInputRef}
+                   value={driverSearchQuery}
+                   onFocus={() => setShowDriverSuggestions(true)}
+                   onClick={() => {
+                     const isAlreadyFocused = driverSearchInputRef.current === document.activeElement;
+                     if (isAlreadyFocused && showDriverSuggestions) {
+                       setShowDriverSuggestions(false);
+                       return;
+                     }
+                     setShowDriverSuggestions(true);
+                   }}
+                   onBlur={() => setTimeout(() => setShowDriverSuggestions(false), 120)}
+                   onChange={event => {
+                     setDriverSearchQuery(event.target.value);
+                     setShowDriverSuggestions(true);
+                     if (driverId) setDriverId('');
+                   }}
+                   placeholder="Assign unit (type name/plate/status)"
+                   className="w-full border border-slate-200 dark:border-brand-800 rounded-xl h-12 pl-4 pr-10 bg-slate-50 dark:bg-brand-950 text-brand-900 dark:text-white text-[10px] font-black uppercase outline-none focus:ring-2 focus:ring-gold-500 transition-all"
+                 />
+                 {driverSearchQuery.trim().length > 0 && (
+                   <button
+                     type="button"
+                     onMouseDown={event => event.preventDefault()}
+                     onClick={() => {
+                       setDriverSearchQuery('');
+                       setDriverId('');
+                       setShowDriverSuggestions(false);
+                     }}
+                     className="absolute right-2 top-1/2 -translate-y-1/2 h-7 w-7 rounded-md border border-slate-200 dark:border-brand-700 bg-white dark:bg-brand-900 text-slate-500 dark:text-slate-300 inline-flex items-center justify-center"
+                     title="Clear assigned unit"
+                     aria-label="Clear assigned unit"
+                   >
+                     <X size={11} />
+                   </button>
+                 )}
+
+                 {showDriverSuggestions && (
+                   <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-30 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-xl max-h-64 overflow-y-auto">
+                     {!driverSearchQuery.trim() && recommendedDrivers.length > 0 && (
+                       <div className="px-2.5 pt-2 pb-1 border-b border-slate-100 dark:border-brand-800">
+                         <p className="text-[7px] font-black uppercase tracking-widest text-slate-400">Recommended</p>
+                         <div className="mt-1 grid grid-cols-1 gap-1">
+                           {recommendedDrivers.map(driver => (
+                             <button
+                               key={`modal-recommended-${driver.id}`}
+                               type="button"
+                               onMouseDown={event => event.preventDefault()}
+                               onClick={() => handleSelectDriverSuggestion(driver)}
+                               className="h-7 px-2 rounded-lg border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center justify-between"
+                             >
+                               <span className="truncate">{driver.name} ({driver.plateNumber})</span>
+                               <span className="ml-2 text-[7px]">{driver.currentStatus}</span>
+                             </button>
+                           ))}
+                         </div>
+                       </div>
+                     )}
+                     <div className="p-2 space-y-1">
+                       <button
+                         type="button"
+                         onMouseDown={event => event.preventDefault()}
+                         onClick={() => {
+                           setDriverId('');
+                           setDriverSearchQuery('');
+                           setShowDriverSuggestions(false);
+                         }}
+                         className="w-full h-8 px-2 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center"
+                       >
+                         Unassigned
+                       </button>
+                       {driverSuggestions.length > 0 ? driverSuggestions.map(driver => (
+                         <button
+                           key={`modal-suggestion-${driver.id}`}
+                           type="button"
+                           onMouseDown={event => event.preventDefault()}
+                           onClick={() => handleSelectDriverSuggestion(driver)}
+                           className="w-full h-8 px-2 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200 inline-flex items-center justify-between"
+                         >
+                           <span className="truncate">{driver.name} ({driver.plateNumber})</span>
+                           <span className="ml-2 text-[7px] text-slate-500 dark:text-slate-300">{driver.currentStatus}</span>
+                         </button>
+                       )) : (
+                         <p className="text-[8px] font-black uppercase tracking-widest text-slate-400 px-1 py-2">No matching units</p>
+                       )}
+                     </div>
+                   </div>
+                 )}
+               </div>
+             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
@@ -2118,7 +2901,7 @@ const TripUpdateModal: React.FC<{
             </div>
           </div>
 
-          <div className="pt-4 border-t border-slate-100 dark:border-brand-800 space-y-3">
+          <div ref={requoteSectionRef} className="pt-4 border-t border-slate-100 dark:border-brand-800 space-y-3">
             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block px-1">Destination Override + Requote</label>
             <div className="flex flex-col sm:flex-row gap-2">
               <input

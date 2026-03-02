@@ -76,6 +76,7 @@ export interface Customer {
   name: string;
   phone: string;
   source: 'MANUAL' | 'SYNC' | 'OPERATIONAL';
+  defaultPaymentMode?: TripPaymentMode;
   isInternational?: boolean;
   marketSegments?: CustomerMarketSegment[];
   gender?: CustomerGender;
@@ -225,6 +226,12 @@ export interface Settings {
   googleMapsMapId: string;
   googleMapsMapIdDark: string;
   googleBusinessReviewUrl: string;
+  bookingFlowUrl: string;
+  fareEstimatorUrl: string;
+  customRequestUrl: string;
+  promotionalOfferUrl: string;
+  couponProgramUrl: string;
+  loyaltyProgramUrl: string;
   operatorWhatsApp: string;
   hourlyWaitRate: number;
   ratePerKm: number;

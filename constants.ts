@@ -13,9 +13,9 @@ export const DISPATCH_NOW_DEFAULT_MINUTES = Math.round((DISPATCH_NOW_MIN_MINUTES
 export const APP_NAME = "Control";
 
 export const DEFAULT_TEMPLATES = {
-  trip_confirmation: "Andrew's Taxi\nHi {customer_name}, your ride is confirmed.\nPickup Time: {trip_datetime_formatted}\nPickup: {pickup}\nDestination: {destination}\nDriver: {driver_name_with_plate}\nETA: {eta_text}\nFare: ${fare_usd} (~{fare_lbp} LBP)\nPayment: {payment_mode} · Settlement: {settlement_status}\n{details_block}\n\nIf you need any changes, just reply to this chat.",
-  feedback_request: "Hi {customer_name}, thank you for riding with us.\nHow was your ride with {driver_name}?\nPlease rate it from 1-5 and share a quick note.\nExample: 5 - very good",
-  feedback_thanks: "Thank you {customer_name} for your feedback.\nWe appreciate your time and look forward to serving you again."
+  trip_confirmation: "Andrew's Taxi\nHi {customer_name}, your ride is confirmed.\nTime: {trip_datetime_formatted}\nPickup: {pickup}\nDestination: {destination}\nDriver: {driver_name_with_plate}\nETA: {eta_text}\nFare: ${fare_usd} (~{fare_lbp} LBP)\nPayment: {payment_mode} · Settlement: {settlement_status}\n{details_block}\n\n{service_links_block}\n\nNeed any changes? Reply here.",
+  feedback_request: "Hi {customer_name}, thanks for riding with us.\nHow was your ride with {driver_name}?\nPlease rate from 1-5 and share a quick note.\nExample: 5 - excellent\n\n{service_links_block}",
+  feedback_thanks: "Thank you {customer_name} for your feedback.\nWe appreciate your time and look forward to serving you again.\n\n{service_links_block}"
 };
 
 export const LOCAL_STORAGE_KEYS = {

@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
 import { Button } from '../components/ui/Button';
-import { Save, Coins, Clock, Activity, MessageSquare, Info, Phone, Fuel, ExternalLink } from 'lucide-react';
+import { Save, Coins, Clock, Activity, MessageSquare, Info, Phone, Fuel, ExternalLink, Maximize2, Minimize2 } from 'lucide-react';
 import { MessageTemplates } from '../types';
 import { DEFAULT_TEMPLATES, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 import {
@@ -24,12 +24,35 @@ export const SettingsPage: React.FC = () => {
   const [otherDriverCompanySharePercent, setOtherDriverCompanySharePercent] = useState(settings.otherDriverCompanySharePercent.toString());
   const [operatorWhatsApp, setOperatorWhatsApp] = useState(settings.operatorWhatsApp || '');
   const [googleBusinessReviewUrl, setGoogleBusinessReviewUrl] = useState(settings.googleBusinessReviewUrl || '');
+  const [bookingFlowUrl, setBookingFlowUrl] = useState(settings.bookingFlowUrl || '');
+  const [fareEstimatorUrl, setFareEstimatorUrl] = useState(settings.fareEstimatorUrl || '');
+  const [customRequestUrl, setCustomRequestUrl] = useState(settings.customRequestUrl || '');
+  const [promotionalOfferUrl, setPromotionalOfferUrl] = useState(settings.promotionalOfferUrl || '');
+  const [couponProgramUrl, setCouponProgramUrl] = useState(settings.couponProgramUrl || '');
+  const [loyaltyProgramUrl, setLoyaltyProgramUrl] = useState(settings.loyaltyProgramUrl || '');
   const [operatorIntlEnabled, setOperatorIntlEnabled] = useState(false);
   const [operatorDialCode, setOperatorDialCode] = useState(DEFAULT_PHONE_DIAL_CODE);
   const [operatorUseCustomDialCode, setOperatorUseCustomDialCode] = useState(false);
   const [operatorCustomDialCode, setOperatorCustomDialCode] = useState('');
   const [templates, setTemplates] = useState<MessageTemplates>(settings.templates);
   const [message, setMessage] = useState('');
+  const [isConfigFullView, setIsConfigFullView] = useState(false);
+
+  const shortcutGuide = [
+    { keys: 'Q', action: 'Quote Page' },
+    { keys: 'M', action: 'Missions' },
+    { keys: 'V', action: 'Core Vault' },
+    { keys: 'Y', action: 'Core Yield (CRM Finance)' },
+    { keys: 'G then M', action: 'GM Brief' },
+    { keys: 'G then F', action: 'Fleet (Drivers)' },
+    { keys: 'G then Y', action: 'GM Yield' },
+    { keys: 'G then C (or S)', action: 'Config Page' },
+    { keys: 'C then M', action: 'Core CRM' },
+    { keys: 'C then F', action: 'Core Fleet' },
+    { keys: 'C then O', action: 'Toggle Core ↔ Control' },
+    { keys: 'F', action: 'Config Full View (on this page)' },
+    { keys: 'Esc', action: 'Exit Config Full View' },
+  ];
 
   const operatorPopularPresets = PHONE_COUNTRY_PRESETS;
   const resolvedOperatorCustomDialCode = operatorCustomDialCode.replace(/\D/g, '');
@@ -49,6 +72,12 @@ export const SettingsPage: React.FC = () => {
     const operatorPhone = settings.operatorWhatsApp || '';
     setOperatorWhatsApp(operatorPhone);
     setGoogleBusinessReviewUrl(settings.googleBusinessReviewUrl || '');
+    setBookingFlowUrl(settings.bookingFlowUrl || '');
+    setFareEstimatorUrl(settings.fareEstimatorUrl || '');
+    setCustomRequestUrl(settings.customRequestUrl || '');
+    setPromotionalOfferUrl(settings.promotionalOfferUrl || '');
+    setCouponProgramUrl(settings.couponProgramUrl || '');
+    setLoyaltyProgramUrl(settings.loyaltyProgramUrl || '');
     const detectedDialCode = detectPhoneDialCode(operatorPhone) || DEFAULT_PHONE_DIAL_CODE;
     const isKnownPreset = operatorPopularPresets.some(option => option.dialCode === detectedDialCode);
     setOperatorIntlEnabled(detectedDialCode !== DEFAULT_PHONE_DIAL_CODE);
@@ -63,6 +92,43 @@ export const SettingsPage: React.FC = () => {
     }
     setTemplates(settings.templates);
   }, [settings]);
+
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(target.closest('[contenteditable="true"]'));
+    };
+
+    const handleSettingsHotkeys = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return;
+
+      if (event.key === 'Escape') {
+        setIsConfigFullView(false);
+        return;
+      }
+
+      if (event.key.toLowerCase() === 'f' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setIsConfigFullView(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleSettingsHotkeys);
+    return () => window.removeEventListener('keydown', handleSettingsHotkeys);
+  }, []);
+
+  useEffect(() => {
+    if (isConfigFullView) {
+      document.body.classList.add('settings-fullview');
+    } else {
+      document.body.classList.remove('settings-fullview');
+    }
+
+    return () => {
+      document.body.classList.remove('settings-fullview');
+    };
+  }, [isConfigFullView]);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,6 +150,12 @@ export const SettingsPage: React.FC = () => {
       googleMapsMapId: settings.googleMapsMapId,
       googleMapsMapIdDark: settings.googleMapsMapIdDark,
       googleBusinessReviewUrl: googleBusinessReviewUrl.trim(),
+      bookingFlowUrl: bookingFlowUrl.trim(),
+      fareEstimatorUrl: fareEstimatorUrl.trim(),
+      customRequestUrl: customRequestUrl.trim(),
+      promotionalOfferUrl: promotionalOfferUrl.trim(),
+      couponProgramUrl: couponProgramUrl.trim(),
+      loyaltyProgramUrl: loyaltyProgramUrl.trim(),
       operatorWhatsApp: normalizedOperatorWhatsApp || operatorWhatsApp.trim(),
       fuelPriceUsdPerLiter: parseOrDefault(fuelPriceUsdPerLiter, 1.3),
       ownerDriverCompanySharePercent: parseOrDefault(ownerDriverCompanySharePercent, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT),
@@ -106,10 +178,32 @@ export const SettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="app-page-shell p-4 md:p-6 bg-slate-50 dark:bg-brand-950 transition-colors duration-300 min-h-full pb-20">
-      <div className="max-w-3xl mx-auto">
+    <div className={isConfigFullView ? 'fixed inset-0 z-[10000] bg-slate-50 dark:bg-brand-950 p-4 md:p-6 overflow-auto' : 'app-page-shell p-4 md:p-6 bg-slate-50 dark:bg-brand-950 transition-colors duration-300 min-h-full pb-20'}>
+      <div className={`${isConfigFullView ? 'max-w-4xl' : 'max-w-3xl'} mx-auto`}>
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
           <h2 className="text-2xl font-black text-brand-900 dark:text-slate-100 uppercase tracking-tight">System Configuration</h2>
+          <button
+            type="button"
+            onClick={() => setIsConfigFullView(prev => !prev)}
+            title={isConfigFullView ? 'Exit full view (Esc)' : 'Open full view (F)'}
+            className="h-9 px-3 rounded-lg border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center gap-1.5"
+          >
+            {isConfigFullView ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            {isConfigFullView ? 'Exit Full View' : 'Full View'}
+          </button>
+        </div>
+
+        <div className="bg-white dark:bg-brand-900 rounded-2xl shadow-xl border border-slate-200 dark:border-brand-800 p-6 md:p-8 transition-colors mb-8">
+          <h3 className="text-sm font-black text-brand-900 dark:text-gold-500 uppercase tracking-widest mb-4 border-b pb-4 dark:border-brand-800">Keyboard Shortcuts</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {shortcutGuide.map(item => (
+              <div key={item.keys} className="rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 py-2 flex items-center justify-between gap-3">
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">{item.action}</span>
+                <span className="inline-flex items-center h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-[0.14em] text-brand-900 dark:text-gold-300 whitespace-nowrap">{item.keys}</span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Two-key combos use a short chord window. Avoid typing shortcuts while cursor is in an input field.</p>
         </div>
 
         <form onSubmit={handleSave} className="space-y-8">
@@ -359,11 +453,107 @@ export const SettingsPage: React.FC = () => {
                   <p className="mt-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Used in thank-you draft after positive ratings.</p>
                  </div>
 
+                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                   <div>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Booking Flow URL</label>
+                    <div className="relative group">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 group-focus-within:text-gold-600 transition-colors">
+                        <ExternalLink size={16} />
+                      </div>
+                      <input
+                        type="url"
+                        value={bookingFlowUrl}
+                        onChange={(e) => setBookingFlowUrl(e.target.value)}
+                        className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-sm h-11 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all pl-11 pr-3"
+                        placeholder="https://.../book"
+                      />
+                    </div>
+                   </div>
+                   <div>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Fare Estimator URL</label>
+                    <div className="relative group">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 group-focus-within:text-gold-600 transition-colors">
+                        <ExternalLink size={16} />
+                      </div>
+                      <input
+                        type="url"
+                        value={fareEstimatorUrl}
+                        onChange={(e) => setFareEstimatorUrl(e.target.value)}
+                        className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-sm h-11 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all pl-11 pr-3"
+                        placeholder="https://.../estimate"
+                      />
+                    </div>
+                   </div>
+                   <div>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Custom Request URL</label>
+                    <div className="relative group">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 group-focus-within:text-gold-600 transition-colors">
+                        <ExternalLink size={16} />
+                      </div>
+                      <input
+                        type="url"
+                        value={customRequestUrl}
+                        onChange={(e) => setCustomRequestUrl(e.target.value)}
+                        className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-sm h-11 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all pl-11 pr-3"
+                        placeholder="https://.../custom"
+                      />
+                    </div>
+                   </div>
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                   <div>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Promo Offer URL (IG/FB)</label>
+                    <div className="relative group">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 group-focus-within:text-gold-600 transition-colors">
+                        <ExternalLink size={16} />
+                      </div>
+                      <input
+                        type="url"
+                        value={promotionalOfferUrl}
+                        onChange={(e) => setPromotionalOfferUrl(e.target.value)}
+                        className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-sm h-11 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all pl-11 pr-3"
+                        placeholder="https://.../promo"
+                      />
+                    </div>
+                   </div>
+                   <div>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Coupon Program URL</label>
+                    <div className="relative group">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 group-focus-within:text-gold-600 transition-colors">
+                        <ExternalLink size={16} />
+                      </div>
+                      <input
+                        type="url"
+                        value={couponProgramUrl}
+                        onChange={(e) => setCouponProgramUrl(e.target.value)}
+                        className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-sm h-11 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all pl-11 pr-3"
+                        placeholder="https://.../coupon"
+                      />
+                    </div>
+                   </div>
+                   <div>
+                    <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Loyalty / Rewards URL</label>
+                    <div className="relative group">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 group-focus-within:text-gold-600 transition-colors">
+                        <ExternalLink size={16} />
+                      </div>
+                      <input
+                        type="url"
+                        value={loyaltyProgramUrl}
+                        onChange={(e) => setLoyaltyProgramUrl(e.target.value)}
+                        className="block w-full rounded-xl border-slate-200 dark:border-brand-800 shadow-sm focus:border-brand-900 dark:focus:border-gold-600 focus:ring-brand-900 dark:focus:ring-gold-600 text-sm h-11 border bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 transition-all pl-11 pr-3"
+                        placeholder="https://.../rewards"
+                      />
+                    </div>
+                   </div>
+                 </div>
+
                <div className="bg-brand-50 dark:bg-brand-950 p-4 rounded-xl border border-brand-100 dark:border-brand-800 mb-4">
                   <div className="flex items-start">
                      <Info size={14} className="text-brand-600 mr-2 mt-0.5" />
                     <p className="text-[10px] font-bold text-brand-800 dark:text-slate-400 uppercase leading-relaxed">
-                        Supported Placeholders: <span className="text-gold-600">{"{customer_name}"}</span>, <span className="text-gold-600">{"{pickup}"}</span>, <span className="text-gold-600">{"{destination}"}</span>, <span className="text-gold-600">{"{trip_datetime_formatted}"}</span>, <span className="text-gold-600">{"{fare_usd}"}</span>, <span className="text-gold-600">{"{fare_lbp}"}</span>, <span className="text-gold-600">{"{driver_name}"}</span>, <span className="text-gold-600">{"{driver_name_with_plate}"}</span>, <span className="text-gold-600">{"{google_review_link}"}</span>
+                        Supported Placeholders: <span className="text-gold-600">{"{customer_name}"}</span>, <span className="text-gold-600">{"{pickup}"}</span>, <span className="text-gold-600">{"{destination}"}</span>, <span className="text-gold-600">{"{trip_datetime_formatted}"}</span>, <span className="text-gold-600">{"{fare_usd}"}</span>, <span className="text-gold-600">{"{fare_lbp}"}</span>, <span className="text-gold-600">{"{driver_name}"}</span>, <span className="text-gold-600">{"{driver_name_with_plate}"}</span>, <span className="text-gold-600">{"{google_review_link}"}</span>, <span className="text-gold-600">{"{booking_url}"}</span>, <span className="text-gold-600">{"{fare_estimator_url}"}</span>, <span className="text-gold-600">{"{custom_request_url}"}</span>, <span className="text-gold-600">{"{promotional_offer_url}"}</span>, <span className="text-gold-600">{"{coupon_program_url}"}</span>, <span className="text-gold-600">{"{loyalty_program_url}"}</span>, <span className="text-gold-600">{"{service_links_block}"}</span>
                     </p>
                   </div>
                </div>
