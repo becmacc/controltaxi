@@ -1471,6 +1471,15 @@ export const GMBriefPage: React.FC = () => {
   const [fullscreenGmPanel, setFullscreenGmPanel] = useState<GmPanel | null>(null);
   const hoveredGmPanelRef = useRef<GmPanel | null>(null);
   const fullscreenGmPanelRef = useRef<GmPanel | null>(null);
+  const triggerJumpAttention = (element: HTMLElement | null) => {
+    if (!element) return;
+    element.classList.remove('jump-attention-flash');
+    void element.offsetWidth;
+    element.classList.add('jump-attention-flash');
+    window.setTimeout(() => {
+      element.classList.remove('jump-attention-flash');
+    }, 950);
+  };
 
   useEffect(() => {
     hoveredGmPanelRef.current = hoveredGmPanel;
@@ -1651,6 +1660,7 @@ export const GMBriefPage: React.FC = () => {
       const target = document.getElementById('gm-stage-fleet-yield');
       if (target) {
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        triggerJumpAttention(target);
       }
     });
 
@@ -1669,38 +1679,72 @@ export const GMBriefPage: React.FC = () => {
 
   const synthesisMetrics = useMemo(() => {
     const todayTrips = stats.todayTripsList;
-    const nonCancelled = todayTrips.filter(t => t.status !== TripStatus.CANCELLED);
-    const completed = todayTrips.filter(t => t.status === TripStatus.COMPLETED);
-    const confirmed = todayTrips.filter(t => t.status === TripStatus.CONFIRMED);
-    const cancelled = todayTrips.filter(t => t.status === TripStatus.CANCELLED);
-    const unassignedConfirmed = confirmed.filter(t => !t.driverId).length;
-    const completionRate = nonCancelled.length > 0 ? Math.round((completed.length / nonCancelled.length) * 100) : 0;
-    const cancelRate = todayTrips.length > 0 ? Math.round((cancelled.length / todayTrips.length) * 100) : 0;
+    const completed: Trip[] = [];
+    let nonCancelledCount = 0;
+    let confirmedCount = 0;
+    let cancelledCount = 0;
+    let unassignedConfirmed = 0;
 
+    const completedByDriverId = new Map<string, Trip[]>();
     const hourlyBuckets = new Array(24).fill(0);
-    todayTrips.forEach(trip => {
+    let trafficTripsCount = 0;
+    let trafficDelaySum = 0;
+    let trafficIndexSum = 0;
+
+    for (const trip of todayTrips) {
+      if (trip.status !== TripStatus.CANCELLED) {
+        nonCancelledCount += 1;
+      } else {
+        cancelledCount += 1;
+      }
+
+      if (trip.status === TripStatus.COMPLETED) {
+        completed.push(trip);
+        if (trip.driverId) {
+          const bucket = completedByDriverId.get(trip.driverId) || [];
+          bucket.push(trip);
+          completedByDriverId.set(trip.driverId, bucket);
+        }
+      }
+
+      if (trip.status === TripStatus.CONFIRMED) {
+        confirmedCount += 1;
+        if (!trip.driverId) {
+          unassignedConfirmed += 1;
+        }
+      }
+
       const stamp = trip.tripDate || trip.createdAt;
       const parsed = parseISO(stamp);
       if (!Number.isNaN(parsed.getTime())) {
         hourlyBuckets[parsed.getHours()] += 1;
       }
-    });
+
+      if (Number.isFinite(trip.surplusMin) || Number.isFinite(trip.trafficIndex)) {
+        trafficTripsCount += 1;
+        trafficDelaySum += Number.isFinite(trip.surplusMin) ? Number(trip.surplusMin) : 0;
+        trafficIndexSum += Number.isFinite(trip.trafficIndex) ? Number(trip.trafficIndex) : 0;
+      }
+    }
+
+    const completionRate = nonCancelledCount > 0 ? Math.round((completed.length / nonCancelledCount) * 100) : 0;
+    const cancelRate = todayTrips.length > 0 ? Math.round((cancelledCount / todayTrips.length) * 100) : 0;
+
     const peakHourCount = Math.max(...hourlyBuckets, 0);
     const peakHourIndex = hourlyBuckets.findIndex(count => count === peakHourCount);
     const peakHourLabel = peakHourIndex >= 0
       ? format(addHours(startOfDay(new Date()), peakHourIndex), 'ha')
       : 'N/A';
 
-    const trafficTrips = todayTrips.filter(t => Number.isFinite(t.surplusMin) || Number.isFinite(t.trafficIndex));
-    const avgDelay = trafficTrips.length > 0
-      ? Math.round(trafficTrips.reduce((sum, t) => sum + (Number.isFinite(t.surplusMin) ? Number(t.surplusMin) : 0), 0) / trafficTrips.length)
+    const avgDelay = trafficTripsCount > 0
+      ? Math.round(trafficDelaySum / trafficTripsCount)
       : 0;
-    const avgTraffic = trafficTrips.length > 0
-      ? Math.round(trafficTrips.reduce((sum, t) => sum + (Number.isFinite(t.trafficIndex) ? Number(t.trafficIndex) : 0), 0) / trafficTrips.length)
+    const avgTraffic = trafficTripsCount > 0
+      ? Math.round(trafficIndexSum / trafficTripsCount)
       : 0;
 
     const driverPerformance = drivers.map(driver => {
-      const completedByDriver = completed.filter(trip => trip.driverId === driver.id);
+      const completedByDriver = completedByDriverId.get(driver.id) || [];
       const tripsCount = completedByDriver.length;
       const revenue = completedByDriver.reduce((sum, trip) => sum + trip.fareUsd, 0);
       return { name: driver.name, trips: tripsCount, revenue };
@@ -1708,10 +1752,17 @@ export const GMBriefPage: React.FC = () => {
 
     const topDriver = driverPerformance[0];
 
+    let activeDrivers = 0;
+    let busyDrivers = 0;
+    for (const driver of drivers) {
+      if (driver.status === 'ACTIVE') activeDrivers += 1;
+      if (driver.currentStatus === 'BUSY') busyDrivers += 1;
+    }
+
     return {
       totalTrips: todayTrips.length,
       completedTrips: completed.length,
-      confirmedTrips: confirmed.length,
+      confirmedTrips: confirmedCount,
       unassignedConfirmed,
       completionRate,
       cancelRate,
@@ -1720,8 +1771,8 @@ export const GMBriefPage: React.FC = () => {
       avgDelay,
       avgTraffic,
       topDriver,
-      activeDrivers: drivers.filter(driver => driver.status === 'ACTIVE').length,
-      busyDrivers: drivers.filter(driver => driver.currentStatus === 'BUSY').length,
+      activeDrivers,
+      busyDrivers,
     };
   }, [stats.todayTripsList, drivers]);
 
@@ -1980,8 +2031,8 @@ export const GMBriefPage: React.FC = () => {
       setTimeout(() => setInsightActionStatus(''), 2600);
       return;
     }
-    window.open(link, '_blank', 'noopener,noreferrer');
-    setInsightActionStatus('WhatsApp draft ready.');
+    const openedWindow = window.open(link, '_blank', 'noopener,noreferrer');
+    setInsightActionStatus(openedWindow ? 'WhatsApp draft ready.' : 'Popup blocked. Allow popups to open WhatsApp draft.');
     setTimeout(() => setInsightActionStatus(''), 2200);
   };
 

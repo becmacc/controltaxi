@@ -466,7 +466,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         changed = true;
       }
       
-      let updatedAlerts = dedupedCurrentAlerts.map(alert => {
+      const updatedAlerts = dedupedCurrentAlerts.map(alert => {
         if (!alert.triggered && isAfter(now, parseISO(alert.targetTime))) {
           const signature = alertSignature(alert);
           const lastNotifiedAt = notificationCooldownRef.current[signature] || 0;
@@ -477,8 +477,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             notificationCooldownRef.current[signature] = now.getTime();
           }
 
-          changed = true;
-          return { ...alert, triggered: true, snoozedUntil: undefined };
+          if (alert.snoozedUntil) {
+            changed = true;
+            return { ...alert, snoozedUntil: undefined };
+          }
+
+          return alert;
         }
         return alert;
       });
@@ -592,7 +596,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   useEffect(() => {
-    if (trips.length === 0) return;
+    if (trips.length === 0) {
+      setAlerts(prev => {
+        const filtered = prev.filter(alert => alert.type !== 'PICKUP' && alert.type !== 'DROP_OFF');
+        return filtered.length === prev.length ? prev : filtered;
+      });
+      return;
+    }
 
     const generatedMissionAlerts = trips
       .filter(trip => trip.status !== TripStatus.CANCELLED && trip.status !== TripStatus.COMPLETED)

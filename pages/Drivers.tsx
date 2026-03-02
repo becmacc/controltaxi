@@ -263,7 +263,10 @@ export const DriversPage: React.FC = () => {
       showActionMessage('Valid WhatsApp phone is required for this unit.', 'ERROR');
       return;
     }
-    window.open(link, '_blank', 'noopener,noreferrer');
+    const openedWindow = window.open(link, '_blank', 'noopener,noreferrer');
+    if (!openedWindow) {
+      showActionMessage('Popup blocked. Allow popups to open WhatsApp draft.', 'ERROR');
+    }
   };
 
   const handleAvailabilityChange = (driver: Driver, nextStatus: DriverAvailability) => {
@@ -593,11 +596,11 @@ export const DriversPage: React.FC = () => {
         <table className="min-w-[900px] w-full divide-y divide-slate-100 dark:divide-brand-800">
           <thead className="bg-slate-50 dark:bg-brand-950">
             <tr>
-              <th className="px-3 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em] w-10">Rank</th>
-              <th className="px-3 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em]">Fleet Unit</th>
-              <th className="px-3 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em]">State</th>
-              <th className="px-3 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em]">KPIs</th>
-              <th className="px-3 py-3 text-right text-[9px] font-black text-slate-400 uppercase tracking-[0.08em]"><span className="sr-only">Action</span></th>
+              <th className="sticky top-0 z-20 px-3 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em] w-10 bg-slate-50 dark:bg-brand-950">Rank</th>
+              <th className="sticky top-0 z-20 px-3 py-4 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em] bg-slate-50 dark:bg-brand-950">Fleet Unit</th>
+              <th className="sticky top-0 z-20 px-3 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em] bg-slate-50 dark:bg-brand-950">State</th>
+              <th className="sticky top-0 z-20 px-3 py-3 text-left text-[9px] font-black text-slate-400 uppercase tracking-[0.08em] bg-slate-50 dark:bg-brand-950">KPIs</th>
+              <th className="sticky top-0 z-20 px-3 py-3 text-right text-[9px] font-black text-slate-400 uppercase tracking-[0.08em] bg-slate-50 dark:bg-brand-950"><span className="sr-only">Action</span></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-brand-800">

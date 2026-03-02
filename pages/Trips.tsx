@@ -575,10 +575,14 @@ export const TripsPage: React.FC = () => {
     [TripStatus.CANCELLED]: { icon: XCircle, label: 'Cancelled', className: 'bg-red-50 text-red-600 border-red-100 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800/50' },
   };
 
-  const copyToClipboard = (text: string, type: string, id: number) => {
-    navigator.clipboard.writeText(sanitizeCommunicationText(text));
-    setCopiedType(`${type}-${id}`);
-    setTimeout(() => setCopiedType(null), 2000);
+  const copyToClipboard = async (text: string, type: string, id: number) => {
+    try {
+      await navigator.clipboard.writeText(sanitizeCommunicationText(text));
+      setCopiedType(`${type}-${id}`);
+      setTimeout(() => setCopiedType(null), 2000);
+    } catch {
+      showActionToast('Clipboard permission blocked. Copy manually.', 'ERROR');
+    }
   };
 
   const openWhatsAppMessage = (phone: string | undefined, text: string) => {
@@ -588,7 +592,11 @@ export const TripsPage: React.FC = () => {
       setTimeout(() => setWhatsAppError(null), 2500);
       return;
     }
-    window.open(link, '_blank', 'noopener,noreferrer');
+    const openedWindow = window.open(link, '_blank', 'noopener,noreferrer');
+    if (!openedWindow) {
+      setWhatsAppError('Popup blocked. Allow popups to open WhatsApp draft.');
+      setTimeout(() => setWhatsAppError(null), 2500);
+    }
   };
 
   const showActionToast = (message: string, tone: 'SUCCESS' | 'ERROR' = 'SUCCESS') => {
@@ -722,6 +730,33 @@ export const TripsPage: React.FC = () => {
     };
   };
 
+  const resolvePickupInput = async (input: string): Promise<{ pickupText: string; pickupPlaceId: string; pickupOriginalLink?: string; pickupLat: number; pickupLng: number } | null> => {
+    const cleaned = input.trim();
+    if (!cleaned) return null;
+
+    const parsed = parseGoogleMapsLink(cleaned) || parseGpsOrLatLngInput(cleaned);
+    if (parsed) {
+      return {
+        pickupText: `${parsed.lat.toFixed(6)}, ${parsed.lng.toFixed(6)}`,
+        pickupPlaceId: 'GPS',
+        pickupOriginalLink: parsed.originalUrl,
+        pickupLat: parsed.lat,
+        pickupLng: parsed.lng,
+      };
+    }
+
+    const geocoded = await geocodeAddress(cleaned);
+    if (!geocoded) return null;
+
+    return {
+      pickupText: geocoded.formattedAddress,
+      pickupPlaceId: geocoded.placeId,
+      pickupOriginalLink: undefined,
+      pickupLat: geocoded.lat,
+      pickupLng: geocoded.lng,
+    };
+  };
+
   const resolveStopInput = async (input: string): Promise<TripStop | null> => {
     const cleaned = input.trim();
     if (!cleaned) return null;
@@ -761,10 +796,50 @@ export const TripsPage: React.FC = () => {
     return requested.toISOString();
   };
 
-  const handleRequoteDestination = async (trip: Trip, destinationInput: string, stopInputs: string[]): Promise<{ ok: true; updatedTrip: Trip } | { ok: false; reason: string }> => {
+  const handleRequoteDestination = async (trip: Trip, pickupInput: string, destinationInput: string, stopInputs: string[]): Promise<{ ok: true; updatedTrip: Trip } | { ok: false; reason: string }> => {
     try {
       if (!settings.googleMapsApiKey.trim()) {
         return { ok: false, reason: 'Google Maps API key is missing in Settings.' };
+      }
+
+      const cleanedPickup = pickupInput.trim();
+      let resolvedPickup = cleanedPickup
+        ? await resolvePickupInput(cleanedPickup)
+        : {
+            pickupText: trip.pickupText,
+            pickupPlaceId: trip.pickupPlaceId || 'GPS',
+            pickupOriginalLink: trip.pickupOriginalLink,
+            pickupLat: Number(trip.pickupLat),
+            pickupLng: Number(trip.pickupLng),
+          };
+
+      if (resolvedPickup && (!Number.isFinite(resolvedPickup.pickupLat) || !Number.isFinite(resolvedPickup.pickupLng))) {
+        const byPlaceId = resolvedPickup.pickupPlaceId
+          ? await geocodePlaceId(resolvedPickup.pickupPlaceId)
+          : null;
+        if (byPlaceId) {
+          resolvedPickup = {
+            ...resolvedPickup,
+            pickupText: byPlaceId.formattedAddress || resolvedPickup.pickupText,
+            pickupLat: byPlaceId.lat,
+            pickupLng: byPlaceId.lng,
+          };
+        } else {
+          const byAddress = await geocodeAddress(resolvedPickup.pickupText || trip.pickupText);
+          if (byAddress) {
+            resolvedPickup = {
+              pickupText: byAddress.formattedAddress,
+              pickupPlaceId: byAddress.placeId,
+              pickupOriginalLink: resolvedPickup.pickupOriginalLink,
+              pickupLat: byAddress.lat,
+              pickupLng: byAddress.lng,
+            };
+          }
+        }
+      }
+
+      if (!resolvedPickup || !Number.isFinite(resolvedPickup.pickupLat) || !Number.isFinite(resolvedPickup.pickupLng)) {
+        return { ok: false, reason: 'Pickup could not be resolved. Use a clear address or Google Maps link.' };
       }
 
       const cleanedDestination = destinationInput.trim();
@@ -807,11 +882,6 @@ export const TripsPage: React.FC = () => {
         return { ok: false, reason: 'Destination could not be resolved. Use a clear address or Google Maps link.' };
       }
 
-      const pickupCoords = await resolvePickupCoordinates(trip);
-      if (!pickupCoords) {
-        return { ok: false, reason: 'Pickup coordinates are missing and could not be resolved.' };
-      }
-
       const cleanedStops = stopInputs.map(value => value.trim()).filter(Boolean);
       const resolvedStops: TripStop[] = [];
       for (const stopValue of cleanedStops) {
@@ -842,8 +912,8 @@ export const TripsPage: React.FC = () => {
           origin: {
             location: {
               latLng: {
-                latitude: pickupCoords.lat,
-                longitude: pickupCoords.lng,
+                latitude: resolvedPickup.pickupLat,
+                longitude: resolvedPickup.pickupLng,
               },
             },
           },
@@ -895,6 +965,11 @@ export const TripsPage: React.FC = () => {
         ok: true,
         updatedTrip: {
           ...trip,
+          pickupText: resolvedPickup.pickupText,
+          pickupPlaceId: resolvedPickup.pickupPlaceId,
+          pickupOriginalLink: resolvedPickup.pickupOriginalLink,
+          pickupLat: resolvedPickup.pickupLat,
+          pickupLng: resolvedPickup.pickupLng,
           destinationText: resolvedDestination.destinationText,
           destinationPlaceId: resolvedDestination.destinationPlaceId,
           destinationOriginalLink: resolvedDestination.destinationOriginalLink,
@@ -1588,9 +1663,9 @@ export const TripsPage: React.FC = () => {
 
         {/* Responsive Table/Card Engine */}
         {activeTrips.length > 0 && viewMode === 'TABLE' ? (
-          <div className={isTableFullView ? 'fixed top-0 right-0 bottom-0 left-0 z-[9999] bg-slate-50 dark:bg-brand-950 p-0' : ''}>
+          <div className={isTableFullView ? 'fixed top-0 right-0 bottom-0 left-0 z-[9999] bg-slate-50 dark:bg-brand-950 p-0 overflow-hidden flex flex-col isolate' : ''}>
             {isTableFullView && (
-              <div className="px-4 md:px-6 pt-4 md:pt-5 pb-3 flex items-center justify-between border-b border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950">
+              <div className="relative z-40 px-4 md:px-6 pt-4 md:pt-5 pb-3 flex items-center justify-between border-b border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950">
                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 dark:text-slate-300">Mission Log · Full View</p>
                 <button
                   type="button"
@@ -1603,21 +1678,21 @@ export const TripsPage: React.FC = () => {
               </div>
             )}
           <HorizontalScrollArea
-            className={`${isTableFullView ? 'block h-[calc(100dvh-4.25rem)] bg-white dark:bg-brand-900 border-t border-slate-200 dark:border-brand-800 shadow-none rounded-none' : 'hidden md:block bg-white dark:bg-brand-900 rounded-[2rem] border border-slate-200 dark:border-brand-800 shadow-xl'}`}
-            viewportClassName={isTableFullView ? 'h-full' : 'rounded-[2rem]'}
+            className={`${isTableFullView ? 'block flex-1 min-h-0 bg-white dark:bg-brand-900 border-t border-slate-200 dark:border-brand-800 shadow-none rounded-none' : 'hidden md:block bg-white dark:bg-brand-900 rounded-[2rem] border border-slate-200 dark:border-brand-800 shadow-xl'}`}
+            viewportClassName={isTableFullView ? 'h-full overflow-y-auto bg-white dark:bg-brand-900' : 'rounded-[2rem]'}
           >
-            <table className="w-full min-w-[760px] text-left border-separate border-spacing-0">
+            <table className={`w-full ${isTableFullView ? 'min-w-[1180px]' : 'min-w-[760px]'} text-left border-separate border-spacing-0 bg-white dark:bg-brand-900`}>
               <thead>
                 <tr className="bg-slate-50 dark:bg-brand-950 border-b border-slate-100 dark:border-brand-800">
-                  <th className="pl-0 pr-0.5 py-2.5 text-center text-[8px] font-black text-slate-400 uppercase tracking-[0.16em]">ID</th>
-                  <th className="w-[78px] pl-0 pr-0 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Date</th>
-                  <th className="w-[126px] pl-0 pr-0 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Client</th>
-                  <th className="w-[120px] pl-0.5 pr-0.5 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Vector</th>
-                  <th className="w-[96px] pl-0.5 pr-0 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Metrics</th>
-                  <th className="w-[100px] px-0.5 py-2.5 text-center text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Unit</th>
-                  <th className="px-0.5 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em]">Comms</th>
-                  <th className="sticky right-0 z-20 w-[56px] px-0.5 py-2.5 text-right text-[8px] font-black text-slate-400 uppercase tracking-[0.14em] bg-slate-50 dark:bg-brand-950 border-l border-slate-100 dark:border-brand-800">
-                    <span className="sr-only">Action</span>
+                  <th className="sticky top-0 z-20 pl-0 pr-0.5 py-2.5 text-center text-[8px] font-black text-slate-400 uppercase tracking-[0.16em] bg-slate-50 dark:bg-brand-950">ID</th>
+                  <th className={`${isTableFullView ? 'w-[96px]' : 'w-[78px]'} sticky top-0 z-20 pl-0 pr-0 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em] bg-slate-50 dark:bg-brand-950`}>Date</th>
+                  <th className={`${isTableFullView ? 'w-[220px]' : 'w-[126px]'} sticky top-0 z-20 pl-0 pr-0 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em] bg-slate-50 dark:bg-brand-950`}>Client</th>
+                  <th className={`${isTableFullView ? 'w-[280px]' : 'w-[120px]'} sticky top-0 z-20 pl-0.5 pr-0.5 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em] bg-slate-50 dark:bg-brand-950`}>Vector</th>
+                  <th className={`${isTableFullView ? 'w-[120px]' : 'w-[96px]'} sticky top-0 z-20 pl-0.5 pr-0 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em] bg-slate-50 dark:bg-brand-950`}>Metrics</th>
+                  <th className={`${isTableFullView ? 'w-[120px]' : 'w-[100px]'} sticky top-0 z-20 px-0.5 py-2.5 text-center text-[8px] font-black text-slate-400 uppercase tracking-[0.14em] bg-slate-50 dark:bg-brand-950`}>Unit</th>
+                  <th className="sticky top-0 z-20 px-0.5 py-2.5 text-[8px] font-black text-slate-400 uppercase tracking-[0.14em] bg-slate-50 dark:bg-brand-950">Comms</th>
+                  <th className="sticky top-0 right-0 z-30 w-[56px] px-0.5 py-2.5 text-right text-[8px] font-black text-slate-400 uppercase tracking-[0.14em] bg-slate-50 dark:bg-brand-950 border-l border-slate-100 dark:border-brand-800">
+                    <span className={isTableFullView ? '' : 'sr-only'}>Act</span>
                   </th>
                 </tr>
               </thead>
@@ -1680,7 +1755,7 @@ export const TripsPage: React.FC = () => {
                              <span className="text-[10px] font-black text-slate-300 tracking-widest text-center">#{trip.id.toString().slice(-4)}</span>
                          </div>
                       </td>
-                       <td className="w-[78px] pl-0 pr-0 py-3 whitespace-nowrap relative overflow-visible">
+                       <td className={`${isTableFullView ? 'w-[96px]' : 'w-[78px]'} pl-0 pr-0 py-3 whitespace-nowrap relative overflow-visible`}>
                           <button
                             type="button"
                             onClick={() => openInlineScheduleEditor(trip)}
@@ -1732,18 +1807,18 @@ export const TripsPage: React.FC = () => {
                           </div>
                          )}
                       </td>
-                       <td className="w-[126px] pl-0 pr-0 py-3 max-w-[126px]">
+                       <td className={`${isTableFullView ? 'w-[220px] max-w-[220px]' : 'w-[126px] max-w-[126px]'} pl-0 pr-0 py-3`}>
                          <button
                            type="button"
                            onClick={() => setSnapshotPreviewTrip(trip)}
-                           className="inline-flex h-7 max-w-[124px] flex-col justify-center leading-none text-[10px] font-black text-brand-900 dark:text-white uppercase text-left hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                           className={`inline-flex h-7 ${isTableFullView ? 'max-w-[216px]' : 'max-w-[124px]'} flex-col justify-center leading-none ${isTableFullView ? 'text-[11px]' : 'text-[10px]'} font-black text-brand-900 dark:text-white uppercase text-left hover:text-blue-700 dark:hover:text-blue-300 transition-colors`}
                            title="Open customer snapshot"
                            aria-label={`Open customer snapshot for ${trip.customerName}`}
                          >
-                          <span className="truncate max-w-[124px]">{clientNameParts[0] || trip.customerName}</span>
-                          <span className="truncate max-w-[124px] mt-0.5">{clientNameParts[1] || ''}</span>
+                          <span className={`truncate ${isTableFullView ? 'max-w-[216px]' : 'max-w-[124px]'}`}>{clientNameParts[0] || trip.customerName}</span>
+                          <span className={`truncate mt-0.5 ${isTableFullView ? 'max-w-[216px]' : 'max-w-[124px]'}`}>{clientNameParts[1] || ''}</span>
                          </button>
-                         <div className="text-[9px] font-bold text-slate-400 mt-0.5 truncate">{trip.customerPhone}</div>
+                         <div className={`${isTableFullView ? 'text-[10px]' : 'text-[9px]'} font-bold text-slate-400 mt-0.5 truncate`}>{trip.customerPhone}</div>
                          {indexMarkers.length > 0 && (
                           <div className="mt-1.5 flex flex-wrap gap-1">
                             {indexMarkers.map(marker => (
@@ -1757,7 +1832,7 @@ export const TripsPage: React.FC = () => {
                           </div>
                          )}
                       </td>
-                       <td className="w-[120px] pl-0.5 pr-0.5 py-3 max-w-[120px]">
+                       <td className={`${isTableFullView ? 'w-[280px] max-w-[280px]' : 'w-[120px] max-w-[120px]'} pl-0.5 pr-0.5 py-3`}>
                          <button
                            type="button"
                            onClick={() => openModal(trip, 'REQUOTE')}
@@ -1765,13 +1840,13 @@ export const TripsPage: React.FC = () => {
                            title="Open destination override and requote"
                            aria-label={`Open destination override and requote for trip ${trip.id}`}
                          >
-                         <div className="flex items-center text-[9px] font-bold text-slate-600 dark:text-slate-300">
+                         <div className={`flex items-center ${isTableFullView ? 'text-[10px]' : 'text-[9px]'} font-bold text-slate-600 dark:text-slate-300`}>
                            <MapPin size={10} className="text-gold-600 mr-1 flex-shrink-0" />
-                            <span className="truncate">{trip.pickupText.split(',')[0]}</span>
+                            <span className={`truncate ${isTableFullView ? 'max-w-[248px]' : 'max-w-[90px]'}`}>{trip.pickupText.split(',')[0]}</span>
                          </div>
-                         <div className="flex items-center text-[9px] font-bold text-slate-400 mt-1 ml-1.5">
+                         <div className={`flex items-center ${isTableFullView ? 'text-[10px]' : 'text-[9px]'} font-bold text-slate-400 mt-1 ml-1.5`}>
                            <Navigation size={10} className="text-blue-500 mr-1 flex-shrink-0" />
-                            <span className="truncate">{trip.destinationText.split(',')[0]}</span>
+                            <span className={`truncate ${isTableFullView ? 'max-w-[244px]' : 'max-w-[86px]'}`}>{trip.destinationText.split(',')[0]}</span>
                          </div>
                          {(trip.stops?.length || 0) > 0 && (
                           <div className="mt-1 ml-1.5 space-y-0.5">
@@ -1779,7 +1854,7 @@ export const TripsPage: React.FC = () => {
                               {trip.stops!.length} stop(s)
                             </p>
                             {stopPreview && (
-                              <p className="text-[8px] font-bold text-slate-500 dark:text-slate-300 truncate max-w-[220px]">
+                              <p className={`${isTableFullView ? 'text-[9px]' : 'text-[8px]'} font-bold text-slate-500 dark:text-slate-300 truncate ${isTableFullView ? 'max-w-[244px]' : 'max-w-[90px]'}`}>
                                 {stopPreview}
                               </p>
                             )}
@@ -1787,7 +1862,7 @@ export const TripsPage: React.FC = () => {
                          )}
                            </button>
                       </td>
-                      <td className="w-[96px] pl-0.5 pr-0 py-3 max-w-[96px]">
+                      <td className={`${isTableFullView ? 'w-[120px] max-w-[120px]' : 'w-[96px] max-w-[96px]'} pl-0.5 pr-0 py-3`}>
                          <div className="inline-flex items-center gap-1.5">
                            <div className="text-[10px] font-black text-brand-900 dark:text-white">${trip.fareUsd}</div>
                            <div className="text-[10px] font-black text-brand-900 dark:text-white">+{trafficMetrics.surplusMin}m</div>
@@ -1820,7 +1895,7 @@ export const TripsPage: React.FC = () => {
                            </span>
                          </div>
                       </td>
-                       <td className="w-[100px] px-0.5 py-3 max-w-[100px] text-center">
+                       <td className={`${isTableFullView ? 'w-[120px] max-w-[120px]' : 'w-[100px] max-w-[100px]'} px-0.5 py-3 text-center`}>
                          <div className="flex w-full items-center justify-center">
                            {driver ? (
                             <button
@@ -2007,7 +2082,6 @@ export const TripsPage: React.FC = () => {
                 <div key={trip.id} className="bg-white dark:bg-brand-900 rounded-[2rem] border border-slate-200 dark:border-brand-800 shadow-sm p-6 hover:shadow-xl transition-all group relative overflow-hidden">
                   {/* Visual Accent */}
                   <div className={`absolute top-0 left-0 w-full h-1 ${trip.status === TripStatus.COMPLETED ? 'bg-emerald-500' : 'bg-gold-500 opacity-20'}`} />
-                  
                   <div className="flex justify-between items-start mb-6">
                      <div className="flex items-center space-x-3">
                         <div className="flex items-center space-x-1.5">
@@ -2039,7 +2113,6 @@ export const TripsPage: React.FC = () => {
                           type="button"
                           onClick={() => openInlineScheduleEditor(trip)}
                           className={`text-right transition-colors ${inlineScheduleTripId === trip.id ? 'opacity-40 pointer-events-none' : 'hover:text-blue-700 dark:hover:text-blue-300'}`}
-                          title="Edit scheduled pickup time"
                           aria-label={`Edit schedule for trip ${trip.id}`}
                         >
                           <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">{format(tripDate, 'MMM d')}</p>
@@ -2088,7 +2161,13 @@ export const TripsPage: React.FC = () => {
                   </div>
 
                   <div className="space-y-4 mb-8">
-                     <div className="bg-slate-50 dark:bg-brand-950/50 p-4 rounded-2xl border border-slate-100 dark:border-brand-800 space-y-3 relative">
+                    <button
+                      type="button"
+                      onClick={() => openModal(trip, 'REQUOTE')}
+                      className="w-full bg-slate-50 dark:bg-brand-950/50 p-4 rounded-2xl border border-slate-100 dark:border-brand-800 space-y-3 relative text-left hover:border-blue-200 dark:hover:border-blue-900/40 transition-colors"
+                      title="Open destination override and requote"
+                      aria-label={`Open destination override and requote for trip ${trip.id}`}
+                    >
                         <div className="flex items-start space-x-3">
                            <div className="mt-1 w-1.5 h-1.5 rounded-full bg-gold-600 flex-shrink-0" />
                            <p className="text-[10px] font-black text-brand-900 dark:text-slate-300 uppercase leading-tight line-clamp-1">{trip.pickupText.split(',')[0]}</p>
@@ -2106,7 +2185,7 @@ export const TripsPage: React.FC = () => {
                          )}
                         </div>
                       )}
-                     </div>
+                     </button>
                      
                      <div className="flex justify-between items-end bg-white dark:bg-brand-900 px-2">
                         <div>
@@ -2115,7 +2194,6 @@ export const TripsPage: React.FC = () => {
                              type="button"
                              onClick={() => setSnapshotPreviewTrip(trip)}
                              className="text-xs font-black text-brand-900 dark:text-white uppercase truncate max-w-[150px] hover:text-blue-700 dark:hover:text-blue-300 transition-colors text-left"
-                             title="Open customer snapshot"
                              aria-label={`Open customer snapshot for ${trip.customerName}`}
                            >
                              {trip.customerName}
@@ -2142,7 +2220,6 @@ export const TripsPage: React.FC = () => {
                               type="button"
                               onClick={() => setUnitSnapshotDriverId(driver.id)}
                               className="text-xs font-black uppercase text-slate-900 dark:text-slate-300 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
-                              title={`Open unit snapshot for ${driver.name}`}
                               aria-label={`Open unit snapshot for ${driver.name}`}
                             >
                               {driver.name.split(' ')[0]}
@@ -2178,10 +2255,22 @@ export const TripsPage: React.FC = () => {
                        </div>
                      </div>
                      <div className="flex items-center space-x-2">
-                        <button onClick={() => copyToClipboard(getCustomerTemplate(trip), 'customer', trip.id)} className={`p-2.5 rounded-xl transition-all ${copiedType === `customer-${trip.id}` ? 'bg-emerald-500 text-white' : 'bg-slate-50 dark:bg-brand-950 text-slate-400 border border-slate-100 dark:border-white/5'}`}>
+                        <button
+                          onClick={() => copyToClipboard(getCustomerTemplate(trip), 'customer', trip.id)}
+                          title={copiedType === `customer-${trip.id}` ? 'Client message copied' : 'Copy client confirmation message'}
+                          aria-label={copiedType === `customer-${trip.id}` ? 'Client message copied' : 'Copy client confirmation message'}
+                          className={`p-2.5 rounded-xl transition-all ${copiedType === `customer-${trip.id}` ? 'bg-emerald-500 text-white' : 'bg-slate-50 dark:bg-brand-950 text-slate-400 border border-slate-100 dark:border-white/5'}`}
+                        >
                            {copiedType === `customer-${trip.id}` ? <Check size={14}/> : <UserCheck size={14}/>}
                         </button>
-                        <button onClick={() => openModal(trip)} className="p-2.5 bg-brand-900 text-gold-400 rounded-xl shadow-lg shadow-brand-900/10 hover:scale-105 active:scale-95 transition-all"><Settings size={18}/></button>
+                        <button
+                          onClick={() => openModal(trip)}
+                          title="Open mission command"
+                          aria-label={`Open mission command for trip ${trip.id}`}
+                          className="p-2.5 bg-brand-900 text-gold-400 rounded-xl shadow-lg shadow-brand-900/10 hover:scale-105 active:scale-95 transition-all"
+                        >
+                          <Settings size={18}/>
+                        </button>
                      </div>
                   </div>
                 </div>
@@ -2483,10 +2572,17 @@ const TripUpdateModal: React.FC<{
   customerSnapshot?: CustomerSnapshot;
   onAssignLocation: (trip: Trip, target: 'HOME' | 'BUSINESS' | 'FREQUENT' | 'SMART_PICKUP', source: 'PICKUP' | 'DROPOFF') => string;
   onSetCustomerPriority: (trip: Trip, tier: 'VIP' | 'VVIP') => string;
-  onRequoteDestination: (trip: Trip, destinationInput: string, stopInputs: string[]) => Promise<{ ok: true; updatedTrip: Trip } | { ok: false; reason: string }>;
+  onRequoteDestination: (trip: Trip, pickupInput: string, destinationInput: string, stopInputs: string[]) => Promise<{ ok: true; updatedTrip: Trip } | { ok: false; reason: string }>;
   onApplyRequote: (trip: Trip) => void;
   onDeleteCancelled: (trip: Trip) => void;
 }> = ({ trip, drivers, initialFocusTarget = 'DEFAULT', onClose, onSave, onCopy, onWhatsApp, customerPhone, operatorPhone, mapsApiKey, buildDriverTemplate, buildCustomerTemplate, buildOperatorTemplate, copiedType, customerSnapshot, onAssignLocation, onSetCustomerPriority, onRequoteDestination, onApplyRequote, onDeleteCancelled }) => {
+  type PlaceAutocompleteSuggestion = {
+    placeId: string;
+    primaryText: string;
+    secondaryText: string;
+    fullText: string;
+  };
+
   const [status, setStatus] = useState<TripStatus>(trip.status);
   const [driverId, setDriverId] = useState<string>(trip.driverId || '');
   const [driverSearchQuery, setDriverSearchQuery] = useState('');
@@ -2498,6 +2594,19 @@ const TripUpdateModal: React.FC<{
   const [feedback, setFeedback] = useState<string>(trip.feedback || '');
   const [locationActionMessage, setLocationActionMessage] = useState('');
   const [priorityActionMessage, setPriorityActionMessage] = useState('');
+  const [pickupDraft, setPickupDraft] = useState<string>(trip.pickupOriginalLink || trip.pickupText);
+  const [pickupCandidate, setPickupCandidate] = useState<TripStop | null>(() => {
+    if (Number.isFinite(trip.pickupLat) && Number.isFinite(trip.pickupLng)) {
+      return {
+        text: trip.pickupText,
+        placeId: trip.pickupPlaceId || 'GEOCODED_PICKUP',
+        originalLink: trip.pickupOriginalLink,
+        lat: Number(trip.pickupLat),
+        lng: Number(trip.pickupLng),
+      };
+    }
+    return null;
+  });
   const [destinationDraft, setDestinationDraft] = useState<string>(trip.destinationOriginalLink || trip.destinationText);
   const [destinationCandidate, setDestinationCandidate] = useState<TripStop | null>(() => {
     if (Number.isFinite(trip.destLat) && Number.isFinite(trip.destLng)) {
@@ -2516,18 +2625,45 @@ const TripUpdateModal: React.FC<{
   const [quotePatch, setQuotePatch] = useState<Partial<Trip>>({});
   const [requoteMessage, setRequoteMessage] = useState('');
   const [requoteBusy, setRequoteBusy] = useState(false);
+  const [pickupSuggestions, setPickupSuggestions] = useState<PlaceAutocompleteSuggestion[]>([]);
+  const [destinationSuggestions, setDestinationSuggestions] = useState<PlaceAutocompleteSuggestion[]>([]);
+  const [showPickupSuggestions, setShowPickupSuggestions] = useState(false);
+  const [showDestinationSuggestions, setShowDestinationSuggestions] = useState(false);
+  const [showStopSuggestions, setShowStopSuggestions] = useState(false);
+  const [pickupSuggestionsLoading, setPickupSuggestionsLoading] = useState(false);
+  const [destinationSuggestionsLoading, setDestinationSuggestionsLoading] = useState(false);
+  const [stopSuggestionsLoading, setStopSuggestionsLoading] = useState(false);
+  const [isPickupFocused, setIsPickupFocused] = useState(false);
+  const [isDestinationFocused, setIsDestinationFocused] = useState(false);
+  const [activeStopSuggestionIndex, setActiveStopSuggestionIndex] = useState<number | null>(null);
+  const [stopSuggestions, setStopSuggestions] = useState<PlaceAutocompleteSuggestion[]>([]);
+  const pickupAutocompleteRequestRef = useRef(0);
+  const destinationAutocompleteRequestRef = useRef(0);
+  const stopAutocompleteRequestRef = useRef(0);
+  const pickupInputRef = useRef<HTMLInputElement>(null);
   const destinationInputRef = useRef<HTMLInputElement>(null);
   const requoteSectionRef = useRef<HTMLDivElement>(null);
   const stopInputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const driverSearchInputRef = useRef<HTMLInputElement>(null);
+  const triggerJumpAttention = (element: HTMLElement | null) => {
+    if (!element) return;
+    element.classList.remove('jump-attention-flash');
+    void element.offsetWidth;
+    element.classList.add('jump-attention-flash');
+    window.setTimeout(() => {
+      element.classList.remove('jump-attention-flash');
+    }, 950);
+  };
 
   useEffect(() => {
     if (initialFocusTarget !== 'REQUOTE') return;
 
     const timerId = window.setTimeout(() => {
       requoteSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      triggerJumpAttention(requoteSectionRef.current);
       destinationInputRef.current?.focus();
       destinationInputRef.current?.select();
+      triggerJumpAttention(destinationInputRef.current);
     }, 120);
 
     return () => window.clearTimeout(timerId);
@@ -2541,6 +2677,18 @@ const TripUpdateModal: React.FC<{
     setNotes(trip.notes || '');
     setRating(trip.rating);
     setFeedback(trip.feedback || '');
+    setPickupDraft(trip.pickupOriginalLink || trip.pickupText);
+    setPickupCandidate(
+      Number.isFinite(trip.pickupLat) && Number.isFinite(trip.pickupLng)
+        ? {
+            text: trip.pickupText,
+            placeId: trip.pickupPlaceId || 'GEOCODED_PICKUP',
+            originalLink: trip.pickupOriginalLink,
+            lat: Number(trip.pickupLat),
+            lng: Number(trip.pickupLng),
+          }
+        : null
+    );
     setDestinationDraft(trip.destinationOriginalLink || trip.destinationText);
     setDestinationCandidate(
       Number.isFinite(trip.destLat) && Number.isFinite(trip.destLng)
@@ -2560,7 +2708,208 @@ const TripUpdateModal: React.FC<{
     setLocationActionMessage('');
     setPriorityActionMessage('');
     setRequoteBusy(false);
+    setPickupSuggestions([]);
+    setDestinationSuggestions([]);
+    setShowPickupSuggestions(false);
+    setShowDestinationSuggestions(false);
+    setShowStopSuggestions(false);
+    setPickupSuggestionsLoading(false);
+    setDestinationSuggestionsLoading(false);
+    setStopSuggestionsLoading(false);
+    setIsPickupFocused(false);
+    setIsDestinationFocused(false);
+    setActiveStopSuggestionIndex(null);
+    setStopSuggestions([]);
   }, [trip]);
+
+  const fetchPlaceDetailsFromNewApi = async (placeId: string): Promise<TripStop | null> => {
+    const cleanedPlaceId = placeId.trim();
+    if (!cleanedPlaceId || !mapsApiKey.trim()) return null;
+
+    const response = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(cleanedPlaceId)}`, {
+      method: 'GET',
+      headers: {
+        'X-Goog-Api-Key': mapsApiKey,
+        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location',
+      },
+    });
+
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const lat = Number(payload?.location?.latitude);
+    const lng = Number(payload?.location?.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+    return {
+      text: String(payload?.formattedAddress || payload?.displayName?.text || ''),
+      placeId: String(payload?.id || cleanedPlaceId),
+      lat,
+      lng,
+    };
+  };
+
+  const fetchPlacesAutocompleteSuggestions = async (query: string): Promise<PlaceAutocompleteSuggestion[]> => {
+    const trimmed = query.trim();
+    if (!trimmed || !mapsApiKey.trim()) return [];
+
+    const response = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': mapsApiKey,
+        'X-Goog-FieldMask': 'suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat',
+      },
+      body: JSON.stringify({
+        input: trimmed,
+        languageCode: 'en',
+        regionCode: 'LB',
+        includeQueryPredictions: false,
+        locationBias: {
+          circle: {
+            center: { latitude: 33.8938, longitude: 35.5018 },
+            radius: 30000,
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) return [];
+    const payload = await response.json();
+    const rawSuggestions = Array.isArray(payload?.suggestions) ? payload.suggestions : [];
+
+    return rawSuggestions
+      .map((entry: any) => {
+        const prediction = entry?.placePrediction;
+        const placeId = String(prediction?.placeId || '').trim();
+        if (!placeId) return null;
+        const fullText = String(prediction?.text?.text || '').trim();
+        const primaryText = String(prediction?.structuredFormat?.mainText?.text || '').trim() || fullText;
+        const secondaryText = String(prediction?.structuredFormat?.secondaryText?.text || '').trim();
+        return {
+          placeId,
+          primaryText,
+          secondaryText,
+          fullText,
+        } as PlaceAutocompleteSuggestion;
+      })
+      .filter((entry: PlaceAutocompleteSuggestion | null): entry is PlaceAutocompleteSuggestion => Boolean(entry))
+      .slice(0, 8);
+  };
+
+  useEffect(() => {
+    if (!isPickupFocused) return;
+    const query = pickupDraft.trim();
+    if (query.length < 2 || !mapsApiKey.trim()) {
+      setPickupSuggestions([]);
+      setPickupSuggestionsLoading(false);
+      return;
+    }
+
+    const requestId = pickupAutocompleteRequestRef.current + 1;
+    pickupAutocompleteRequestRef.current = requestId;
+    setPickupSuggestionsLoading(true);
+
+    const timerId = window.setTimeout(async () => {
+      const suggestions = await fetchPlacesAutocompleteSuggestions(query);
+      if (requestId !== pickupAutocompleteRequestRef.current) return;
+      setPickupSuggestions(suggestions);
+      setPickupSuggestionsLoading(false);
+      setShowPickupSuggestions(true);
+    }, 180);
+
+    return () => window.clearTimeout(timerId);
+  }, [pickupDraft, isPickupFocused, mapsApiKey]);
+
+  useEffect(() => {
+    if (!isDestinationFocused) return;
+    const query = destinationDraft.trim();
+    if (query.length < 2 || !mapsApiKey.trim()) {
+      setDestinationSuggestions([]);
+      setDestinationSuggestionsLoading(false);
+      return;
+    }
+
+    const requestId = destinationAutocompleteRequestRef.current + 1;
+    destinationAutocompleteRequestRef.current = requestId;
+    setDestinationSuggestionsLoading(true);
+
+    const timerId = window.setTimeout(async () => {
+      const suggestions = await fetchPlacesAutocompleteSuggestions(query);
+      if (requestId !== destinationAutocompleteRequestRef.current) return;
+      setDestinationSuggestions(suggestions);
+      setDestinationSuggestionsLoading(false);
+      setShowDestinationSuggestions(true);
+    }, 180);
+
+    return () => window.clearTimeout(timerId);
+  }, [destinationDraft, isDestinationFocused, mapsApiKey]);
+
+  useEffect(() => {
+    if (activeStopSuggestionIndex === null) return;
+    const query = (stopsDraft[activeStopSuggestionIndex] || '').trim();
+    if (query.length < 2 || !mapsApiKey.trim()) {
+      setStopSuggestions([]);
+      setStopSuggestionsLoading(false);
+      return;
+    }
+
+    const requestId = stopAutocompleteRequestRef.current + 1;
+    stopAutocompleteRequestRef.current = requestId;
+    setStopSuggestionsLoading(true);
+
+    const timerId = window.setTimeout(async () => {
+      const suggestions = await fetchPlacesAutocompleteSuggestions(query);
+      if (requestId !== stopAutocompleteRequestRef.current) return;
+      setStopSuggestions(suggestions);
+      setStopSuggestionsLoading(false);
+      setShowStopSuggestions(true);
+    }, 180);
+
+    return () => window.clearTimeout(timerId);
+  }, [activeStopSuggestionIndex, stopsDraft, mapsApiKey]);
+
+  const handlePickupSuggestionSelect = async (suggestion: PlaceAutocompleteSuggestion) => {
+    setPickupDraft(suggestion.fullText || suggestion.primaryText);
+    setShowPickupSuggestions(false);
+    setPickupSuggestions([]);
+
+    const resolved = await fetchPlaceDetailsFromNewApi(suggestion.placeId);
+    if (resolved) {
+      setPickupDraft(resolved.text);
+      setPickupCandidate(resolved);
+    } else {
+      setPickupCandidate(null);
+    }
+  };
+
+  const handleDestinationSuggestionSelect = async (suggestion: PlaceAutocompleteSuggestion) => {
+    setDestinationDraft(suggestion.fullText || suggestion.primaryText);
+    setShowDestinationSuggestions(false);
+    setDestinationSuggestions([]);
+
+    const resolved = await fetchPlaceDetailsFromNewApi(suggestion.placeId);
+    if (resolved) {
+      setDestinationDraft(resolved.text);
+      setDestinationCandidate(resolved);
+    } else {
+      setDestinationCandidate(null);
+    }
+  };
+
+  const handleStopSuggestionSelect = async (stopIndex: number, suggestion: PlaceAutocompleteSuggestion) => {
+    setStopsDraft(prev => prev.map((entry, index) => index === stopIndex ? (suggestion.fullText || suggestion.primaryText) : entry));
+    setShowStopSuggestions(false);
+    setStopSuggestions([]);
+
+    const resolved = await fetchPlaceDetailsFromNewApi(suggestion.placeId);
+    if (resolved) {
+      setStopsDraft(prev => prev.map((entry, index) => index === stopIndex ? resolved.text : entry));
+      setStopCandidates(prev => prev.map((entry, index) => index === stopIndex ? resolved : entry));
+      return;
+    }
+
+    setStopCandidates(prev => prev.map((entry, index) => index === stopIndex ? null : entry));
+  };
 
   const recommendedDrivers = useMemo(() => {
     return [...drivers]
@@ -2666,6 +3015,18 @@ const TripUpdateModal: React.FC<{
   };
 
   const handleRequote = async () => {
+    const candidatePickupText = pickupDraft.trim();
+    const isValidPickupCandidate = Boolean(
+      pickupCandidate &&
+      Number.isFinite(pickupCandidate.lat) &&
+      Number.isFinite(pickupCandidate.lng) &&
+      pickupCandidate.text.trim().toLowerCase() === candidatePickupText.toLowerCase()
+    );
+
+    const candidatePickup = isValidPickupCandidate
+      ? `${Number(pickupCandidate!.lat).toFixed(6)},${Number(pickupCandidate!.lng).toFixed(6)}`
+      : candidatePickupText;
+
     const candidateDestinationText = destinationDraft.trim();
     const isValidDestinationCandidate = Boolean(
       destinationCandidate &&
@@ -2699,7 +3060,7 @@ const TripUpdateModal: React.FC<{
     const stopInputsForRequote = normalizedResolvedStops.map(stop => `${Number(stop.lat).toFixed(6)},${Number(stop.lng).toFixed(6)}`);
 
     setRequoteBusy(true);
-    const result = await onRequoteDestination(liveTrip, candidateDestination, stopInputsForRequote);
+  const result = await onRequoteDestination(liveTrip, candidatePickup, candidateDestination, stopInputsForRequote);
     setRequoteBusy(false);
 
     if (!result.ok) {
@@ -2709,6 +3070,18 @@ const TripUpdateModal: React.FC<{
 
     setQuotePatch(result.updatedTrip);
     onApplyRequote(result.updatedTrip);
+    setPickupDraft(result.updatedTrip.pickupOriginalLink || result.updatedTrip.pickupText);
+    setPickupCandidate(
+      Number.isFinite(result.updatedTrip.pickupLat) && Number.isFinite(result.updatedTrip.pickupLng)
+        ? {
+            text: result.updatedTrip.pickupText,
+            placeId: result.updatedTrip.pickupPlaceId || 'GEOCODED_PICKUP',
+            originalLink: result.updatedTrip.pickupOriginalLink,
+            lat: Number(result.updatedTrip.pickupLat),
+            lng: Number(result.updatedTrip.pickupLng),
+          }
+        : null
+    );
     setDestinationDraft(result.updatedTrip.destinationOriginalLink || result.updatedTrip.destinationText);
     setDestinationCandidate(
       Number.isFinite(result.updatedTrip.destLat) && Number.isFinite(result.updatedTrip.destLng)
@@ -2740,6 +3113,13 @@ const TripUpdateModal: React.FC<{
   };
 
   const removeStopField = (index: number) => {
+    if (activeStopSuggestionIndex === index) {
+      setActiveStopSuggestionIndex(null);
+      setShowStopSuggestions(false);
+      setStopSuggestions([]);
+      setStopSuggestionsLoading(false);
+    }
+
     setStopsDraft(prev => prev.filter((_, i) => i !== index));
     setStopCandidates(prev => prev.filter((_, i) => i !== index));
   };
@@ -2902,30 +3282,118 @@ const TripUpdateModal: React.FC<{
           </div>
 
           <div ref={requoteSectionRef} className="pt-4 border-t border-slate-100 dark:border-brand-800 space-y-3">
-            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block px-1">Destination Override + Requote</label>
+            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block px-1">Pickup + Destination Override Requote</label>
             <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                ref={destinationInputRef}
-                value={destinationDraft}
-                onChange={event => {
-                  const nextValue = event.target.value;
-                  setDestinationDraft(nextValue);
-                  setDestinationCandidate(prev => {
-                    if (!prev) return null;
-                    return prev.text.trim().toLowerCase() === nextValue.trim().toLowerCase() ? prev : null;
-                  });
-                }}
-                onBlur={event => {
-                  const trimmed = event.currentTarget.value.trim();
-                  setDestinationDraft(trimmed);
-                  setDestinationCandidate(prev => {
-                    if (!prev) return null;
-                    return prev.text.trim().toLowerCase() === trimmed.toLowerCase() ? prev : null;
-                  });
-                }}
-                placeholder="New destination address or Google Maps link"
-                className="flex-1 h-11 rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-bold uppercase tracking-wide outline-none focus:ring-2 focus:ring-gold-500"
-              />
+              <div className="relative flex-1">
+                <input
+                  ref={pickupInputRef}
+                  value={pickupDraft}
+                  onFocus={() => {
+                    setIsPickupFocused(true);
+                    if (pickupSuggestions.length > 0) setShowPickupSuggestions(true);
+                  }}
+                  onChange={event => {
+                    const nextValue = event.target.value;
+                    setPickupDraft(nextValue);
+                    setPickupCandidate(prev => {
+                      if (!prev) return null;
+                      return prev.text.trim().toLowerCase() === nextValue.trim().toLowerCase() ? prev : null;
+                    });
+                  }}
+                  onBlur={event => {
+                    const trimmed = event.currentTarget.value.trim();
+                    setPickupDraft(trimmed);
+                    setPickupCandidate(prev => {
+                      if (!prev) return null;
+                      return prev.text.trim().toLowerCase() === trimmed.toLowerCase() ? prev : null;
+                    });
+                    window.setTimeout(() => {
+                      setShowPickupSuggestions(false);
+                      setIsPickupFocused(false);
+                    }, 120);
+                  }}
+                  placeholder="Pickup override (address, place, restaurant, maps link)"
+                  className="w-full h-11 rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-bold uppercase tracking-wide outline-none focus:ring-2 focus:ring-gold-500"
+                />
+                {showPickupSuggestions && (pickupSuggestionsLoading || pickupSuggestions.length > 0) && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-xl max-h-56 overflow-y-auto">
+                    {pickupSuggestionsLoading ? (
+                      <p className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-slate-400">Loading places...</p>
+                    ) : (
+                      pickupSuggestions.map(suggestion => (
+                        <button
+                          key={`pickup-suggestion-${suggestion.placeId}`}
+                          type="button"
+                          onMouseDown={event => event.preventDefault()}
+                          onClick={() => handlePickupSuggestionSelect(suggestion)}
+                          className="w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-brand-950/60"
+                        >
+                          <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100 truncate">{suggestion.primaryText}</p>
+                          {suggestion.secondaryText && (
+                            <p className="text-[8px] font-bold text-slate-500 dark:text-slate-300 truncate">{suggestion.secondaryText}</p>
+                          )}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="relative flex-1">
+                <input
+                  ref={destinationInputRef}
+                  value={destinationDraft}
+                  onFocus={() => {
+                    setIsDestinationFocused(true);
+                    if (destinationSuggestions.length > 0) setShowDestinationSuggestions(true);
+                  }}
+                  onChange={event => {
+                    const nextValue = event.target.value;
+                    setDestinationDraft(nextValue);
+                    setDestinationCandidate(prev => {
+                      if (!prev) return null;
+                      return prev.text.trim().toLowerCase() === nextValue.trim().toLowerCase() ? prev : null;
+                    });
+                  }}
+                  onBlur={event => {
+                    const trimmed = event.currentTarget.value.trim();
+                    setDestinationDraft(trimmed);
+                    setDestinationCandidate(prev => {
+                      if (!prev) return null;
+                      return prev.text.trim().toLowerCase() === trimmed.toLowerCase() ? prev : null;
+                    });
+                    window.setTimeout(() => {
+                      setShowDestinationSuggestions(false);
+                      setIsDestinationFocused(false);
+                    }, 120);
+                  }}
+                  placeholder="Destination override (address, place, restaurant, maps link)"
+                  className="w-full h-11 rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-bold uppercase tracking-wide outline-none focus:ring-2 focus:ring-gold-500"
+                />
+                {showDestinationSuggestions && (destinationSuggestionsLoading || destinationSuggestions.length > 0) && (
+                  <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-xl max-h-56 overflow-y-auto">
+                    {destinationSuggestionsLoading ? (
+                      <p className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-slate-400">Loading places...</p>
+                    ) : (
+                      destinationSuggestions.map(suggestion => (
+                        <button
+                          key={`destination-suggestion-${suggestion.placeId}`}
+                          type="button"
+                          onMouseDown={event => event.preventDefault()}
+                          onClick={() => handleDestinationSuggestionSelect(suggestion)}
+                          className="w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-brand-950/60"
+                        >
+                          <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100 truncate">{suggestion.primaryText}</p>
+                          {suggestion.secondaryText && (
+                            <p className="text-[8px] font-bold text-slate-500 dark:text-slate-300 truncate">{suggestion.secondaryText}</p>
+                          )}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
               <Button onClick={handleRequote} disabled={requoteBusy} className="h-11 sm:px-5 text-[9px]">
                 {requoteBusy ? 'Requoting...' : 'Requote'}
               </Button>
@@ -2945,24 +3413,59 @@ const TripUpdateModal: React.FC<{
                 <div className="space-y-2">
                   {stopsDraft.map((stopValue, index) => (
                     <div key={`modal-stop-${index}`} className="flex items-center gap-2">
-                      <input
-                        ref={element => {
-                          stopInputRefs.current[index] = element;
-                        }}
-                        value={stopValue}
-                        onChange={event => updateStopField(index, event.target.value)}
-                        onBlur={event => {
-                          const trimmedValue = event.currentTarget.value.trim();
-                          setStopsDraft(prev => prev.map((entry, i) => (i === index ? trimmedValue : entry)));
-                          setStopCandidates(prev => prev.map((entry, i) => {
-                            if (i !== index) return entry;
-                            if (!entry) return null;
-                            return entry.text.trim().toLowerCase() === trimmedValue.toLowerCase() ? entry : null;
-                          }));
-                        }}
-                        placeholder={`Stop ${index + 1} address or maps link`}
-                        className="flex-1 h-9 rounded-lg border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-3 text-[10px] font-bold"
-                      />
+                      <div className="relative flex-1">
+                        <input
+                          ref={element => {
+                            stopInputRefs.current[index] = element;
+                          }}
+                          value={stopValue}
+                          onFocus={() => {
+                            setActiveStopSuggestionIndex(index);
+                            if (stopSuggestions.length > 0) setShowStopSuggestions(true);
+                          }}
+                          onChange={event => {
+                            updateStopField(index, event.target.value);
+                            setActiveStopSuggestionIndex(index);
+                          }}
+                          onBlur={event => {
+                            const trimmedValue = event.currentTarget.value.trim();
+                            setStopsDraft(prev => prev.map((entry, i) => (i === index ? trimmedValue : entry)));
+                            setStopCandidates(prev => prev.map((entry, i) => {
+                              if (i !== index) return entry;
+                              if (!entry) return null;
+                              return entry.text.trim().toLowerCase() === trimmedValue.toLowerCase() ? entry : null;
+                            }));
+                            window.setTimeout(() => {
+                              setShowStopSuggestions(false);
+                              setActiveStopSuggestionIndex(null);
+                            }, 120);
+                          }}
+                          placeholder={`Stop ${index + 1} address or maps link`}
+                          className="flex-1 h-9 w-full rounded-lg border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 px-3 text-[10px] font-bold"
+                        />
+                        {showStopSuggestions && activeStopSuggestionIndex === index && (stopSuggestionsLoading || stopSuggestions.length > 0) && (
+                          <div className="absolute left-0 right-0 top-[calc(100%+0.25rem)] z-40 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-xl max-h-56 overflow-y-auto">
+                            {stopSuggestionsLoading ? (
+                              <p className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-slate-400">Loading places...</p>
+                            ) : (
+                              stopSuggestions.map(suggestion => (
+                                <button
+                                  key={`stop-suggestion-${index}-${suggestion.placeId}`}
+                                  type="button"
+                                  onMouseDown={event => event.preventDefault()}
+                                  onClick={() => handleStopSuggestionSelect(index, suggestion)}
+                                  className="w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-brand-950/60"
+                                >
+                                  <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100 truncate">{suggestion.primaryText}</p>
+                                  {suggestion.secondaryText && (
+                                    <p className="text-[8px] font-bold text-slate-500 dark:text-slate-300 truncate">{suggestion.secondaryText}</p>
+                                  )}
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
                       <button
                         type="button"
                         onClick={() => removeStopField(index)}

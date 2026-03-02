@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState, useRef, useEffect } from 'react';
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useStore } from '../context/StoreContext';
 import { Trip, TripStatus, Driver, Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, DriverFuelLogEntry, DriverCostResponsibility, DriverVehicleOwnership, Settings, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle, TripPaymentMode, TripSettlementStatus } from '../types';
@@ -201,6 +201,13 @@ interface SearchSuggestion {
   loyaltyTier?: 'VIP' | 'VVIP';
 }
 
+interface CrmPlaceAutocompleteSuggestion {
+  placeId: string;
+  primaryText: string;
+  secondaryText?: string;
+  fullText: string;
+}
+
 interface PendingVaultImport {
   fileName: string;
   payload: unknown;
@@ -261,7 +268,7 @@ const getLoyaltyTierTone = (tier?: 'VIP' | 'VVIP' | 'REGULAR' | 'NEW') => {
 };
 
 export const CRMPage: React.FC = () => {
-  const { trips, drivers, customers, creditLedger, receipts, alerts, settings, editDriver, addDriver, addCustomers, removeCustomerByPhone, addCreditLedgerEntry, settleCreditLedgerEntry, removeDriver, refreshData, hardResetCloudSync } = useStore();
+  const { trips, deletedTrips, drivers, customers, creditLedger, receipts, alerts, settings, editDriver, addDriver, addCustomers, removeCustomerByPhone, addCreditLedgerEntry, settleCreditLedgerEntry, removeDriver, refreshData, hardResetCloudSync } = useStore();
   const location = useLocation();
   const [activeView, setActiveView] = useState<ViewMode>('CUSTOMERS');
   const [metricsWindow, setMetricsWindow] = useState<'TODAY' | '7D' | '30D' | 'ALL'>('ALL');
@@ -276,6 +283,8 @@ export const CRMPage: React.FC = () => {
   const [pendingVaultImport, setPendingVaultImport] = useState<PendingVaultImport | null>(null);
   const [vaultSyncStatus, setVaultSyncStatus] = useState<'IDLE' | 'CHECKING' | 'VERIFIED' | 'NOT_VERIFIED'>('IDLE');
   const [vaultSyncDetail, setVaultSyncDetail] = useState('');
+  const [vaultLastVerifiedAt, setVaultLastVerifiedAt] = useState<number | null>(null);
+  const [vaultSyncConsecutiveFailures, setVaultSyncConsecutiveFailures] = useState(0);
   const [pendingContactsImport, setPendingContactsImport] = useState<PendingContactsImport | null>(null);
   const [coreStatusMessage, setCoreStatusMessage] = useState('');
   const [showSearchSuggestions, setShowSearchSuggestions] = useState(false);
@@ -287,9 +296,27 @@ export const CRMPage: React.FC = () => {
   const mobileCoreEligible = activeView === 'CUSTOMERS' || activeView === 'FLEET';
   const showMobileCorePanel = mobileCoreEligible && !selectedItem && mobilePaneMode === 'CORE';
   const showDetailPanel = Boolean(selectedItem || showOverviewMode || showMobileCorePanel);
-  const syncChannel = useMemo(() => getCloudSyncDocId(), [vaultStatusMessage]);
+  const syncChannel = getCloudSyncDocId();
+  const localVaultSyncFingerprint = useMemo(
+    () => createSyncSignature(Storage.getFullSystemData({ includeSettings: true })),
+    [trips, deletedTrips, drivers, customers, alerts, creditLedger, receipts, settings]
+  );
   const contactPickerSupported = typeof navigator !== 'undefined' && typeof (navigator as any).contacts?.select === 'function';
   const savedPlacesSectionId = (phone: string) => `saved-places-${customerPhoneKey(phone)}`;
+  const triggerJumpAttention = (element: HTMLElement | null) => {
+    if (!element) return;
+    element.classList.remove('jump-attention-flash');
+    void element.offsetWidth;
+    element.classList.add('jump-attention-flash');
+    window.setTimeout(() => {
+      element.classList.remove('jump-attention-flash');
+    }, 950);
+  };
+
+  const handleJumpToFleetDriver = useCallback((driverId: string) => {
+    setActiveView('FLEET');
+    setSelectedItem(driverId);
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -322,6 +349,7 @@ export const CRMPage: React.FC = () => {
       const section = document.getElementById(targetId);
       if (!section) return;
       section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      triggerJumpAttention(section);
     }, 120);
   };
 
@@ -749,29 +777,13 @@ export const CRMPage: React.FC = () => {
   }, [trips, drivers, metricsWindow, settings.fuelPriceUsdPerLiter, settings.ownerDriverCompanySharePercent, settings.companyCarDriverGasCompanySharePercent, settings.otherDriverCompanySharePercent]);
 
   const financeTotals = useMemo((): FinanceTotals => {
-    const completedTrips = trips.filter(t => t.status === TripStatus.COMPLETED && isTripInMetricsWindow(t));
-    const grossRevenue = completedTrips.reduce((acc, t) => acc + t.fareUsd, 0);
-    const companyOwed = drivers.reduce((acc, d) => {
-      const driverTrips = completedTrips.filter(t => t.driverId === d.id);
-      const driverRevenue = driverTrips.reduce((sum, t) => sum + t.fareUsd, 0);
-      return acc + (driverRevenue * getCompanyShareForDriver(d, settings).rate);
-    }, 0);
-    const totalGasSpent = drivers.reduce((acc, d) => {
-      const driverTrips = completedTrips.filter(t => t.driverId === d.id);
-      const driverDistance = driverTrips.reduce((sum, t) => sum + t.distanceKm, 0);
-      const scopedFuel = getDriverFuelUsdForWindow(d, driverDistance);
-      return acc + (scopedFuel * getFuelCostWeight(d.fuelCostResponsibility));
-    }, 0);
-    const completedCount = completedTrips.length;
-    const cashSettledRevenue = completedTrips
-      .filter(t => getTripPaymentMode(t) === 'CASH' && getTripSettlementStatus(t) !== 'PENDING')
-      .reduce((acc, t) => acc + t.fareUsd, 0);
-    const openCreditRevenue = completedTrips
-      .filter(t => getTripPaymentMode(t) === 'CREDIT' && getTripSettlementStatus(t) === 'PENDING')
-      .reduce((acc, t) => acc + t.fareUsd, 0);
-    const receiptedRevenue = completedTrips
-      .filter(t => getTripSettlementStatus(t) === 'RECEIPTED')
-      .reduce((acc, t) => acc + t.fareUsd, 0);
+    const grossRevenue = financeRows.reduce((sum, row) => sum + row.grossRevenue, 0);
+    const companyOwed = financeRows.reduce((sum, row) => sum + row.companyOwed, 0);
+    const totalGasSpent = financeRows.reduce((sum, row) => sum + (row.grossRevenue - row.netAlpha), 0);
+    const completedCount = financeRows.reduce((sum, row) => sum + row.completedTrips, 0);
+    const cashSettledRevenue = financeRows.reduce((sum, row) => sum + row.cashSettledRevenue, 0);
+    const openCreditRevenue = financeRows.reduce((sum, row) => sum + row.openCreditRevenue, 0);
+    const receiptedRevenue = financeRows.reduce((sum, row) => sum + row.receiptedRevenue, 0);
 
     return {
       grossRevenue,
@@ -785,7 +797,7 @@ export const CRMPage: React.FC = () => {
       openCreditRevenue,
       receiptedRevenue,
     };
-  }, [trips, drivers, metricsWindow, settings.exchangeRate, settings.fuelPriceUsdPerLiter, settings.ownerDriverCompanySharePercent, settings.companyCarDriverGasCompanySharePercent, settings.otherDriverCompanySharePercent]);
+  }, [financeRows]);
 
   const vaultItems = useMemo((): VaultFeedItem[] => {
     return [
@@ -852,11 +864,14 @@ export const CRMPage: React.FC = () => {
       if (audit.ok) {
         setVaultSyncStatus('VERIFIED');
         setVaultSyncDetail('Vault sync verified across cloud and local state.');
+        setVaultLastVerifiedAt(Date.now());
+        setVaultSyncConsecutiveFailures(0);
         return;
       }
 
       setVaultSyncStatus('NOT_VERIFIED');
       setVaultSyncDetail(audit.reason || 'Vault sync verification failed.');
+      setVaultSyncConsecutiveFailures(previous => previous + 1);
     };
 
     void evaluate();
@@ -868,7 +883,26 @@ export const CRMPage: React.FC = () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [activeView, trips.length, drivers.length, customers.length, alerts.length]);
+  }, [activeView, localVaultSyncFingerprint]);
+
+  const handleVaultRetrySyncAudit = async () => {
+    setVaultSyncStatus('CHECKING');
+    const audit = await runVaultSyncAudit();
+
+    if (audit.ok) {
+      setVaultSyncStatus('VERIFIED');
+      setVaultSyncDetail('Vault sync verified across cloud and local state.');
+      setVaultLastVerifiedAt(Date.now());
+      setVaultSyncConsecutiveFailures(0);
+      setVaultStatusMessage('Vault sync check completed successfully.');
+      return;
+    }
+
+    setVaultSyncStatus('NOT_VERIFIED');
+    setVaultSyncDetail(audit.reason || 'Vault sync verification failed.');
+    setVaultSyncConsecutiveFailures(previous => previous + 1);
+    setVaultStatusMessage(`Vault sync check failed: ${audit.reason || 'unknown reason'}`);
+  };
 
   const handleVaultExport = async () => {
     setVaultBusyAction('EXPORT');
@@ -1663,6 +1697,8 @@ export const CRMPage: React.FC = () => {
       return;
     }
 
+    let receiptPrinted = false;
+
     if (result.receipt) {
       const receipt = result.receipt;
       const escapeHtml = (value: string) => value
@@ -1745,10 +1781,11 @@ export const CRMPage: React.FC = () => {
         receiptWindow.document.open();
         receiptWindow.document.write(html);
         receiptWindow.document.close();
+        receiptPrinted = true;
       }
     }
 
-    showCoreStatus('Credit entry settled and printable receipt generated.');
+    showCoreStatus(receiptPrinted ? 'Credit entry settled and printable receipt generated.' : 'Credit entry settled. Receipt popup was blocked.');
   };
 
   const renderIntelligenceContent = () => {
@@ -1778,10 +1815,12 @@ export const CRMPage: React.FC = () => {
         return (
           <VaultConsoleView
             selectedActionId={null}
-            counts={{ trips: trips.length, drivers: drivers.length, customers: customers.length, alerts: alerts.length }}
+            counts={{ trips: trips.length, deletedTrips: deletedTrips.length, drivers: drivers.length, customers: customers.length, alerts: alerts.length }}
             statusMessage={vaultStatusMessage}
             syncStatus={vaultSyncStatus}
             syncDetail={vaultSyncDetail}
+            lastVerifiedAt={vaultLastVerifiedAt}
+            consecutiveFailures={vaultSyncConsecutiveFailures}
             syncChannel={syncChannel}
             clearArmed={vaultClearArmed}
             busyAction={vaultBusyAction}
@@ -1793,6 +1832,7 @@ export const CRMPage: React.FC = () => {
             onClear={handleVaultClear}
             onCancelClear={handleVaultClearCancel}
             onCopySyncChannel={handleCopySyncChannel}
+            onRetrySyncAudit={handleVaultRetrySyncAudit}
           />
         );
       }
@@ -1811,7 +1851,8 @@ export const CRMPage: React.FC = () => {
       return (
         <CustomerIntelligenceView
           profile={profile}
-          onJumpToDriver={(id) => { setActiveView('FLEET'); setSelectedItem(id); }}
+          mapsApiKey={settings.googleMapsApiKey}
+          onJumpToDriver={handleJumpToFleetDriver}
           onUpdateSegments={handleUpdateCustomerSegments}
           onUpdateGender={handleUpdateCustomerGender}
           onUpdateEntityType={handleUpdateCustomerEntityType}
@@ -1864,10 +1905,12 @@ export const CRMPage: React.FC = () => {
       return (
         <VaultConsoleView
           selectedActionId={selectedItem}
-          counts={{ trips: trips.length, drivers: drivers.length, customers: customers.length, alerts: alerts.length }}
+          counts={{ trips: trips.length, deletedTrips: deletedTrips.length, drivers: drivers.length, customers: customers.length, alerts: alerts.length }}
           statusMessage={vaultStatusMessage}
           syncStatus={vaultSyncStatus}
           syncDetail={vaultSyncDetail}
+          lastVerifiedAt={vaultLastVerifiedAt}
+          consecutiveFailures={vaultSyncConsecutiveFailures}
           syncChannel={syncChannel}
           clearArmed={vaultClearArmed}
           busyAction={vaultBusyAction}
@@ -1879,6 +1922,7 @@ export const CRMPage: React.FC = () => {
           onClear={handleVaultClear}
           onCancelClear={handleVaultClearCancel}
           onCopySyncChannel={handleCopySyncChannel}
+          onRetrySyncAudit={handleVaultRetrySyncAudit}
         />
       );
     }
@@ -2439,6 +2483,7 @@ export const CRMPage: React.FC = () => {
 
 const CustomerIntelligenceView: React.FC<{
   profile: EnhancedCustomerProfile,
+  mapsApiKey?: string,
   onJumpToDriver: (id: string) => void,
   onUpdateSegments: (profile: EnhancedCustomerProfile, nextSegments: CustomerMarketSegment[]) => void,
   onUpdateGender: (profile: EnhancedCustomerProfile, nextGender: CustomerGender) => void,
@@ -2452,7 +2497,7 @@ const CustomerIntelligenceView: React.FC<{
     businessMapOrCoords: string;
     frequentLocationsText: string;
   }) => void,
-}> = ({ profile, onJumpToDriver, onUpdateSegments, onUpdateGender, onUpdateEntityType, onUpdateProfession, onRemoveProfile, onUpdateLocations }) => {
+}> = ({ profile, mapsApiKey, onJumpToDriver, onUpdateSegments, onUpdateGender, onUpdateEntityType, onUpdateProfession, onRemoveProfile, onUpdateLocations }) => {
   const profileTierTone = getLoyaltyTierTone(profile.loyaltyTier);
   const activeSegments = profile.marketSegments || [];
   const hasSingleSegment = activeSegments.length === 1;
@@ -2467,6 +2512,160 @@ const CustomerIntelligenceView: React.FC<{
   const [businessAddressDraft, setBusinessAddressDraft] = useState(profile.businessLocation?.address || '');
   const [businessMapDraft, setBusinessMapDraft] = useState(profile.businessLocation?.mapsLink || (typeof profile.businessLocation?.lat === 'number' && typeof profile.businessLocation?.lng === 'number' ? `${profile.businessLocation.lat},${profile.businessLocation.lng}` : ''));
   const [frequentLocationsDraft, setFrequentLocationsDraft] = useState((profile.frequentLocations || []).map(location => location.mapsLink || location.address).join('\n'));
+  const [homeSuggestions, setHomeSuggestions] = useState<CrmPlaceAutocompleteSuggestion[]>([]);
+  const [businessSuggestions, setBusinessSuggestions] = useState<CrmPlaceAutocompleteSuggestion[]>([]);
+  const [showHomeSuggestions, setShowHomeSuggestions] = useState(false);
+  const [showBusinessSuggestions, setShowBusinessSuggestions] = useState(false);
+  const [homeSuggestionsLoading, setHomeSuggestionsLoading] = useState(false);
+  const [businessSuggestionsLoading, setBusinessSuggestionsLoading] = useState(false);
+  const homeAutocompleteRequestRef = useRef(0);
+  const businessAutocompleteRequestRef = useRef(0);
+  const normalizedMapsApiKey = (mapsApiKey || '').trim();
+
+  const fetchCrmPlacesAutocompleteSuggestions = async (query: string): Promise<CrmPlaceAutocompleteSuggestion[]> => {
+    const trimmed = query.trim();
+    if (!trimmed || !normalizedMapsApiKey) return [];
+
+    const response = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': normalizedMapsApiKey,
+        'X-Goog-FieldMask': 'suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat',
+      },
+      body: JSON.stringify({
+        input: trimmed,
+        languageCode: 'en',
+        regionCode: 'LB',
+        includeQueryPredictions: false,
+        locationBias: {
+          circle: {
+            center: { latitude: 33.8938, longitude: 35.5018 },
+            radius: 30000,
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) return [];
+    const payload = await response.json();
+    const rawSuggestions = Array.isArray(payload?.suggestions) ? payload.suggestions : [];
+
+    return rawSuggestions
+      .map((entry: any) => {
+        const prediction = entry?.placePrediction;
+        const placeId = String(prediction?.placeId || '').trim();
+        if (!placeId) return null;
+        const fullText = String(prediction?.text?.text || '').trim();
+        const primaryText = String(prediction?.structuredFormat?.mainText?.text || '').trim() || fullText;
+        const secondaryText = String(prediction?.structuredFormat?.secondaryText?.text || '').trim();
+        return {
+          placeId,
+          primaryText,
+          secondaryText,
+          fullText,
+        } as CrmPlaceAutocompleteSuggestion;
+      })
+      .filter((entry: CrmPlaceAutocompleteSuggestion | null): entry is CrmPlaceAutocompleteSuggestion => Boolean(entry))
+      .slice(0, 8);
+  };
+
+  const fetchCrmPlaceDetails = async (placeId: string): Promise<{ address: string; mapsLink: string } | null> => {
+    const cleanedPlaceId = placeId.trim();
+    if (!cleanedPlaceId || !normalizedMapsApiKey) return null;
+
+    const response = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(cleanedPlaceId)}`, {
+      method: 'GET',
+      headers: {
+        'X-Goog-Api-Key': normalizedMapsApiKey,
+        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location',
+      },
+    });
+
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const address = String(payload?.formattedAddress || payload?.displayName?.text || '').trim();
+    const lat = Number(payload?.location?.latitude);
+    const lng = Number(payload?.location?.longitude);
+    if (!address || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+    return {
+      address,
+      mapsLink: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lng}`)}`,
+    };
+  };
+
+  const handleHomeSuggestionSelect = async (suggestion: CrmPlaceAutocompleteSuggestion) => {
+    const prefetchedText = suggestion.fullText || suggestion.primaryText;
+    setHomeAddressDraft(prefetchedText);
+    setShowHomeSuggestions(false);
+    setHomeSuggestions([]);
+
+    const resolved = await fetchCrmPlaceDetails(suggestion.placeId);
+    if (!resolved) return;
+    setHomeAddressDraft(resolved.address);
+    setHomeMapDraft(resolved.mapsLink);
+  };
+
+  const handleBusinessSuggestionSelect = async (suggestion: CrmPlaceAutocompleteSuggestion) => {
+    const prefetchedText = suggestion.fullText || suggestion.primaryText;
+    setBusinessAddressDraft(prefetchedText);
+    setShowBusinessSuggestions(false);
+    setBusinessSuggestions([]);
+
+    const resolved = await fetchCrmPlaceDetails(suggestion.placeId);
+    if (!resolved) return;
+    setBusinessAddressDraft(resolved.address);
+    setBusinessMapDraft(resolved.mapsLink);
+  };
+
+  useEffect(() => {
+    if (!showHomeSuggestions) return;
+    const query = homeAddressDraft.trim();
+    if (query.length < 2 || !normalizedMapsApiKey) {
+      setHomeSuggestions([]);
+      setHomeSuggestionsLoading(false);
+      return;
+    }
+
+    const requestId = homeAutocompleteRequestRef.current + 1;
+    homeAutocompleteRequestRef.current = requestId;
+    setHomeSuggestionsLoading(true);
+
+    const timerId = window.setTimeout(async () => {
+      const suggestions = await fetchCrmPlacesAutocompleteSuggestions(query);
+      if (requestId !== homeAutocompleteRequestRef.current) return;
+      setHomeSuggestions(suggestions);
+      setHomeSuggestionsLoading(false);
+      setShowHomeSuggestions(true);
+    }, 180);
+
+    return () => window.clearTimeout(timerId);
+  }, [showHomeSuggestions, homeAddressDraft, normalizedMapsApiKey]);
+
+  useEffect(() => {
+    if (!showBusinessSuggestions) return;
+    const query = businessAddressDraft.trim();
+    if (query.length < 2 || !normalizedMapsApiKey) {
+      setBusinessSuggestions([]);
+      setBusinessSuggestionsLoading(false);
+      return;
+    }
+
+    const requestId = businessAutocompleteRequestRef.current + 1;
+    businessAutocompleteRequestRef.current = requestId;
+    setBusinessSuggestionsLoading(true);
+
+    const timerId = window.setTimeout(async () => {
+      const suggestions = await fetchCrmPlacesAutocompleteSuggestions(query);
+      if (requestId !== businessAutocompleteRequestRef.current) return;
+      setBusinessSuggestions(suggestions);
+      setBusinessSuggestionsLoading(false);
+      setShowBusinessSuggestions(true);
+    }, 180);
+
+    return () => window.clearTimeout(timerId);
+  }, [showBusinessSuggestions, businessAddressDraft, normalizedMapsApiKey]);
 
   useEffect(() => {
     setProfessionDraft(profile.profession || '');
@@ -2478,6 +2677,12 @@ const CustomerIntelligenceView: React.FC<{
     setBusinessAddressDraft(profile.businessLocation?.address || '');
     setBusinessMapDraft(profile.businessLocation?.mapsLink || (typeof profile.businessLocation?.lat === 'number' && typeof profile.businessLocation?.lng === 'number' ? `${profile.businessLocation.lat},${profile.businessLocation.lng}` : ''));
     setFrequentLocationsDraft((profile.frequentLocations || []).map(location => location.mapsLink || location.address).join('\n'));
+    setShowHomeSuggestions(false);
+    setShowBusinessSuggestions(false);
+    setHomeSuggestions([]);
+    setBusinessSuggestions([]);
+    setHomeSuggestionsLoading(false);
+    setBusinessSuggestionsLoading(false);
   }, [profile.homeLocation, profile.businessLocation, profile.frequentLocations, profile.phone]);
 
   const toggleSegment = (segment: CustomerMarketSegment) => {
@@ -2786,13 +2991,46 @@ const CustomerIntelligenceView: React.FC<{
       </div>
       <div className="space-y-2">
         <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Home Address</p>
-        <input
-          type="text"
-          value={homeAddressDraft}
-          onChange={(event) => setHomeAddressDraft(event.target.value)}
-          placeholder="Street or area"
-          className="w-full h-11 px-4 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-950 text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200 outline-none"
-        />
+        <div className="relative">
+          <input
+            type="text"
+            value={homeAddressDraft}
+            onFocus={() => {
+              if (normalizedMapsApiKey) setShowHomeSuggestions(true);
+            }}
+            onChange={(event) => {
+              setHomeAddressDraft(event.target.value);
+              if (normalizedMapsApiKey) setShowHomeSuggestions(true);
+            }}
+            onBlur={() => {
+              window.setTimeout(() => setShowHomeSuggestions(false), 120);
+            }}
+            placeholder="Street or area"
+            className="w-full h-11 px-4 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-950 text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200 outline-none"
+          />
+          {showHomeSuggestions && (homeSuggestionsLoading || homeSuggestions.length > 0) && (
+            <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-900 shadow-xl max-h-56 overflow-y-auto">
+              {homeSuggestionsLoading ? (
+                <p className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-slate-400">Loading places...</p>
+              ) : (
+                homeSuggestions.map(suggestion => (
+                  <button
+                    key={`crm-home-suggestion-${suggestion.placeId}`}
+                    type="button"
+                    onMouseDown={event => event.preventDefault()}
+                    onClick={() => handleHomeSuggestionSelect(suggestion)}
+                    className="w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-brand-950/60"
+                  >
+                    <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100 truncate">{suggestion.primaryText}</p>
+                    {suggestion.secondaryText && (
+                      <p className="text-[8px] font-bold text-slate-500 dark:text-slate-300 truncate">{suggestion.secondaryText}</p>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
         <input
           type="text"
           value={homeMapDraft}
@@ -2803,13 +3041,46 @@ const CustomerIntelligenceView: React.FC<{
       </div>
       <div className="space-y-2">
         <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Business Address</p>
-        <input
-          type="text"
-          value={businessAddressDraft}
-          onChange={(event) => setBusinessAddressDraft(event.target.value)}
-          placeholder="Office, shop, or branch"
-          className="w-full h-11 px-4 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-950 text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200 outline-none"
-        />
+        <div className="relative">
+          <input
+            type="text"
+            value={businessAddressDraft}
+            onFocus={() => {
+              if (normalizedMapsApiKey) setShowBusinessSuggestions(true);
+            }}
+            onChange={(event) => {
+              setBusinessAddressDraft(event.target.value);
+              if (normalizedMapsApiKey) setShowBusinessSuggestions(true);
+            }}
+            onBlur={() => {
+              window.setTimeout(() => setShowBusinessSuggestions(false), 120);
+            }}
+            placeholder="Office, shop, or branch"
+            className="w-full h-11 px-4 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-950 text-[10px] font-black uppercase tracking-widest text-slate-700 dark:text-slate-200 outline-none"
+          />
+          {showBusinessSuggestions && (businessSuggestionsLoading || businessSuggestions.length > 0) && (
+            <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-900 shadow-xl max-h-56 overflow-y-auto">
+              {businessSuggestionsLoading ? (
+                <p className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-slate-400">Loading places...</p>
+              ) : (
+                businessSuggestions.map(suggestion => (
+                  <button
+                    key={`crm-business-suggestion-${suggestion.placeId}`}
+                    type="button"
+                    onMouseDown={event => event.preventDefault()}
+                    onClick={() => handleBusinessSuggestionSelect(suggestion)}
+                    className="w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-brand-950/60"
+                  >
+                    <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100 truncate">{suggestion.primaryText}</p>
+                    {suggestion.secondaryText && (
+                      <p className="text-[8px] font-bold text-slate-500 dark:text-slate-300 truncate">{suggestion.secondaryText}</p>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
         <input
           type="text"
           value={businessMapDraft}
@@ -3903,10 +4174,12 @@ const FinancePerformanceView: React.FC<{
 
 const VaultConsoleView: React.FC<{
   selectedActionId: string | null;
-  counts: { trips: number; drivers: number; customers: number; alerts: number };
+  counts: { trips: number; deletedTrips: number; drivers: number; customers: number; alerts: number };
   statusMessage: string;
   syncStatus: 'IDLE' | 'CHECKING' | 'VERIFIED' | 'NOT_VERIFIED';
   syncDetail: string;
+  lastVerifiedAt: number | null;
+  consecutiveFailures: number;
   syncChannel: string;
   clearArmed: boolean;
   busyAction: 'EXPORT' | 'IMPORT' | 'CLEAR' | null;
@@ -3918,7 +4191,8 @@ const VaultConsoleView: React.FC<{
   onClear: () => void;
   onCancelClear: () => void;
   onCopySyncChannel: () => void;
-}> = ({ selectedActionId, counts, statusMessage, syncStatus, syncDetail, syncChannel, clearArmed, busyAction, pendingImport, onExport, onImport, onConfirmImport, onCancelImport, onClear, onCancelClear, onCopySyncChannel }) => {
+  onRetrySyncAudit: () => void;
+}> = ({ selectedActionId, counts, statusMessage, syncStatus, syncDetail, lastVerifiedAt, consecutiveFailures, syncChannel, clearArmed, busyAction, pendingImport, onExport, onImport, onConfirmImport, onCancelImport, onClear, onCancelClear, onCopySyncChannel, onRetrySyncAudit }) => {
   const actionLabels: Record<string, string> = {
     STATUS: 'System Status',
     EXPORT: 'Export Backup',
@@ -3963,6 +4237,16 @@ const VaultConsoleView: React.FC<{
         {syncDetail ? (
           <p className="mt-2 text-[9px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-300">{syncDetail}</p>
         ) : null}
+        {lastVerifiedAt ? (
+          <p className="mt-1 text-[9px] font-bold uppercase tracking-wide text-emerald-600 dark:text-emerald-300">Last Verified: {format(new Date(lastVerifiedAt), 'PP p')}</p>
+        ) : null}
+        {consecutiveFailures >= 3 ? (
+          <div className="mt-3 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 px-3 py-2">
+            <p className="text-[9px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300">
+              Sync health warning: {consecutiveFailures} consecutive verification failures.
+            </p>
+          </div>
+        ) : null}
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <p className="text-[9px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-300">Channel: {syncChannel}</p>
           <button
@@ -3971,6 +4255,14 @@ const VaultConsoleView: React.FC<{
             className="h-7 px-2 rounded-lg border border-slate-300 dark:border-white/20 bg-white dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300"
           >
             Copy Channel
+          </button>
+          <button
+            type="button"
+            onClick={onRetrySyncAudit}
+            disabled={syncStatus === 'CHECKING'}
+            className="h-7 px-2 rounded-lg border border-slate-300 dark:border-white/20 bg-white dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {syncStatus === 'CHECKING' ? 'Checking…' : 'Retry Now'}
           </button>
         </div>
       </div>

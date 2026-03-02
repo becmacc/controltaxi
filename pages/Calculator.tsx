@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useStore } from '../context/StoreContext';
 import { loadGoogleMapsScript } from '../services/googleMapsLoader';
 import { parseGoogleMapsLink, parseGpsOrLatLngInput, ParsedLocation } from '../services/locationParser';
@@ -52,6 +52,13 @@ interface LocationDraft {
   name?: string;
   lat?: number;
   lng?: number;
+}
+
+interface PlaceAutocompleteSuggestion {
+  placeId: string;
+  primaryText: string;
+  secondaryText?: string;
+  fullText: string;
 }
 
 interface CalculatorDraft {
@@ -114,6 +121,7 @@ const TrafficGauge: React.FC<{ index: number }> = ({ index }) => {
 export const CalculatorPage: React.FC = () => {
   const { settings, addTrip, theme, customers, drivers, trips, creditLedger, receipts, updateFullTrip, addCustomers } = useStore();
   const navigate = useNavigate();
+  const mapsApiKey = (settings.googleMapsApiKey || '').trim();
   
   // Maps State
   const [mapsLoaded, setMapsLoaded] = useState(false);
@@ -138,12 +146,27 @@ export const CalculatorPage: React.FC = () => {
   const routePolyline = useRef<any>(null);
   const geocoder = useRef<any>(null);
   const inputResolveTokenRef = useRef(0);
+  const pickupAutocompleteRequestRef = useRef(0);
+  const destinationAutocompleteRequestRef = useRef(0);
+  const stopAutocompleteRequestRef = useRef(0);
   
   const stopInputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
   // Data State
   const [pickupPlace, setPickupPlace] = useState<any>(null);
   const [destPlace, setDestPlace] = useState<any>(null);
+  const [pickupSuggestions, setPickupSuggestions] = useState<PlaceAutocompleteSuggestion[]>([]);
+  const [destinationSuggestions, setDestinationSuggestions] = useState<PlaceAutocompleteSuggestion[]>([]);
+  const [stopSuggestions, setStopSuggestions] = useState<PlaceAutocompleteSuggestion[]>([]);
+  const [showPickupSuggestions, setShowPickupSuggestions] = useState(false);
+  const [showDestinationSuggestions, setShowDestinationSuggestions] = useState(false);
+  const [showStopSuggestions, setShowStopSuggestions] = useState(false);
+  const [pickupSuggestionsLoading, setPickupSuggestionsLoading] = useState(false);
+  const [destinationSuggestionsLoading, setDestinationSuggestionsLoading] = useState(false);
+  const [stopSuggestionsLoading, setStopSuggestionsLoading] = useState(false);
+  const [pickupAutocompleteQuery, setPickupAutocompleteQuery] = useState('');
+  const [destinationAutocompleteQuery, setDestinationAutocompleteQuery] = useState('');
+  const [activeStopSuggestionIndex, setActiveStopSuggestionIndex] = useState<number | null>(null);
   const [pickupOriginalLink, setPickupOriginalLink] = useState<string | undefined>(undefined);
   const [destinationOriginalLink, setDestinationOriginalLink] = useState<string | undefined>(undefined);
   const [stopsDraft, setStopsDraft] = useState<string[]>([]);
@@ -818,6 +841,21 @@ export const CalculatorPage: React.FC = () => {
     return buildCustomerSnapshotForTrip(lastSavedTrip, customers, trips, drivers, creditLedger, receipts);
   }, [lastSavedTrip, customers, trips, drivers, creditLedger, receipts]);
 
+  const messageModalInitialMessage = useMemo(() => {
+    if (!lastSavedTrip) return '';
+    return replacePlaceholders(settings.templates.trip_confirmation, lastSavedTrip, drivers, settings);
+  }, [lastSavedTrip, settings.templates.trip_confirmation, drivers, settings]);
+
+  const handleCloseMessageModal = useCallback(() => {
+    setShowMessageModal(false);
+  }, []);
+
+  const handleMarkTripConfirmationSent = useCallback((_finalMsg: string) => {
+    if (!lastSavedTrip) return;
+    updateFullTrip({ ...lastSavedTrip, confirmation_sent_at: new Date().toISOString() });
+    setShowMessageModal(false);
+  }, [lastSavedTrip, updateFullTrip]);
+
   const setMarkerPosition = (marker: any, position: any) => {
     if (!marker) return;
     if (typeof marker.setPosition === 'function') {
@@ -1021,11 +1059,13 @@ export const CalculatorPage: React.FC = () => {
       if (type === 'pickup') {
         setPickupPlace(placeRes);
         setPickupOriginalLink(parsed.originalUrl);
+        setPickupAutocompleteQuery(addr);
         setMarkerPosition(markers.current.pickup, latLng);
         if (pickupInputRef.current) pickupInputRef.current.value = addr;
       } else {
         setDestPlace(placeRes);
         setDestinationOriginalLink(parsed.originalUrl);
+        setDestinationAutocompleteQuery(addr);
         setMarkerPosition(markers.current.dest, latLng);
         if (destInputRef.current) destInputRef.current.value = addr;
       }
@@ -1097,7 +1137,7 @@ export const CalculatorPage: React.FC = () => {
 
   const geocodeAddress = async (address: string): Promise<{ placeId: string; formattedAddress: string; lat: number; lng: number } | null> => {
     const query = address.trim();
-    if (!query) return null;
+    if (!query || !mapsApiKey) return null;
 
     const parseFirstResult = (payload: any) => {
       const first = payload?.results?.[0];
@@ -1125,7 +1165,7 @@ export const CalculatorPage: React.FC = () => {
       };
     };
 
-    const restrictedEndpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&components=country:LB&key=${encodeURIComponent(settings.googleMapsApiKey)}`;
+    const restrictedEndpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&components=country:LB&key=${encodeURIComponent(mapsApiKey)}`;
     const restrictedResponse = await fetch(restrictedEndpoint);
     if (restrictedResponse.ok) {
       const restrictedPayload = await restrictedResponse.json();
@@ -1133,7 +1173,7 @@ export const CalculatorPage: React.FC = () => {
       if (restrictedResult) return restrictedResult;
     }
 
-    const placesEndpoint = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(query)}&inputtype=textquery&fields=place_id,name,formatted_address,geometry&locationbias=circle:30000@33.8938,35.5018&region=lb&language=en&key=${encodeURIComponent(settings.googleMapsApiKey)}`;
+    const placesEndpoint = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(query)}&inputtype=textquery&fields=place_id,name,formatted_address,geometry&locationbias=circle:30000@33.8938,35.5018&region=lb&language=en&key=${encodeURIComponent(mapsApiKey)}`;
     const placesResponse = await fetch(placesEndpoint);
     if (placesResponse.ok) {
       const placesPayload = await placesResponse.json();
@@ -1141,7 +1181,7 @@ export const CalculatorPage: React.FC = () => {
       if (placesResult) return placesResult;
     }
 
-    const fallbackEndpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${encodeURIComponent(settings.googleMapsApiKey)}`;
+    const fallbackEndpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${encodeURIComponent(mapsApiKey)}`;
     const fallbackResponse = await fetch(fallbackEndpoint);
     if (!fallbackResponse.ok) return null;
     const fallbackPayload = await fallbackResponse.json();
@@ -1174,6 +1214,231 @@ export const CalculatorPage: React.FC = () => {
     };
   };
 
+  const fetchPlaceDetailsFromNewApi = async (placeId: string): Promise<any | null> => {
+    const cleanedPlaceId = placeId.trim();
+    if (!cleanedPlaceId || !mapsApiKey) return null;
+
+    const response = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(cleanedPlaceId)}`, {
+      method: 'GET',
+      headers: {
+        'X-Goog-Api-Key': mapsApiKey,
+        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location',
+      },
+    });
+
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const lat = Number(payload?.location?.latitude);
+    const lng = Number(payload?.location?.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+    const formattedAddress = String(payload?.formattedAddress || payload?.displayName?.text || '').trim();
+
+    return {
+      place_id: String(payload?.id || cleanedPlaceId),
+      formatted_address: formattedAddress,
+      name: formattedAddress,
+      geometry: {
+        location: {
+          lat,
+          lng,
+        },
+      },
+    };
+  };
+
+  const fetchPlacesAutocompleteSuggestions = async (query: string): Promise<PlaceAutocompleteSuggestion[]> => {
+    const trimmed = query.trim();
+    if (!trimmed || !mapsApiKey) return [];
+
+    const response = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': mapsApiKey,
+        'X-Goog-FieldMask': 'suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat',
+      },
+      body: JSON.stringify({
+        input: trimmed,
+        languageCode: 'en',
+        regionCode: 'LB',
+        includeQueryPredictions: false,
+        locationBias: {
+          circle: {
+            center: { latitude: 33.8938, longitude: 35.5018 },
+            radius: 30000,
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) return [];
+    const payload = await response.json();
+    const rawSuggestions = Array.isArray(payload?.suggestions) ? payload.suggestions : [];
+
+    return rawSuggestions
+      .map((entry: any) => {
+        const prediction = entry?.placePrediction;
+        const placeId = String(prediction?.placeId || '').trim();
+        if (!placeId) return null;
+        const fullText = String(prediction?.text?.text || '').trim();
+        const primaryText = String(prediction?.structuredFormat?.mainText?.text || '').trim() || fullText;
+        const secondaryText = String(prediction?.structuredFormat?.secondaryText?.text || '').trim();
+        return {
+          placeId,
+          primaryText,
+          secondaryText,
+          fullText,
+        } as PlaceAutocompleteSuggestion;
+      })
+      .filter((entry: PlaceAutocompleteSuggestion | null): entry is PlaceAutocompleteSuggestion => Boolean(entry))
+      .slice(0, 8);
+  };
+
+  const handlePickupSuggestionSelect = async (suggestion: PlaceAutocompleteSuggestion) => {
+    const prefetchedText = suggestion.fullText || suggestion.primaryText;
+    setPickupAutocompleteQuery(prefetchedText);
+    if (pickupInputRef.current) pickupInputRef.current.value = prefetchedText;
+    setShowPickupSuggestions(false);
+    setPickupSuggestions([]);
+
+    const resolved = await fetchPlaceDetailsFromNewApi(suggestion.placeId);
+    if (!resolved) return;
+
+    setPickupPlace(resolved);
+    setPickupOriginalLink(undefined);
+    setPickupAutocompleteQuery(resolved.formatted_address || prefetchedText);
+    if (pickupInputRef.current) pickupInputRef.current.value = resolved.formatted_address || prefetchedText;
+
+    const lat = readCoordinateFromLocation(resolved?.geometry?.location, 'lat');
+    const lng = readCoordinateFromLocation(resolved?.geometry?.location, 'lng');
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      const latLng = new google.maps.LatLng(lat, lng);
+      setMarkerPosition(markers.current.pickup, latLng);
+      mapInstance.current?.panTo(latLng);
+    }
+  };
+
+  const handleDestinationSuggestionSelect = async (suggestion: PlaceAutocompleteSuggestion) => {
+    const prefetchedText = suggestion.fullText || suggestion.primaryText;
+    setDestinationAutocompleteQuery(prefetchedText);
+    if (destInputRef.current) destInputRef.current.value = prefetchedText;
+    setShowDestinationSuggestions(false);
+    setDestinationSuggestions([]);
+
+    const resolved = await fetchPlaceDetailsFromNewApi(suggestion.placeId);
+    if (!resolved) return;
+
+    setDestPlace(resolved);
+    setDestinationOriginalLink(undefined);
+    setDestinationAutocompleteQuery(resolved.formatted_address || prefetchedText);
+    if (destInputRef.current) destInputRef.current.value = resolved.formatted_address || prefetchedText;
+
+    const lat = readCoordinateFromLocation(resolved?.geometry?.location, 'lat');
+    const lng = readCoordinateFromLocation(resolved?.geometry?.location, 'lng');
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      const latLng = new google.maps.LatLng(lat, lng);
+      setMarkerPosition(markers.current.dest, latLng);
+      mapInstance.current?.panTo(latLng);
+    }
+  };
+
+  const handleStopSuggestionSelect = async (stopIndex: number, suggestion: PlaceAutocompleteSuggestion) => {
+    const prefetchedText = suggestion.fullText || suggestion.primaryText;
+    setStopsDraft(prev => prev.map((entry, index) => index === stopIndex ? prefetchedText : entry));
+    setShowStopSuggestions(false);
+    setStopSuggestions([]);
+
+    const resolved = await fetchPlaceDetailsFromNewApi(suggestion.placeId);
+    if (!resolved) return;
+
+    const lat = readCoordinateFromLocation(resolved?.geometry?.location, 'lat');
+    const lng = readCoordinateFromLocation(resolved?.geometry?.location, 'lng');
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+    const normalizedStop: TripStop = {
+      text: String(resolved.formatted_address || prefetchedText),
+      placeId: String(resolved.place_id || suggestion.placeId),
+      lat,
+      lng,
+    };
+
+    setStopsDraft(prev => prev.map((entry, index) => index === stopIndex ? normalizedStop.text : entry));
+    setStopCandidates(prev => prev.map((entry, index) => index === stopIndex ? normalizedStop : entry));
+  };
+
+  useEffect(() => {
+    if (!showPickupSuggestions) return;
+    const query = pickupAutocompleteQuery.trim();
+    if (query.length < 2 || !mapsApiKey) {
+      setPickupSuggestions([]);
+      setPickupSuggestionsLoading(false);
+      return;
+    }
+
+    const requestId = pickupAutocompleteRequestRef.current + 1;
+    pickupAutocompleteRequestRef.current = requestId;
+    setPickupSuggestionsLoading(true);
+
+    const timerId = window.setTimeout(async () => {
+      const suggestions = await fetchPlacesAutocompleteSuggestions(query);
+      if (requestId !== pickupAutocompleteRequestRef.current) return;
+      setPickupSuggestions(suggestions);
+      setPickupSuggestionsLoading(false);
+      setShowPickupSuggestions(true);
+    }, 180);
+
+    return () => window.clearTimeout(timerId);
+  }, [pickupAutocompleteQuery, showPickupSuggestions, mapsApiKey]);
+
+  useEffect(() => {
+    if (!showDestinationSuggestions) return;
+    const query = destinationAutocompleteQuery.trim();
+    if (query.length < 2 || !mapsApiKey) {
+      setDestinationSuggestions([]);
+      setDestinationSuggestionsLoading(false);
+      return;
+    }
+
+    const requestId = destinationAutocompleteRequestRef.current + 1;
+    destinationAutocompleteRequestRef.current = requestId;
+    setDestinationSuggestionsLoading(true);
+
+    const timerId = window.setTimeout(async () => {
+      const suggestions = await fetchPlacesAutocompleteSuggestions(query);
+      if (requestId !== destinationAutocompleteRequestRef.current) return;
+      setDestinationSuggestions(suggestions);
+      setDestinationSuggestionsLoading(false);
+      setShowDestinationSuggestions(true);
+    }, 180);
+
+    return () => window.clearTimeout(timerId);
+  }, [destinationAutocompleteQuery, showDestinationSuggestions, mapsApiKey]);
+
+  useEffect(() => {
+    if (!showStopSuggestions || activeStopSuggestionIndex === null) return;
+    const query = (stopsDraft[activeStopSuggestionIndex] || '').trim();
+    if (query.length < 2 || !mapsApiKey) {
+      setStopSuggestions([]);
+      setStopSuggestionsLoading(false);
+      return;
+    }
+
+    const requestId = stopAutocompleteRequestRef.current + 1;
+    stopAutocompleteRequestRef.current = requestId;
+    setStopSuggestionsLoading(true);
+
+    const timerId = window.setTimeout(async () => {
+      const suggestions = await fetchPlacesAutocompleteSuggestions(query);
+      if (requestId !== stopAutocompleteRequestRef.current) return;
+      setStopSuggestions(suggestions);
+      setStopSuggestionsLoading(false);
+      setShowStopSuggestions(true);
+    }, 180);
+
+    return () => window.clearTimeout(timerId);
+  }, [showStopSuggestions, activeStopSuggestionIndex, stopsDraft, mapsApiKey]);
+
   useEffect(() => {
     (window as any).gm_authFailure = () => {
       setError(<div className="p-4 bg-red-50 text-red-600 rounded-2xl border border-red-100 text-xs font-black uppercase">Auth Failed: Key Restriction</div>);
@@ -1182,13 +1447,13 @@ export const CalculatorPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (settings.googleMapsApiKey) {
+    if (mapsApiKey) {
       setRoutesApiBlocked(false);
-      loadGoogleMapsScript(settings.googleMapsApiKey).then(() => setMapsLoaded(true)).catch(() => setError("Engine load error."));
+      loadGoogleMapsScript(mapsApiKey).then(() => setMapsLoaded(true)).catch(() => setError("Engine load error."));
     } else {
       setError("Engine configuration required.");
     }
-  }, [settings.googleMapsApiKey]);
+  }, [mapsApiKey]);
 
   useEffect(() => {
     resizeNotesTextarea();
@@ -1259,9 +1524,11 @@ export const CalculatorPage: React.FC = () => {
 
     if (pickupPlace?.formatted_address && pickupInputRef.current) {
       pickupInputRef.current.value = pickupPlace.formatted_address;
+      setPickupAutocompleteQuery(pickupPlace.formatted_address);
     }
     if (destPlace?.formatted_address && destInputRef.current) {
       destInputRef.current.value = destPlace.formatted_address;
+      setDestinationAutocompleteQuery(destPlace.formatted_address);
     }
 
     const pickupLat = readCoordinateFromLocation(pickupPlace?.geometry?.location, 'lat');
@@ -1377,8 +1644,18 @@ export const CalculatorPage: React.FC = () => {
       if (status === 'OK' && results[0]) {
         const addr = results[0].formatted_address;
         const placeRes = { place_id: results[0].place_id, geometry: { location: pos }, formatted_address: addr, name: addr };
-        if (type === 'pickup') { setPickupPlace(placeRes); setPickupOriginalLink(undefined); if (pickupInputRef.current) pickupInputRef.current.value = addr; }
-        else { setDestPlace(placeRes); setDestinationOriginalLink(undefined); if (destInputRef.current) destInputRef.current.value = addr; }
+        if (type === 'pickup') {
+          setPickupPlace(placeRes);
+          setPickupOriginalLink(undefined);
+          setPickupAutocompleteQuery(addr);
+          if (pickupInputRef.current) pickupInputRef.current.value = addr;
+        }
+        else {
+          setDestPlace(placeRes);
+          setDestinationOriginalLink(undefined);
+          setDestinationAutocompleteQuery(addr);
+          if (destInputRef.current) destInputRef.current.value = addr;
+        }
       }
     });
   };
@@ -1599,6 +1876,12 @@ export const CalculatorPage: React.FC = () => {
   };
 
   const removeStopField = (index: number) => {
+    if (activeStopSuggestionIndex === index) {
+      setActiveStopSuggestionIndex(null);
+      setShowStopSuggestions(false);
+      setStopSuggestions([]);
+      setStopSuggestionsLoading(false);
+    }
     setStopsDraft(prev => prev.filter((_, i) => i !== index));
     setStopCandidates(prev => prev.filter((_, i) => i !== index));
   };
@@ -1677,6 +1960,18 @@ export const CalculatorPage: React.FC = () => {
     setDestPlace(null);
     setPickupOriginalLink(undefined);
     setDestinationOriginalLink(undefined);
+    setPickupAutocompleteQuery('');
+    setDestinationAutocompleteQuery('');
+    setPickupSuggestions([]);
+    setDestinationSuggestions([]);
+    setStopSuggestions([]);
+    setShowPickupSuggestions(false);
+    setShowDestinationSuggestions(false);
+    setShowStopSuggestions(false);
+    setPickupSuggestionsLoading(false);
+    setDestinationSuggestionsLoading(false);
+    setStopSuggestionsLoading(false);
+    setActiveStopSuggestionIndex(null);
     setStopsDraft([]);
     setStopCandidates([]);
     setResolvedStops([]);
@@ -1968,7 +2263,9 @@ export const CalculatorPage: React.FC = () => {
     }
   };
 
-  const handleQuickCopyQuote = () => {
+  const hasValidOperatorWhatsApp = Boolean(normalizePhoneForWhatsApp(settings.operatorWhatsApp || ''));
+
+  const handleQuickCopyQuote = async () => {
     if (!result) return;
     const trimmedStops = stopsDraft.map(value => value.trim()).filter(Boolean);
     if (trimmedStops.length > 0 && resolvedStops.length !== trimmedStops.length) {
@@ -1977,9 +2274,13 @@ export const CalculatorPage: React.FC = () => {
     }
     const tempTrip = buildCurrentTripData();
     const quoteMsg = replacePlaceholders(settings.templates.trip_confirmation, tempTrip, drivers, settings);
-    navigator.clipboard.writeText(sanitizeCommunicationText(quoteMsg));
-    setQuickCopied(true);
-    setTimeout(() => setQuickCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(sanitizeCommunicationText(quoteMsg));
+      setQuickCopied(true);
+      setTimeout(() => setQuickCopied(false), 2000);
+    } catch {
+      setError('Clipboard permission blocked. Copy quote manually from preview.');
+    }
   };
 
   const handleQuickWhatsAppQuote = () => {
@@ -1998,7 +2299,10 @@ export const CalculatorPage: React.FC = () => {
       return;
     }
 
-    window.open(link, '_blank', 'noopener,noreferrer');
+    const openedWindow = window.open(link, '_blank', 'noopener,noreferrer');
+    if (!openedWindow) {
+      setError('Popup blocked. Allow popups to open WhatsApp draft.');
+    }
   };
 
   const handleQuickOperatorWhatsAppQuote = () => {
@@ -2017,7 +2321,10 @@ export const CalculatorPage: React.FC = () => {
       return;
     }
 
-    window.open(link, '_blank', 'noopener,noreferrer');
+    const openedWindow = window.open(link, '_blank', 'noopener,noreferrer');
+    if (!openedWindow) {
+      setError('Popup blocked. Allow popups to open WhatsApp draft.');
+    }
   };
 
   const confirmPendingStop = () => {
@@ -2104,8 +2411,20 @@ export const CalculatorPage: React.FC = () => {
     geocoder.current.geocode({ location: loc }, (res: any, status: any) => {
       const addr = (status === 'OK' && res[0]) ? res[0].formatted_address : `${pendingLocation!.lat.toFixed(4)}, ${pendingLocation!.lng.toFixed(4)}`;
       const pRes = { place_id: res?.[0]?.place_id, geometry: { location: loc }, formatted_address: addr, name: addr };
-      if (type === 'pickup') { setPickupPlace(pRes); setPickupOriginalLink(undefined); setMarkerPosition(markers.current.pickup, loc); if (pickupInputRef.current) pickupInputRef.current.value = addr; }
-      else { setDestPlace(pRes); setDestinationOriginalLink(undefined); setMarkerPosition(markers.current.dest, loc); if (destInputRef.current) destInputRef.current.value = addr; }
+      if (type === 'pickup') {
+        setPickupPlace(pRes);
+        setPickupOriginalLink(undefined);
+        setPickupAutocompleteQuery(addr);
+        setMarkerPosition(markers.current.pickup, loc);
+        if (pickupInputRef.current) pickupInputRef.current.value = addr;
+      }
+      else {
+        setDestPlace(pRes);
+        setDestinationOriginalLink(undefined);
+        setDestinationAutocompleteQuery(addr);
+        setMarkerPosition(markers.current.dest, loc);
+        if (destInputRef.current) destInputRef.current.value = addr;
+      }
       setPendingLocation(null);
     });
   };
@@ -2392,28 +2711,55 @@ export const CalculatorPage: React.FC = () => {
     quoteCustomerSnapshot &&
     hasExistingCustomerSnapshotInfo
   );
-  const outputChecklist = [
-    { label: 'Trip date selected', ready: Boolean(tripDate) },
-    { label: 'Customer identified', ready: Boolean(customerName.trim() || customerPhone.trim()) },
-    { label: 'Driver assigned', ready: Boolean(selectedDriverId) },
-    { label: 'Payment mode selected', ready: paymentMode === 'CASH' || paymentMode === 'CREDIT' },
-    { label: 'Route computed', ready: Boolean(result) },
-  ];
-  const outputBlockingChecks = outputChecklist.filter(check => !check.ready);
-  const outputRiskFlags = [
+  const outputChecklist = useMemo(() => ([
+    { key: 'trip-date', label: 'Trip date selected', ready: Boolean(tripDate), targetStage: 'ROUTE' as const, focusTargetId: 'trip-date-input' },
+    { key: 'customer-identified', label: 'Customer identified', ready: Boolean(customerName.trim() || customerPhone.trim()), targetStage: 'CUSTOMER' as const, focusTargetId: 'customer-name-input' },
+    { key: 'driver-assigned', label: 'Driver assigned', ready: Boolean(selectedDriverId), targetStage: 'CUSTOMER' as const, focusTargetId: 'driver-search-input' },
+    { key: 'payment-mode', label: 'Payment mode selected', ready: paymentMode === 'CASH' || paymentMode === 'CREDIT', targetStage: 'CUSTOMER' as const, focusTargetId: 'customer-payment-mode-card' },
+    { key: 'route-computed', label: 'Route computed', ready: Boolean(result), targetStage: 'ROUTE' as const, focusTargetId: 'calc-pickup-input' },
+  ]), [tripDate, customerName, customerPhone, selectedDriverId, paymentMode, result]);
+  const outputBlockingChecks = useMemo(
+    () => outputChecklist.filter(check => !check.ready),
+    [outputChecklist]
+  );
+  const outputRiskFlags = useMemo(() => ([
     result && result.trafficIndex >= 70
-      ? { key: 'traffic-index', label: `Traffic index ${Math.round(result.trafficIndex)}/100`, icon: 'TRAFFIC' as const }
+      ? {
+          key: 'traffic-index',
+          label: `Traffic index ${Math.round(result.trafficIndex)}/100`,
+          icon: 'TRAFFIC' as const,
+          targetStage: 'ROUTE' as const,
+          focusTargetId: 'calc-pickup-input',
+        }
       : null,
     result && result.surplusMin >= 12
-      ? { key: 'traffic-surplus', label: `Traffic surplus +${Math.max(0, Math.round(result.surplusMin))} min`, icon: 'DELAY' as const }
+      ? {
+          key: 'traffic-surplus',
+          label: `Traffic surplus +${Math.max(0, Math.round(result.surplusMin))} min`,
+          icon: 'DELAY' as const,
+          targetStage: 'ROUTE' as const,
+          focusTargetId: 'calc-pickup-input',
+        }
       : null,
     fareComputation.minimumFareApplied
-      ? { key: 'min-fare', label: `Minimum fare floor applied ($${fareComputation.minimumFareUsd})`, icon: 'FARE' as const }
+      ? {
+          key: 'min-fare',
+          label: `Minimum fare floor applied ($${fareComputation.minimumFareUsd})`,
+          icon: 'FARE' as const,
+          targetStage: 'ROUTE' as const,
+          focusTargetId: 'calc-pickup-input',
+        }
       : null,
     paymentMode === 'CREDIT' && !customerPhone.trim()
-      ? { key: 'credit-phone', label: 'Credit mode selected without customer phone', icon: 'PAYMENT' as const }
+      ? {
+          key: 'credit-phone',
+          label: 'Credit mode selected without customer phone',
+          icon: 'PAYMENT' as const,
+          targetStage: 'CUSTOMER' as const,
+          focusTargetId: 'customer-phone-input',
+        }
       : null,
-  ].filter((flag): flag is NonNullable<typeof flag> => Boolean(flag));
+  ].filter((flag): flag is NonNullable<typeof flag> => Boolean(flag))), [result, fareComputation.minimumFareApplied, fareComputation.minimumFareUsd, paymentMode, customerPhone]);
   const outputNeedsAttention = outputBlockingChecks.length > 0 || outputRiskFlags.length > 0;
   const isOutputSequenceDriverInsightPanelVisible = Boolean(
     navigationMode === 'SEQUENCE' &&
@@ -2439,6 +2785,58 @@ export const CalculatorPage: React.FC = () => {
     )
   );
   const outputNotesPreview = notes.trim();
+  const triggerJumpAttention = (element: HTMLElement | null) => {
+    if (!element) return;
+    element.classList.remove('jump-attention-flash');
+    void element.offsetWidth;
+    element.classList.add('jump-attention-flash');
+    window.setTimeout(() => {
+      element.classList.remove('jump-attention-flash');
+    }, 950);
+  };
+  const jumpToOutputBlockingCheck = (check: (typeof outputChecklist)[number]) => {
+    setIsOutputReadinessPanelDismissed(false);
+    setActiveSequenceStage(check.targetStage);
+
+    window.setTimeout(() => {
+      if (check.focusTargetId) {
+        const focusTarget = document.getElementById(check.focusTargetId) as HTMLElement | null;
+        focusTarget?.focus();
+        triggerJumpAttention(focusTarget);
+        return;
+      }
+
+      if (check.targetStage === 'CUSTOMER') {
+        const customerNameInput = document.getElementById('customer-name-input') as HTMLInputElement | null;
+        customerNameInput?.focus();
+        triggerJumpAttention(customerNameInput);
+        return;
+      }
+
+      if (check.targetStage === 'ROUTE') {
+        pickupInputRef.current?.focus();
+        triggerJumpAttention(pickupInputRef.current);
+      }
+    }, 140);
+  };
+  const jumpToOutputRiskFlag = (flag: (typeof outputRiskFlags)[number]) => {
+    setIsOutputReadinessPanelDismissed(false);
+    setActiveSequenceStage(flag.targetStage);
+
+    window.setTimeout(() => {
+      if (flag.focusTargetId) {
+        const focusTarget = document.getElementById(flag.focusTargetId) as HTMLElement | null;
+        focusTarget?.focus();
+        triggerJumpAttention(focusTarget);
+        return;
+      }
+
+      if (flag.targetStage === 'ROUTE') {
+        pickupInputRef.current?.focus();
+        triggerJumpAttention(pickupInputRef.current);
+      }
+    }, 140);
+  };
   const shouldRenderPreOutputStages = navigationMode === 'SCROLL' || activeSequenceStage !== 'OUTPUT';
   const calculatorPanelWidthClass = navigationMode === 'SEQUENCE'
     ? (hasSequenceRightCompanionPanel
@@ -2632,12 +3030,23 @@ export const CalculatorPage: React.FC = () => {
                  <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gold-600"><MapPin size={14} /></div>
                     <input
+                      id="calc-pickup-input"
                       ref={pickupInputRef}
                       type="text"
                       className="pl-9 w-full h-11 rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-xs"
                       placeholder="Pickup Address or Google Maps Link..."
+                      onFocus={event => {
+                        setPickupAutocompleteQuery(event.currentTarget.value);
+                        if (mapsApiKey) setShowPickupSuggestions(true);
+                      }}
+                      onChange={event => {
+                        const nextValue = event.target.value;
+                        setPickupAutocompleteQuery(nextValue);
+                        if (mapsApiKey) setShowPickupSuggestions(true);
+                      }}
                       onBlur={(e) => {
                         tryResolveGoogleMapsInput('pickup', e.currentTarget.value);
+                        window.setTimeout(() => setShowPickupSuggestions(false), 120);
                       }}
                       onPaste={(e) => {
                         const pasted = e.clipboardData.getData('text');
@@ -2646,6 +3055,28 @@ export const CalculatorPage: React.FC = () => {
                         }
                       }}
                     />
+                    {showPickupSuggestions && (pickupSuggestionsLoading || pickupSuggestions.length > 0) && (
+                      <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-xl max-h-56 overflow-y-auto">
+                        {pickupSuggestionsLoading ? (
+                          <p className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-slate-400">Loading places...</p>
+                        ) : (
+                          pickupSuggestions.map(suggestion => (
+                            <button
+                              key={`calc-pickup-suggestion-${suggestion.placeId}`}
+                              type="button"
+                              onMouseDown={event => event.preventDefault()}
+                              onClick={() => handlePickupSuggestionSelect(suggestion)}
+                              className="w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-brand-950/60"
+                            >
+                              <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100 truncate">{suggestion.primaryText}</p>
+                              {suggestion.secondaryText && (
+                                <p className="text-[8px] font-bold text-slate-500 dark:text-slate-300 truncate">{suggestion.secondaryText}</p>
+                              )}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
                  </div>
                  <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-blue-500"><Navigation size={14} /></div>
@@ -2654,8 +3085,18 @@ export const CalculatorPage: React.FC = () => {
                       type="text"
                       className="pl-9 w-full h-11 rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-xs"
                       placeholder="Drop-off Address or Google Maps Link..."
+                      onFocus={event => {
+                        setDestinationAutocompleteQuery(event.currentTarget.value);
+                        if (mapsApiKey) setShowDestinationSuggestions(true);
+                      }}
+                      onChange={event => {
+                        const nextValue = event.target.value;
+                        setDestinationAutocompleteQuery(nextValue);
+                        if (mapsApiKey) setShowDestinationSuggestions(true);
+                      }}
                       onBlur={(e) => {
                         tryResolveGoogleMapsInput('dest', e.currentTarget.value);
+                        window.setTimeout(() => setShowDestinationSuggestions(false), 120);
                       }}
                       onPaste={(e) => {
                         const pasted = e.clipboardData.getData('text');
@@ -2664,6 +3105,28 @@ export const CalculatorPage: React.FC = () => {
                         }
                       }}
                     />
+                    {showDestinationSuggestions && (destinationSuggestionsLoading || destinationSuggestions.length > 0) && (
+                      <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-40 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-xl max-h-56 overflow-y-auto">
+                        {destinationSuggestionsLoading ? (
+                          <p className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-slate-400">Loading places...</p>
+                        ) : (
+                          destinationSuggestions.map(suggestion => (
+                            <button
+                              key={`calc-destination-suggestion-${suggestion.placeId}`}
+                              type="button"
+                              onMouseDown={event => event.preventDefault()}
+                              onClick={() => handleDestinationSuggestionSelect(suggestion)}
+                              className="w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-brand-950/60"
+                            >
+                              <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100 truncate">{suggestion.primaryText}</p>
+                              {suggestion.secondaryText && (
+                                <p className="text-[8px] font-bold text-slate-500 dark:text-slate-300 truncate">{suggestion.secondaryText}</p>
+                              )}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
                  </div>
                  <div className={`space-y-2 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 ${isStopsCollapsed ? 'p-1.5' : 'p-3'}`}>
                    <div className="flex items-center justify-between">
@@ -2696,39 +3159,76 @@ export const CalculatorPage: React.FC = () => {
                        {stopsDraft.map((stopValue, index) => {
                          const isResolved = Boolean(stopCandidates[index] && Number.isFinite(stopCandidates[index]?.lat) && Number.isFinite(stopCandidates[index]?.lng));
                          return (
-                         <div key={`stop-${index}`} className="flex items-center gap-2">
+                        <div key={`stop-${index}`} className="flex items-center gap-2">
                            <div className="h-9 w-9 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 text-slate-500 dark:text-slate-300 inline-flex items-center justify-center">
                              <MapPin size={11} />
                            </div>
-                           <input
-                             type="text"
-                             ref={element => {
-                               stopInputRefs.current[index] = element;
-                             }}
-                             value={stopValue}
-                             onChange={event => updateStopField(index, event.target.value)}
-                             onBlur={async event => {
-                               const trimmed = event.currentTarget.value.trim();
-                               let alreadyResolved = false;
-                               setStopsDraft(prev => prev.map((entry, i) => (i === index ? trimmed : entry)));
-                               setStopCandidates(prev => prev.map((entry, i) => {
-                                 if (i !== index) return entry;
-                                 const keep = Boolean(entry && entry.text.trim().toLowerCase() === trimmed.toLowerCase() && Number.isFinite(entry.lat) && Number.isFinite(entry.lng));
-                                 alreadyResolved = keep;
-                                 return keep ? entry : null;
-                               }));
-                               if (!trimmed) return;
-                               if (alreadyResolved) return;
+                           <div className="relative flex-1">
+                             <input
+                               type="text"
+                               ref={element => {
+                                 stopInputRefs.current[index] = element;
+                               }}
+                               value={stopValue}
+                               onFocus={() => {
+                                 setActiveStopSuggestionIndex(index);
+                                 if (mapsApiKey) setShowStopSuggestions(true);
+                               }}
+                               onChange={event => {
+                                 updateStopField(index, event.target.value);
+                                 setActiveStopSuggestionIndex(index);
+                                 if (mapsApiKey) setShowStopSuggestions(true);
+                               }}
+                               onBlur={async event => {
+                                 window.setTimeout(() => {
+                                   setShowStopSuggestions(false);
+                                   setActiveStopSuggestionIndex(null);
+                                 }, 120);
 
-                               const resolved = await resolveStopInput(trimmed);
-                               if (!resolved) return;
+                                 const trimmed = event.currentTarget.value.trim();
+                                 let alreadyResolved = false;
+                                 setStopsDraft(prev => prev.map((entry, i) => (i === index ? trimmed : entry)));
+                                 setStopCandidates(prev => prev.map((entry, i) => {
+                                   if (i !== index) return entry;
+                                   const keep = Boolean(entry && entry.text.trim().toLowerCase() === trimmed.toLowerCase() && Number.isFinite(entry.lat) && Number.isFinite(entry.lng));
+                                   alreadyResolved = keep;
+                                   return keep ? entry : null;
+                                 }));
+                                 if (!trimmed) return;
+                                 if (alreadyResolved) return;
 
-                               setStopsDraft(prev => prev.map((entry, i) => (i === index ? resolved.text : entry)));
-                               setStopCandidates(prev => prev.map((entry, i) => (i === index ? resolved : entry)));
-                             }}
-                             placeholder={`Stop ${index + 1} address or maps link`}
-                             className="flex-1 h-9 rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-bold"
-                           />
+                                 const resolved = await resolveStopInput(trimmed);
+                                 if (!resolved) return;
+
+                                 setStopsDraft(prev => prev.map((entry, i) => (i === index ? resolved.text : entry)));
+                                 setStopCandidates(prev => prev.map((entry, i) => (i === index ? resolved : entry)));
+                               }}
+                               placeholder={`Stop ${index + 1} address or maps link`}
+                               className="h-9 w-full rounded-lg border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 text-[10px] font-bold"
+                             />
+                             {showStopSuggestions && activeStopSuggestionIndex === index && (stopSuggestionsLoading || stopSuggestions.length > 0) && (
+                               <div className="absolute left-0 right-0 top-[calc(100%+0.25rem)] z-40 rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 shadow-xl max-h-56 overflow-y-auto">
+                                 {stopSuggestionsLoading ? (
+                                   <p className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-slate-400">Loading places...</p>
+                                 ) : (
+                                   stopSuggestions.map(suggestion => (
+                                     <button
+                                       key={`calc-stop-suggestion-${index}-${suggestion.placeId}`}
+                                       type="button"
+                                       onMouseDown={event => event.preventDefault()}
+                                       onClick={() => handleStopSuggestionSelect(index, suggestion)}
+                                       className="w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-brand-950/60"
+                                     >
+                                       <p className="text-[9px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100 truncate">{suggestion.primaryText}</p>
+                                       {suggestion.secondaryText && (
+                                         <p className="text-[8px] font-bold text-slate-500 dark:text-slate-300 truncate">{suggestion.secondaryText}</p>
+                                       )}
+                                     </button>
+                                   ))
+                                 )}
+                               </div>
+                             )}
+                           </div>
                            <span
                              title={isResolved ? 'Resolved from map data' : 'Pending resolution'}
                              className={`h-9 px-2 rounded-lg border text-[7px] font-black uppercase tracking-widest inline-flex items-center gap-1 ${isResolved
@@ -2891,7 +3391,7 @@ export const CalculatorPage: React.FC = () => {
                     </div>
                     <div className="relative">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500"><Clock size={13} /></div>
-                      <input type="datetime-local" value={tripDate} onChange={e => {setTripDate(e.target.value); setDateRequiredError(false);}} className={`w-full h-11 pl-9 pr-3 rounded-xl border bg-slate-50 dark:bg-brand-950 text-xs font-bold transition-all ${dateRequiredError ? 'border-red-500' : 'border-slate-200 dark:border-brand-800'}`} />
+                      <input id="trip-date-input" type="datetime-local" value={tripDate} onChange={e => {setTripDate(e.target.value); setDateRequiredError(false);}} className={`w-full h-11 pl-9 pr-3 rounded-xl border bg-slate-50 dark:bg-brand-950 text-xs font-bold transition-all ${dateRequiredError ? 'border-red-500' : 'border-slate-200 dark:border-brand-800'}`} />
                     </div>
                     <div className="flex items-center justify-between gap-2 px-1">
                       <p className="text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300 inline-flex items-center gap-1">
@@ -3151,7 +3651,7 @@ export const CalculatorPage: React.FC = () => {
                   )}
                   <div className="flex items-center bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-10">
                     <User size={13} className="text-gold-600 mr-2.5" />
-                    <input type="text" placeholder="Client Name" value={customerName} onChange={e => {
+                    <input id="customer-name-input" type="text" placeholder="Client Name" value={customerName} onChange={e => {
                       setSelectedQuoteDirectoryCustomerId(null);
                       setCustomerName(e.target.value);
                     }} className="bg-transparent border-none focus:ring-0 text-brand-900 dark:text-white font-bold text-[10px] flex-1 h-full" />
@@ -3159,6 +3659,7 @@ export const CalculatorPage: React.FC = () => {
                   <div className="flex items-center bg-white dark:bg-brand-900 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-10">
                     <Phone size={13} className="text-blue-500 mr-2.5" />
                     <input
+                      id="customer-phone-input"
                       type="text"
                       placeholder="Client Phone"
                       value={customerPhone}
@@ -3472,7 +3973,7 @@ export const CalculatorPage: React.FC = () => {
                          onClick={handleQuickOperatorWhatsAppQuote}
                          aria-label="Send quote to operator on WhatsApp"
                          title="Operator WhatsApp"
-                         disabled={!settings.operatorWhatsApp.trim()}
+                         disabled={!hasValidOperatorWhatsApp}
                          className="h-7 w-full lg:w-auto min-w-0 flex items-center justify-center gap-1.5 text-[8px] font-black uppercase tracking-widest px-2 rounded-lg border transition-all bg-brand-950 text-blue-400 border-brand-800 hover:text-blue-300 disabled:opacity-40 disabled:cursor-not-allowed"
                        >
                          <MessageCircle size={10} />
@@ -3572,7 +4073,7 @@ export const CalculatorPage: React.FC = () => {
                     </div>
 
                     <div className="grid grid-cols-1 gap-2">
-                      <div className={`rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-950 ${isPaymentModeCollapsed ? 'p-0.5' : 'p-2'}`}>
+                      <div id="customer-payment-mode-card" className={`rounded-xl border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-950 ${isPaymentModeCollapsed ? 'p-0.5' : 'p-2'}`}>
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-[7px] font-black uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300 inline-flex items-center gap-1">
                             <DollarSign size={10} className="text-gold-500" />
@@ -3616,6 +4117,7 @@ export const CalculatorPage: React.FC = () => {
                       <div className="relative flex items-center bg-white dark:bg-brand-950 border border-slate-200 dark:border-brand-800 rounded-xl px-3 h-11">
                         <Car size={14} className="text-emerald-500 mr-3" />
                         <input
+                          id="driver-search-input"
                           ref={driverSearchInputRef}
                           type="text"
                           value={driverSearchQuery}
@@ -4082,20 +4584,53 @@ export const CalculatorPage: React.FC = () => {
               </div>
 
               <div className="space-y-2">
+                <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500 dark:text-slate-300">Unattended Checklist</p>
+                {outputBlockingChecks.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {outputBlockingChecks.map(check => (
+                      <button
+                        key={check.key}
+                        type="button"
+                        onClick={() => jumpToOutputBlockingCheck(check)}
+                        className="w-full min-h-8 px-2.5 py-1.5 rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 text-[8px] font-black uppercase tracking-widest text-red-700 dark:text-red-300 inline-flex items-center justify-between gap-2 hover:border-red-300 dark:hover:border-red-800"
+                        title={`Open ${check.label}`}
+                      >
+                        <span className="inline-flex items-center gap-1.5 truncate">
+                          <AlertCircle size={10} />
+                          <span className="truncate">{check.label}</span>
+                        </span>
+                        <span className="shrink-0">Open</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="h-8 px-2.5 rounded-lg border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 inline-flex items-center">
+                    All required dispatch items are attended
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
                 <p className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500 dark:text-slate-300">Risk Flags</p>
                 {outputRiskFlags.length > 0 ? (
                   <div className="space-y-1.5">
                     {outputRiskFlags.map(flag => (
-                      <div
+                      <button
                         key={flag.key}
-                        className="min-h-8 px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[8px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300 inline-flex items-center gap-1.5"
+                        type="button"
+                        onClick={() => jumpToOutputRiskFlag(flag)}
+                        className="w-full min-h-8 px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 text-[8px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-300 inline-flex items-center justify-between gap-2 hover:border-amber-300 dark:hover:border-amber-800"
+                        title={`Open ${flag.label}`}
                       >
-                        {flag.icon === 'TRAFFIC' && <Gauge size={10} className="text-cyan-500" />}
-                        {flag.icon === 'DELAY' && <Clock size={10} />}
-                        {flag.icon === 'FARE' && <DollarSign size={10} />}
-                        {flag.icon === 'PAYMENT' && <ArrowRightLeft size={10} />}
-                        <span>{flag.label}</span>
-                      </div>
+                        <span className="inline-flex items-center gap-1.5 truncate">
+                          {flag.icon === 'TRAFFIC' && <Gauge size={10} className="text-cyan-500" />}
+                          {flag.icon === 'DELAY' && <Clock size={10} />}
+                          {flag.icon === 'FARE' && <DollarSign size={10} />}
+                          {flag.icon === 'PAYMENT' && <ArrowRightLeft size={10} />}
+                          <span className="truncate">{flag.label}</span>
+                        </span>
+                        <span className="shrink-0">Open</span>
+                      </button>
                     ))}
                   </div>
                 ) : (
@@ -4137,16 +4672,13 @@ export const CalculatorPage: React.FC = () => {
       {lastSavedTrip && (
         <MessageModal 
           isOpen={showMessageModal}
-          onClose={() => setShowMessageModal(false)}
+          onClose={handleCloseMessageModal}
           title="Send Trip Confirmation"
-          initialMessage={replacePlaceholders(settings.templates.trip_confirmation, lastSavedTrip, drivers, settings)}
+          initialMessage={messageModalInitialMessage}
           recipientPhone={lastSavedTrip.customerPhone}
           operatorPhone={settings.operatorWhatsApp}
           customerSnapshot={savedTripSnapshot || undefined}
-          onMarkSent={(finalMsg) => {
-            updateFullTrip({ ...lastSavedTrip, confirmation_sent_at: new Date().toISOString() });
-            setShowMessageModal(false);
-          }}
+          onMarkSent={handleMarkTripConfirmationSent}
         />
       )}
 

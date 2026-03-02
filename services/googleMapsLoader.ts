@@ -8,10 +8,15 @@ declare global {
 
 let isLoading = false;
 let isLoaded = false;
-const callbacks: (() => void)[] = [];
+const callbacks: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
 
 export const loadGoogleMapsScript = (apiKey: string): Promise<void> => {
   return new Promise((resolve, reject) => {
+    if (isLoaded) {
+      resolve();
+      return;
+    }
+
     // 1. Check if already fully loaded
     if (window.google && window.google.maps && window.google.maps.Map && window.google.maps.marker && window.google.maps.visualization) {
       isLoaded = true;
@@ -21,7 +26,7 @@ export const loadGoogleMapsScript = (apiKey: string): Promise<void> => {
 
     // 2. Queue if loading
     if (isLoading) {
-      callbacks.push(resolve);
+      callbacks.push({ resolve, reject });
       return;
     }
 
@@ -38,7 +43,7 @@ export const loadGoogleMapsScript = (apiKey: string): Promise<void> => {
       isLoaded = true;
       resolve();
       // Notify any other pending calls
-      callbacks.forEach(cb => cb());
+      callbacks.forEach(cb => cb.resolve());
       callbacks.length = 0;
       // Cleanup global callback
       delete window.initMap;
@@ -51,9 +56,13 @@ export const loadGoogleMapsScript = (apiKey: string): Promise<void> => {
     script.async = true;
     script.defer = true;
     
-    script.onerror = (e) => {
+    script.onerror = () => {
       isLoading = false;
-      reject(new Error("Failed to load Google Maps script. Check your API key and internet connection."));
+      const error = new Error("Failed to load Google Maps script. Check your API key and internet connection.");
+      reject(error);
+      callbacks.forEach(cb => cb.reject(error));
+      callbacks.length = 0;
+      delete window.initMap;
     };
 
     document.head.appendChild(script);

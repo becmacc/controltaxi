@@ -633,6 +633,7 @@ export const getDrivers = (): Driver[] => {
   try {
     const data = localStorage.getItem(LOCAL_STORAGE_KEYS.DRIVERS);
     if (!data) return [];
+    const fallbackExchangeRate = Number(getSettings().exchangeRate) || 90000;
     const parsed = JSON.parse(data);
     return parsed.map((d: any) => {
       const normalizedFuelLogs = Array.isArray(d.fuelLogs)
@@ -646,7 +647,7 @@ export const getDrivers = (): Driver[] => {
               const amountLbp = Number(entry.amountLbp);
               const amountUsd = Number(entry.amountUsd);
               const fxRateSnapshot = Number(entry.fxRateSnapshot);
-              const fallbackFx = Number(getSettings().exchangeRate) || 90000;
+              const fallbackFx = fallbackExchangeRate;
 
               const resolvedAmountOriginal = Number.isFinite(amountOriginal)
                 ? amountOriginal
@@ -691,8 +692,8 @@ export const getDrivers = (): Driver[] => {
                 amountUsd: Number(d.totalGasSpent) || 0,
                 amountOriginal: Number(d.totalGasSpent) || 0,
                 currency: 'USD' as const,
-                fxRateSnapshot: Number(getSettings().exchangeRate) || 90000,
-                amountLbp: (Number(d.totalGasSpent) || 0) * ((Number(getSettings().exchangeRate) || 90000)),
+                fxRateSnapshot: fallbackExchangeRate,
+                amountLbp: (Number(d.totalGasSpent) || 0) * fallbackExchangeRate,
                 note: 'Legacy migration baseline',
               }]
             : []);

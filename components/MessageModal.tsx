@@ -30,18 +30,27 @@ export const MessageModal: React.FC<MessageModalProps> = ({
   const [message, setMessage] = useState(initialMessage);
   const [copied, setCopied] = useState(false);
   const [deliverySignal, setDeliverySignal] = useState(false);
+  const [actionStatus, setActionStatus] = useState('');
 
   useEffect(() => {
     setMessage(initialMessage);
     setDeliverySignal(false);
+    setActionStatus('');
   }, [initialMessage]);
 
   if (!isOpen) return null;
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(sanitizeCommunicationText(message));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(sanitizeCommunicationText(message));
+      setCopied(true);
+      setActionStatus('Copied.');
+      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => setActionStatus(''), 2200);
+    } catch {
+      setActionStatus('Clipboard permission blocked. Copy manually.');
+      setTimeout(() => setActionStatus(''), 2600);
+    }
   };
 
   const whatsAppLink = recipientPhone ? buildWhatsAppLink(recipientPhone, message) : null;
@@ -52,7 +61,12 @@ export const MessageModal: React.FC<MessageModalProps> = ({
     const openedWindow = window.open(whatsAppLink, '_blank', 'noopener,noreferrer');
     if (openedWindow) {
       setDeliverySignal(true);
+      setActionStatus('WhatsApp draft ready.');
+      setTimeout(() => setActionStatus(''), 2200);
+      return;
     }
+    setActionStatus('Popup blocked. Allow popups to open WhatsApp draft.');
+    setTimeout(() => setActionStatus(''), 2600);
   };
 
   const handleOperatorWhatsApp = () => {
@@ -60,7 +74,12 @@ export const MessageModal: React.FC<MessageModalProps> = ({
     const openedWindow = window.open(operatorWhatsAppLink, '_blank', 'noopener,noreferrer');
     if (openedWindow) {
       setDeliverySignal(true);
+      setActionStatus('Operator WhatsApp draft ready.');
+      setTimeout(() => setActionStatus(''), 2200);
+      return;
     }
+    setActionStatus('Popup blocked. Allow popups to open WhatsApp draft.');
+    setTimeout(() => setActionStatus(''), 2600);
   };
 
   const hasWhatsAppTarget = Boolean(whatsAppLink || operatorWhatsAppLink);
@@ -89,6 +108,11 @@ export const MessageModal: React.FC<MessageModalProps> = ({
           {hasWhatsAppTarget && !deliverySignal && (
             <p className="mt-3 text-[9px] font-black uppercase tracking-widest text-amber-600 dark:text-amber-400">
               WhatsApp not opened yet. You can still mark as sent manually.
+            </p>
+          )}
+          {actionStatus && (
+            <p className="mt-2 text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">
+              {actionStatus}
             </p>
           )}
         </div>

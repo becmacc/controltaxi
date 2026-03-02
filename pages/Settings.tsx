@@ -36,9 +36,11 @@ export const SettingsPage: React.FC = () => {
   const [operatorCustomDialCode, setOperatorCustomDialCode] = useState('');
   const [templates, setTemplates] = useState<MessageTemplates>(settings.templates);
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'SUCCESS' | 'ERROR'>('SUCCESS');
   const [isConfigFullView, setIsConfigFullView] = useState(false);
+  const [isShortcutGuideCollapsed, setIsShortcutGuideCollapsed] = useState(true);
 
-  const shortcutGuide = [
+  const globalShortcutGuide = [
     { keys: 'Q', action: 'Quote Page' },
     { keys: 'M', action: 'Missions' },
     { keys: 'V', action: 'Core Vault' },
@@ -50,8 +52,16 @@ export const SettingsPage: React.FC = () => {
     { keys: 'C then M', action: 'Core CRM' },
     { keys: 'C then F', action: 'Core Fleet' },
     { keys: 'C then O', action: 'Toggle Core ↔ Control' },
-    { keys: 'F', action: 'Config Full View (on this page)' },
-    { keys: 'Esc', action: 'Exit Config Full View' },
+  ];
+
+  const pageShortcutGuide = [
+    { keys: 'Config: F / Esc', action: 'Config Full View Toggle / Exit' },
+    { keys: 'Trips (Table): F / Esc', action: 'Mission Log Full View Toggle / Exit' },
+    { keys: 'Drivers (Table): F / Esc', action: 'Fleet Table Full View Toggle / Exit' },
+    { keys: 'GM Brief: ← / →', action: 'Switch Brief Bundle' },
+    { keys: 'GM Brief: F / Esc', action: 'Panel Full View Toggle / Exit' },
+    { keys: 'Calculator (Sequence): ← / →', action: 'Previous / Next Workflow Stage' },
+    { keys: 'Flow Navigator: Alt + ← / →', action: 'Previous / Next Operational Stage' },
   ];
 
   const operatorPopularPresets = PHONE_COUNTRY_PRESETS;
@@ -142,6 +152,13 @@ export const SettingsPage: React.FC = () => {
       defaultDialCode: operatorEffectiveDialCode,
     });
 
+    if (operatorWhatsApp.trim() && !normalizedOperatorWhatsApp) {
+      setMessageTone('ERROR');
+      setMessage('Enter a valid Operator WhatsApp number before saving.');
+      setTimeout(() => setMessage(''), 3000);
+      return;
+    }
+
     updateSettings({
       exchangeRate: parseOrDefault(exchangeRate, 90000),
       hourlyWaitRate: parseOrDefault(hourlyWaitRate, 5),
@@ -156,13 +173,14 @@ export const SettingsPage: React.FC = () => {
       promotionalOfferUrl: promotionalOfferUrl.trim(),
       couponProgramUrl: couponProgramUrl.trim(),
       loyaltyProgramUrl: loyaltyProgramUrl.trim(),
-      operatorWhatsApp: normalizedOperatorWhatsApp || operatorWhatsApp.trim(),
+      operatorWhatsApp: normalizedOperatorWhatsApp || '',
       fuelPriceUsdPerLiter: parseOrDefault(fuelPriceUsdPerLiter, 1.3),
       ownerDriverCompanySharePercent: parseOrDefault(ownerDriverCompanySharePercent, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT),
       companyCarDriverGasCompanySharePercent: parseOrDefault(companyCarDriverGasCompanySharePercent, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT),
       otherDriverCompanySharePercent: parseOrDefault(otherDriverCompanySharePercent, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT),
       templates
     });
+    setMessageTone('SUCCESS');
     setMessage('Settings saved successfully.');
     setTimeout(() => setMessage(''), 3000);
   };
@@ -173,6 +191,7 @@ export const SettingsPage: React.FC = () => {
 
   const handleResetTemplates = () => {
     setTemplates(DEFAULT_TEMPLATES);
+    setMessageTone('SUCCESS');
     setMessage('Templates reset to WhatsApp-safe defaults. Click Commit Settings to save.');
     setTimeout(() => setMessage(''), 3000);
   };
@@ -191,19 +210,6 @@ export const SettingsPage: React.FC = () => {
             {isConfigFullView ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
             {isConfigFullView ? 'Exit Full View' : 'Full View'}
           </button>
-        </div>
-
-        <div className="bg-white dark:bg-brand-900 rounded-2xl shadow-xl border border-slate-200 dark:border-brand-800 p-6 md:p-8 transition-colors mb-8">
-          <h3 className="text-sm font-black text-brand-900 dark:text-gold-500 uppercase tracking-widest mb-4 border-b pb-4 dark:border-brand-800">Keyboard Shortcuts</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {shortcutGuide.map(item => (
-              <div key={item.keys} className="rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 py-2 flex items-center justify-between gap-3">
-                <span className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">{item.action}</span>
-                <span className="inline-flex items-center h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-[0.14em] text-brand-900 dark:text-gold-300 whitespace-nowrap">{item.keys}</span>
-              </div>
-            ))}
-          </div>
-          <p className="mt-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Two-key combos use a short chord window. Avoid typing shortcuts while cursor is in an input field.</p>
         </div>
 
         <form onSubmit={handleSave} className="space-y-8">
@@ -588,13 +594,58 @@ export const SettingsPage: React.FC = () => {
           </div>
 
           <div className="pt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-            <span className="text-green-600 dark:text-green-400 font-black text-[10px] uppercase tracking-widest transition-all">{message}</span>
+            <span className={`${messageTone === 'ERROR' ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'} font-black text-[10px] uppercase tracking-widest transition-all`}>{message}</span>
             <Button type="submit" variant="gold" size="lg" className="w-full sm:w-auto min-w-[200px] shadow-xl shadow-gold-500/20">
               <Save size={18} className="mr-2" />
               Commit Settings
             </Button>
           </div>
         </form>
+
+        <div className="bg-white dark:bg-brand-900 rounded-2xl shadow-xl border border-slate-200 dark:border-brand-800 p-6 md:p-8 transition-colors mt-8">
+          <div className={`flex items-center justify-between gap-3 ${isShortcutGuideCollapsed ? '' : 'mb-4 border-b pb-4 dark:border-brand-800'}`}>
+            <h3 className="text-sm font-black text-brand-900 dark:text-gold-500 uppercase tracking-widest">Keyboard Shortcuts</h3>
+            <button
+              type="button"
+              onClick={() => setIsShortcutGuideCollapsed(prev => !prev)}
+              className="h-8 px-3 rounded-md border border-slate-300 dark:border-brand-700 bg-slate-50 dark:bg-brand-950 text-[8px] font-black uppercase tracking-widest text-slate-600 dark:text-slate-300 inline-flex items-center"
+              title={isShortcutGuideCollapsed ? 'Expand keyboard shortcuts' : 'Collapse keyboard shortcuts'}
+            >
+              {isShortcutGuideCollapsed ? 'Show' : 'Hide'}
+            </button>
+          </div>
+
+          {!isShortcutGuideCollapsed && (
+            <>
+              <div className="space-y-5">
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300 mb-2">Global Navigation</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {globalShortcutGuide.map(item => (
+                      <div key={`global-${item.keys}`} className="rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 py-2 flex items-center justify-between gap-3">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">{item.action}</span>
+                        <span className="inline-flex items-center h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-[0.14em] text-brand-900 dark:text-gold-300 whitespace-nowrap">{item.keys}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300 mb-2">Page-Specific</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {pageShortcutGuide.map(item => (
+                      <div key={`local-${item.keys}`} className="rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 px-3 py-2 flex items-center justify-between gap-3">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">{item.action}</span>
+                        <span className="inline-flex items-center h-6 px-2 rounded-md border border-slate-300 dark:border-brand-700 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-[0.14em] text-brand-900 dark:text-gold-300 whitespace-nowrap">{item.keys}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <p className="mt-4 text-[9px] font-black uppercase tracking-widest text-slate-400">Two-key combos use a 1.2s chord window. Avoid typing shortcuts while cursor is in an input field.</p>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

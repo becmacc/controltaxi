@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { 
   Car, List, Settings as SettingsIcon, Users, Moon, Sun, 
@@ -15,21 +15,41 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const navigate = useNavigate();
   const location = useLocation();
   const [showWatch, setShowWatch] = useState(false);
+  const [alertClockTick, setAlertClockTick] = useState(Date.now());
   const MISSION_WATCH_UI_CHANNEL = 'control-mission-watch-ui';
   const MISSION_WATCH_UI_STORAGE_KEY = 'control_mission_watch_ui_event';
   const navChordFirstKeyRef = useRef<string | null>(null);
   const navChordTimerRef = useRef<number | null>(null);
+  const watchPopupRef = useRef<Window | null>(null);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setAlertClockTick(Date.now());
+    }, 30000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, []);
+
+  const getAlertTimestamp = (value: string) => {
+    const timestamp = new Date(value).getTime();
+    return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
+  };
 
   const isIntelligenceMode = location.pathname === '/crm';
-  const activeAlerts = alerts
-    .filter(a => {
-      if (a.triggered) return false;
-      if (!a.snoozedUntil) return true;
-      const snoozedUntilMs = new Date(a.snoozedUntil).getTime();
-      if (!Number.isFinite(snoozedUntilMs)) return true;
-      return snoozedUntilMs <= Date.now();
-    })
-    .sort((a, b) => new Date(a.targetTime).getTime() - new Date(b.targetTime).getTime());
+  const isDetachedWatchRoute = location.pathname === '/watch' && new URLSearchParams(location.search).get('detached') === '1';
+  const activeAlerts = useMemo(() => (
+    alerts
+      .filter(a => {
+        if (a.triggered) return false;
+        if (!a.snoozedUntil) return true;
+        const snoozedUntilMs = new Date(a.snoozedUntil).getTime();
+        if (!Number.isFinite(snoozedUntilMs)) return true;
+        return snoozedUntilMs <= alertClockTick;
+      })
+      .sort((a, b) => getAlertTimestamp(a.targetTime) - getAlertTimestamp(b.targetTime))
+  ), [alerts, alertClockTick]);
 
   const handleLogoDoubleClick = () => {
     navigate(isIntelligenceMode ? '/brief' : '/crm');
@@ -41,13 +61,20 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
     if (type === 'POPUP_OPENED') {
       setShowWatch(false);
+
+      if (location.pathname === '/watch' && !isDetachedWatchRoute) {
+        navigate('/brief');
+      }
+
       return;
     }
 
     if (type === 'INLINE_OPENED' && location.pathname === '/watch') {
-      window.close();
+      if (isDetachedWatchRoute) {
+        window.close();
+      }
     }
-  }, [location.pathname]);
+  }, [isDetachedWatchRoute, location.pathname, navigate]);
 
   const broadcastMissionWatchUi = useCallback((type: 'POPUP_OPENED' | 'INLINE_OPENED') => {
     const payload = { type, at: Date.now() };
@@ -224,11 +251,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       }
 
       if (key === 'c') {
-        armChord('c', () => {
-          if (location.pathname !== '/') {
-            navigate('/');
-          }
-        });
+        armChord('c');
         return;
       }
 
@@ -243,10 +266,30 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   }, [isIntelligenceMode, location.pathname, navigate]);
 
   const handleOpenWatchWindow = () => {
-    broadcastMissionWatchUi('POPUP_OPENED');
+    if (watchPopupRef.current && !watchPopupRef.current.closed) {
+      watchPopupRef.current.focus();
+      broadcastMissionWatchUi('POPUP_OPENED');
+      setShowWatch(false);
+      if (location.pathname === '/watch' && !isDetachedWatchRoute) {
+        navigate('/brief');
+      }
+      return;
+    }
+
+    const watchUrl = `${window.location.origin}${window.location.pathname}#/watch?detached=1`;
+    const openedWindow = window.open(watchUrl, 'control-mission-watch', 'noopener,noreferrer,width=420,height=820');
+    if (openedWindow) {
+      watchPopupRef.current = openedWindow;
+      broadcastMissionWatchUi('POPUP_OPENED');
+      setShowWatch(false);
+      if (location.pathname === '/watch' && !isDetachedWatchRoute) {
+        navigate('/brief');
+      }
+      return;
+    }
+
     setShowWatch(false);
-    const watchUrl = `${window.location.origin}${window.location.pathname}#/watch`;
-    window.open(watchUrl, '_blank', 'noopener,noreferrer,width=420,height=820');
+    navigate('/watch');
   };
 
   const handleToggleWatch = () => {
@@ -272,6 +315,14 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         ? 'bg-brand-900 text-gold-400 shadow-md dark:bg-gold-600 dark:text-brand-950' 
         : 'text-gray-600 hover:bg-white hover:shadow-sm dark:text-slate-300 dark:hover:bg-brand-800 dark:hover:shadow-lg'
     }`;
+
+  if (isDetachedWatchRoute) {
+    return (
+      <div className="h-dvh overflow-hidden bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100">
+        {children}
+      </div>
+    );
+  }
 
   return (
     <div className={`app-shell flex flex-col h-dvh transition-colors duration-500 overflow-hidden bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100`}>

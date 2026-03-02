@@ -1,6 +1,4 @@
-import { initializeApp, getApp, getApps } from 'firebase/app';
-import { AuthError, getAuth, signInAnonymously } from 'firebase/auth';
-import { deleteField, doc, getDoc, getFirestore, serverTimestamp, setDoc } from 'firebase/firestore';
+import type { AuthError } from 'firebase/auth';
 
 type SyncStatus = 'disabled' | 'connecting' | 'ready' | 'error';
 
@@ -32,6 +30,45 @@ const DEFAULT_CLOUD_DOC_ID = import.meta.env.VITE_FIREBASE_SYNC_DOC_ID || 'share
 const POLL_INTERVAL_MS = 3000;
 const PAYLOAD_CHUNK_COLLECTION = 'payloadChunks';
 const PAYLOAD_CHUNK_CHAR_SIZE = 240000;
+
+type FirebaseRuntime = {
+  app: {
+    initializeApp: (config: Record<string, string | undefined>) => unknown;
+    getApp: () => unknown;
+    getApps: () => unknown[];
+  };
+  auth: {
+    getAuth: (app?: unknown) => {
+      currentUser?: { uid?: string; isAnonymous?: boolean } | null;
+    };
+    signInAnonymously: (auth: unknown) => Promise<unknown>;
+  };
+  firestore: {
+    deleteField: () => unknown;
+    doc: (...pathSegments: unknown[]) => { path?: string };
+    getDoc: (docRef: unknown) => Promise<{
+      exists: () => boolean;
+      data: () => Record<string, unknown> | undefined;
+    }>;
+    getFirestore: (app?: unknown) => unknown;
+    serverTimestamp: () => unknown;
+    setDoc: (docRef: unknown, data: Record<string, unknown>, options?: { merge?: boolean }) => Promise<void>;
+  };
+};
+
+let firebaseRuntimePromise: Promise<FirebaseRuntime> | null = null;
+
+const loadFirebaseRuntime = async (): Promise<FirebaseRuntime> => {
+  if (!firebaseRuntimePromise) {
+    firebaseRuntimePromise = Promise.all([
+      import('firebase/app'),
+      import('firebase/auth'),
+      import('firebase/firestore'),
+    ]).then(([app, auth, firestore]) => ({ app, auth, firestore }));
+  }
+
+  return firebaseRuntimePromise;
+};
 
 const getFirebaseConfig = () => ({
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -79,7 +116,8 @@ const hasChunkedPayload = (data: Record<string, unknown> | undefined): boolean =
 };
 
 const resolveRemotePayload = async (
-  firestore: ReturnType<typeof getFirestore>,
+  firestoreApi: FirebaseRuntime['firestore'],
+  firestore: unknown,
   docId: string,
   data: Record<string, unknown> | undefined
 ): Promise<unknown | null> => {
@@ -98,7 +136,15 @@ const resolveRemotePayload = async (
 
   const chunkSnapshots = await Promise.all(
     Array.from({ length: chunkCount }, (_, index) =>
-      getDoc(doc(firestore, CLOUD_COLLECTION, docId, PAYLOAD_CHUNK_COLLECTION, `chunk-${String(index).padStart(5, '0')}`))
+      firestoreApi.getDoc(
+        firestoreApi.doc(
+          firestore,
+          CLOUD_COLLECTION,
+          docId,
+          PAYLOAD_CHUNK_COLLECTION,
+          `chunk-${String(index).padStart(5, '0')}`
+        )
+      )
     )
   );
 
@@ -192,13 +238,15 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
   }
 
   try {
+    const runtime = await loadFirebaseRuntime();
+    const { app: appApi, auth: authApi, firestore: firestoreApi } = runtime;
     const activeDocId = getCloudSyncDocId();
-    const app = getApps().length ? getApp() : initializeApp(getFirebaseConfig());
-    const auth = getAuth(app);
+    const app = appApi.getApps().length ? appApi.getApp() : appApi.initializeApp(getFirebaseConfig());
+    const auth = authApi.getAuth(app);
 
     if (!auth.currentUser) {
       try {
-        await signInAnonymously(auth);
+        await authApi.signInAnonymously(auth);
       } catch (error) {
         const authError = error as Partial<AuthError>;
         if (authError?.code === 'auth/configuration-not-found') {
@@ -208,9 +256,9 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
       }
     }
 
-    const firestore = getFirestore(app);
-    const syncRef = doc(firestore, CLOUD_COLLECTION, activeDocId);
-    const snapshot = await getDoc(syncRef);
+    const firestore = firestoreApi.getFirestore(app);
+    const syncRef = firestoreApi.doc(firestore, CLOUD_COLLECTION, activeDocId);
+    const snapshot = await firestoreApi.getDoc(syncRef);
     const data = snapshot.data() as Record<string, unknown> | undefined;
     const hasRemotePayload = Boolean(data?.payload) || hasChunkedPayload(data);
 
@@ -222,7 +270,7 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
       };
     }
 
-    const resolvedPayload = await resolveRemotePayload(firestore, activeDocId, data);
+    const resolvedPayload = await resolveRemotePayload(firestoreApi, firestore, activeDocId, data);
 
     const signature = typeof data?.signature === 'string' && data.signature
       ? data.signature
@@ -270,11 +318,13 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
   options.onStatusChange?.('connecting');
 
   try {
+    const runtime = await loadFirebaseRuntime();
+    const { app: appApi, auth: authApi, firestore: firestoreApi } = runtime;
     const activeDocId = getCloudSyncDocId();
-    const app = getApps().length ? getApp() : initializeApp(getFirebaseConfig());
-    const auth = getAuth(app);
+    const app = appApi.getApps().length ? appApi.getApp() : appApi.initializeApp(getFirebaseConfig());
+    const auth = authApi.getAuth(app);
     try {
-      await signInAnonymously(auth);
+      await authApi.signInAnonymously(auth);
       options.onStatusChange?.(
         'connecting',
         `auth uid=${auth.currentUser?.uid || 'none'} anon=${auth.currentUser?.isAnonymous ? 'yes' : 'no'}`
@@ -296,8 +346,8 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
       throw error;
     }
 
-    const firestore = getFirestore(app);
-    const legacyRef = doc(firestore, CLOUD_COLLECTION, activeDocId);
+    const firestore = firestoreApi.getFirestore(app);
+    const legacyRef = firestoreApi.doc(firestore, CLOUD_COLLECTION, activeDocId);
 
     let ready = false;
     let stopped = false;
@@ -308,12 +358,12 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
     options.onStatusChange?.('ready');
 
     try {
-      await setDoc(
+      await firestoreApi.setDoc(
         legacyRef,
         {
           bootstrap: true,
           bootstrappedBy: options.clientId,
-          bootstrappedAt: serverTimestamp(),
+          bootstrappedAt: firestoreApi.serverTimestamp(),
           bootstrappedAtMs: Date.now(),
         },
         { merge: true }
@@ -332,7 +382,7 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
       if (stopped || permissionDenied) return;
 
       try {
-        const snapshot = await getDoc(legacyRef);
+        const snapshot = await firestoreApi.getDoc(legacyRef);
         const data = snapshot.data() as Record<string, unknown> | undefined;
         const signature = typeof data?.signature === 'string' ? data.signature : null;
         const hasRemotePayload = Boolean(data?.payload) || hasChunkedPayload(data);
@@ -345,7 +395,7 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
           return;
         }
 
-        const resolvedPayload = await resolveRemotePayload(firestore, activeDocId, data);
+        const resolvedPayload = await resolveRemotePayload(firestoreApi, firestore, activeDocId, data);
         if (!resolvedPayload) {
           return;
         }
@@ -423,14 +473,14 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
           if (shouldChunk) {
             await Promise.all(
               chunks.map((chunk, index) =>
-                setDoc(
-                  doc(firestore, CLOUD_COLLECTION, activeDocId, PAYLOAD_CHUNK_COLLECTION, `chunk-${String(index).padStart(5, '0')}`),
+                firestoreApi.setDoc(
+                  firestoreApi.doc(firestore, CLOUD_COLLECTION, activeDocId, PAYLOAD_CHUNK_COLLECTION, `chunk-${String(index).padStart(5, '0')}`),
                   {
                     index,
                     data: chunk,
                     signature,
                     updatedBy: options.clientId,
-                    updatedAt: serverTimestamp(),
+                    updatedAt: firestoreApi.serverTimestamp(),
                     updatedAtMs: nowMs,
                   },
                   { merge: true }
@@ -439,12 +489,12 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
             );
           }
 
-          await setDoc(
+          await firestoreApi.setDoc(
             legacyRef,
             {
               ...(shouldChunk
                 ? {
-                    payload: deleteField(),
+                    payload: firestoreApi.deleteField(),
                     payloadChunked: true,
                     payloadChunkCount: chunks.length,
                     payloadEncoding: 'json',
@@ -463,7 +513,7 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
                 ? String((payload as { resetToken?: string }).resetToken || '').trim()
                 : '',
               updatedBy: options.clientId,
-              updatedAt: serverTimestamp(),
+              updatedAt: firestoreApi.serverTimestamp(),
               updatedAtMs: nowMs,
             },
             { merge: true }

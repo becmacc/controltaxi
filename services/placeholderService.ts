@@ -110,6 +110,7 @@ export const replacePlaceholders = (template: string, trip: Trip, drivers: Drive
   const promotionalOfferUrl = normalizeExternalUrl(settings?.promotionalOfferUrl);
   const couponProgramUrl = normalizeExternalUrl(settings?.couponProgramUrl);
   const loyaltyProgramUrl = normalizeExternalUrl(settings?.loyaltyProgramUrl);
+  const googleReviewUrl = normalizeExternalUrl(settings?.googleBusinessReviewUrl);
   const serviceLinks = [
     bookingFlowUrl ? `Book: ${bookingFlowUrl}` : '',
     fareEstimatorUrl ? `Fare Estimator: ${fareEstimatorUrl}` : '',
@@ -138,6 +139,7 @@ export const replacePlaceholders = (template: string, trip: Trip, drivers: Drive
     '{driver_name}': driverName,
     '{driver_name_with_plate}': driverNameWithPlate,
     '{driver_plate}': driver?.plateNumber || 'TBD',
+    '{google_review_link}': googleReviewUrl,
     '{requirements_text}': requirementsText,
     '{notes}': notesText,
     '{details_block}': detailsBlock

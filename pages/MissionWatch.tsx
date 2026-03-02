@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useStore } from '../context/StoreContext';
 import { format, differenceInMinutes, parseISO } from 'date-fns';
 import { Clock, MessageCircle, Zap, ExternalLink, X } from 'lucide-react';
@@ -8,16 +8,39 @@ import { buildWhatsAppLink, normalizePhoneForWhatsApp } from '../services/whatsa
 export const MissionWatchPage: React.FC = () => {
   const { alerts, trips, drivers, snoozeAlert, resolveAlert } = useStore();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [clockTick, setClockTick] = useState(Date.now());
+  const isDetachedWatchRoute = new URLSearchParams(location.search).get('detached') === '1';
 
-  const activeAlerts = alerts
-    .filter(a => {
-      if (a.triggered) return false;
-      if (!a.snoozedUntil) return true;
-      const snoozedUntilMs = new Date(a.snoozedUntil).getTime();
-      if (!Number.isFinite(snoozedUntilMs)) return true;
-      return snoozedUntilMs <= Date.now();
-    })
-    .sort((a, b) => new Date(a.targetTime).getTime() - new Date(b.targetTime).getTime());
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setClockTick(Date.now());
+    }, 30000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, []);
+
+  const getAlertTimestamp = (value: string) => {
+    const timestamp = new Date(value).getTime();
+    return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
+  };
+
+  const activeAlerts = useMemo(() => (
+    alerts
+      .filter(a => {
+        if (a.triggered) return false;
+        if (!a.snoozedUntil) return true;
+        const snoozedUntilMs = new Date(a.snoozedUntil).getTime();
+        if (!Number.isFinite(snoozedUntilMs)) return true;
+        return snoozedUntilMs <= clockTick;
+      })
+      .sort((a, b) => getAlertTimestamp(a.targetTime) - getAlertTimestamp(b.targetTime))
+  ), [alerts, clockTick]);
+
+  const tripsById = useMemo(() => new Map(trips.map(trip => [trip.id, trip])), [trips]);
+  const driversById = useMemo(() => new Map(drivers.map(driver => [driver.id, driver])), [drivers]);
 
   const MISSION_WATCH_UI_CHANNEL = 'control-mission-watch-ui';
   const MISSION_WATCH_UI_STORAGE_KEY = 'control_mission_watch_ui_event';
@@ -27,7 +50,9 @@ export const MissionWatchPage: React.FC = () => {
       if (!payload || typeof payload !== 'object') return;
       const type = String((payload as { type?: unknown }).type || '');
       if (type === 'INLINE_OPENED') {
-        window.close();
+        if (isDetachedWatchRoute) {
+          window.close();
+        }
       }
     };
 
@@ -75,7 +100,16 @@ export const MissionWatchPage: React.FC = () => {
       if (channel) channel.close();
       window.removeEventListener('storage', handleStorageMessage);
     };
-  }, []);
+  }, [isDetachedWatchRoute]);
+
+  const handleCloseWatch = () => {
+    window.close();
+    window.setTimeout(() => {
+      if (!window.closed) {
+        navigate('/brief');
+      }
+    }, 80);
+  };
 
   return (
     <div className="h-full min-h-screen bg-slate-50 dark:bg-brand-950 p-4 md:p-6">
@@ -97,7 +131,7 @@ export const MissionWatchPage: React.FC = () => {
             </button>
             <button
               type="button"
-              onClick={() => window.close()}
+              onClick={handleCloseWatch}
               className="p-2 text-slate-400 hover:text-brand-900 dark:hover:text-white"
               title="Close window"
             >
@@ -108,13 +142,15 @@ export const MissionWatchPage: React.FC = () => {
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {activeAlerts.length > 0 ? activeAlerts.map(alert => {
-            const diff = differenceInMinutes(parseISO(alert.targetTime), new Date());
+            const targetDate = parseISO(alert.targetTime);
+            const hasValidTargetDate = Number.isFinite(targetDate.getTime());
+            const diff = hasValidTargetDate ? differenceInMinutes(targetDate, new Date(clockTick)) : 0;
             const isUrgent = diff <= 5;
             const isLate = diff < 0;
-            const linkedTrip = alert.tripId ? trips.find(trip => trip.id === alert.tripId) : null;
+            const linkedTrip = typeof alert.tripId === 'number' ? (tripsById.get(alert.tripId) || null) : null;
             const linkedDriver = alert.driverId
-              ? drivers.find(driver => driver.id === alert.driverId)
-              : (linkedTrip?.driverId ? drivers.find(driver => driver.id === linkedTrip.driverId) : null);
+              ? (driversById.get(alert.driverId) || null)
+              : (linkedTrip?.driverId ? (driversById.get(linkedTrip.driverId) || null) : null);
             const customerPhone = normalizePhoneForWhatsApp(linkedTrip?.customerPhone || '');
             const customerWhatsAppHref = customerPhone ? buildWhatsAppLink(customerPhone) : null;
             const driverPhone = normalizePhoneForWhatsApp(linkedDriver?.phone || '');
@@ -129,7 +165,7 @@ export const MissionWatchPage: React.FC = () => {
                   <div className="flex items-center text-slate-400">
                     <Clock size={10} className="mr-1" />
                     <span className={`text-[10px] font-black ${isLate ? 'text-red-500' : isUrgent ? 'text-amber-500' : 'text-slate-400'}`}>
-                      {isLate ? 'LATE' : `${diff}m`}
+                      {hasValidTargetDate ? (isLate ? `LATE ${Math.abs(diff)}m` : `${diff}m`) : '--'}
                     </span>
                   </div>
                 </div>
