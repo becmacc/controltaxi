@@ -129,7 +129,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ? docRoleRaw
           : 'unknown';
 
-        const nextRole = claimsRole !== 'unknown' ? claimsRole : docRole;
+        const nextRole = docRole !== 'unknown' ? docRole : claimsRole;
         const nextHasCoreAccess = claimsCoreAccess || docRole === 'admin';
 
         setUser(nextUser);
