@@ -27,6 +27,7 @@ export interface CloudSyncSignatureFetchResult {
 const SYNC_CLIENT_ID_KEY = '__control_sync_client_id__';
 const CLOUD_COLLECTION = import.meta.env.VITE_FIREBASE_SYNC_COLLECTION || 'control-sync';
 const DEFAULT_CLOUD_DOC_ID = import.meta.env.VITE_FIREBASE_SYNC_DOC_ID || 'shared';
+const FALLBACK_CLOUD_DOC_ID = 'shared';
 const POLL_INTERVAL_MS = 3000;
 const PAYLOAD_CHUNK_COLLECTION = 'payloadChunks';
 const PAYLOAD_CHUNK_CHAR_SIZE = 240000;
@@ -99,7 +100,20 @@ const isPermissionDeniedError = (error: unknown) => {
 };
 
 const buildPermissionHint = (path: string) =>
-  `permission-denied path=${path} (Check Firestore rules on /control-sync/{docId}, Anonymous Auth enabled, and Firestore App Check enforcement).`;
+  `permission-denied path=${path} (Check Firestore rules on /${CLOUD_COLLECTION}/{docId} and /${CLOUD_COLLECTION}/{docId}/${PAYLOAD_CHUNK_COLLECTION}/{chunkId}, Anonymous Auth enabled, and Firestore App Check enforcement).`;
+
+const normalizeCloudDocId = (value: string): string => {
+  const normalized = String(value || '').trim();
+  return normalized || FALLBACK_CLOUD_DOC_ID;
+};
+
+const getCloudSyncDocIdCandidates = (): string[] => {
+  const primary = normalizeCloudDocId(DEFAULT_CLOUD_DOC_ID);
+  if (primary === FALLBACK_CLOUD_DOC_ID) {
+    return [primary];
+  }
+  return [primary, FALLBACK_CLOUD_DOC_ID];
+};
 
 const chunkString = (text: string, chunkSize: number): string[] => {
   if (!text) return [''];
@@ -171,7 +185,7 @@ const resolveRemotePayload = async (
 };
 
 export const getCloudSyncDocId = () => {
-  return DEFAULT_CLOUD_DOC_ID || 'shared';
+  return normalizeCloudDocId(DEFAULT_CLOUD_DOC_ID);
 };
 
 export const isCloudSyncConfigured = () => hasRequiredFirebaseConfig() && Boolean(getCloudSyncDocId());
@@ -240,7 +254,7 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
   try {
     const runtime = await loadFirebaseRuntime();
     const { app: appApi, auth: authApi, firestore: firestoreApi } = runtime;
-    const activeDocId = getCloudSyncDocId();
+    const docIdCandidates = getCloudSyncDocIdCandidates();
     const app = appApi.getApps().length ? appApi.getApp() : appApi.initializeApp(getFirebaseConfig());
     const auth = authApi.getAuth(app);
 
@@ -257,43 +271,61 @@ export const fetchCloudSyncSignature = async (): Promise<CloudSyncSignatureFetch
     }
 
     const firestore = firestoreApi.getFirestore(app);
-    const syncRef = firestoreApi.doc(firestore, CLOUD_COLLECTION, activeDocId);
-    const snapshot = await firestoreApi.getDoc(syncRef);
-    const data = snapshot.data() as Record<string, unknown> | undefined;
-    const hasRemotePayload = Boolean(data?.payload) || hasChunkedPayload(data);
 
-    if (!hasRemotePayload) {
-      return {
-        ok: false,
-        code: 'no-remote-payload',
-        reason: 'No remote sync payload found yet. Open the app on the other device and wait for cloud sync.',
-      };
+    for (const activeDocId of docIdCandidates) {
+      try {
+        const syncRef = firestoreApi.doc(firestore, CLOUD_COLLECTION, activeDocId);
+        const snapshot = await firestoreApi.getDoc(syncRef);
+        const data = snapshot.data() as Record<string, unknown> | undefined;
+        const hasRemotePayload = Boolean(data?.payload) || hasChunkedPayload(data);
+
+        if (!hasRemotePayload) {
+          continue;
+        }
+
+        const resolvedPayload = await resolveRemotePayload(firestoreApi, firestore, activeDocId, data);
+
+        const signature = typeof data?.signature === 'string' && data.signature
+          ? data.signature
+          : createSyncSignature(resolvedPayload || {});
+
+        const payloadRecord = resolvedPayload && typeof resolvedPayload === 'object'
+          ? resolvedPayload as Record<string, unknown>
+          : null;
+        const topLevelSyncEpoch = typeof data?.syncEpoch === 'number' && Number.isFinite(data.syncEpoch)
+          ? Math.max(0, Math.floor(data.syncEpoch))
+          : null;
+        const payloadSyncEpoch = payloadRecord && typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
+          ? Math.max(0, Math.floor(payloadRecord.syncEpoch))
+          : null;
+        const syncEpoch = topLevelSyncEpoch ?? payloadSyncEpoch ?? 0;
+
+        const topLevelResetToken = typeof data?.resetToken === 'string' ? data.resetToken.trim() : '';
+        const payloadResetToken = payloadRecord && typeof payloadRecord.resetToken === 'string'
+          ? String(payloadRecord.resetToken).trim()
+          : '';
+        const resetToken = topLevelResetToken || payloadResetToken || undefined;
+
+        return { ok: true, signature, syncEpoch, resetToken };
+      } catch (error) {
+        if (isPermissionDeniedError(error)) {
+          const isLastCandidate = activeDocId === docIdCandidates[docIdCandidates.length - 1];
+          if (!isLastCandidate) {
+            continue;
+          }
+          const path = `${CLOUD_COLLECTION}/${activeDocId}`;
+          return { ok: false, code: 'permission-denied', reason: buildPermissionHint(path) };
+        }
+
+        return { ok: false, code: 'fetch-failed', reason: `Failed to fetch cloud signature: ${getErrorMessage(error)}` };
+      }
     }
 
-    const resolvedPayload = await resolveRemotePayload(firestoreApi, firestore, activeDocId, data);
-
-    const signature = typeof data?.signature === 'string' && data.signature
-      ? data.signature
-      : createSyncSignature(resolvedPayload || {});
-
-    const payloadRecord = resolvedPayload && typeof resolvedPayload === 'object'
-      ? resolvedPayload as Record<string, unknown>
-      : null;
-    const topLevelSyncEpoch = typeof data?.syncEpoch === 'number' && Number.isFinite(data.syncEpoch)
-      ? Math.max(0, Math.floor(data.syncEpoch))
-      : null;
-    const payloadSyncEpoch = payloadRecord && typeof payloadRecord.syncEpoch === 'number' && Number.isFinite(payloadRecord.syncEpoch)
-      ? Math.max(0, Math.floor(payloadRecord.syncEpoch))
-      : null;
-    const syncEpoch = topLevelSyncEpoch ?? payloadSyncEpoch ?? 0;
-
-    const topLevelResetToken = typeof data?.resetToken === 'string' ? data.resetToken.trim() : '';
-    const payloadResetToken = payloadRecord && typeof payloadRecord.resetToken === 'string'
-      ? String(payloadRecord.resetToken).trim()
-      : '';
-    const resetToken = topLevelResetToken || payloadResetToken || undefined;
-
-    return { ok: true, signature, syncEpoch, resetToken };
+    return {
+      ok: false,
+      code: 'no-remote-payload',
+      reason: 'No remote sync payload found yet. Open the app on the other device and wait for cloud sync.',
+    };
   } catch (error) {
     const path = `${CLOUD_COLLECTION}/${getCloudSyncDocId()}`;
     if (isPermissionDeniedError(error)) {
@@ -320,7 +352,8 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
   try {
     const runtime = await loadFirebaseRuntime();
     const { app: appApi, auth: authApi, firestore: firestoreApi } = runtime;
-    const activeDocId = getCloudSyncDocId();
+    const docIdCandidates = getCloudSyncDocIdCandidates();
+    let activeDocId = docIdCandidates[0];
     const app = appApi.getApps().length ? appApi.getApp() : appApi.initializeApp(getFirebaseConfig());
     const auth = authApi.getAuth(app);
     try {
@@ -347,7 +380,7 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
     }
 
     const firestore = firestoreApi.getFirestore(app);
-    const legacyRef = firestoreApi.doc(firestore, CLOUD_COLLECTION, activeDocId);
+    let legacyRef = firestoreApi.doc(firestore, CLOUD_COLLECTION, activeDocId);
 
     let ready = false;
     let stopped = false;
@@ -357,25 +390,55 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
     ready = true;
     options.onStatusChange?.('ready');
 
-    try {
-      await firestoreApi.setDoc(
-        legacyRef,
-        {
-          bootstrap: true,
-          bootstrappedBy: options.clientId,
-          bootstrappedAt: firestoreApi.serverTimestamp(),
-          bootstrappedAtMs: Date.now(),
-        },
-        { merge: true }
-      );
-    } catch (error) {
-      if (isPermissionDeniedError(error)) {
-        permissionDenied = true;
-        ready = false;
-        options.onStatusChange?.('error', buildPermissionHint(legacyRef.path));
-      } else {
-        options.onStatusChange?.('error', `bootstrap path=${legacyRef.path} ${getErrorMessage(error)}`);
+    const tryBootstrap = async (docId: string): Promise<{ ok: boolean; permissionDenied: boolean; message?: string }> => {
+      const ref = firestoreApi.doc(firestore, CLOUD_COLLECTION, docId);
+      try {
+        await firestoreApi.setDoc(
+          ref,
+          {
+            bootstrap: true,
+            bootstrappedBy: options.clientId,
+            bootstrappedAt: firestoreApi.serverTimestamp(),
+            bootstrappedAtMs: Date.now(),
+          },
+          { merge: true }
+        );
+        activeDocId = docId;
+        legacyRef = ref;
+        return { ok: true, permissionDenied: false };
+      } catch (error) {
+        if (isPermissionDeniedError(error)) {
+          return { ok: false, permissionDenied: true, message: buildPermissionHint(ref.path || `${CLOUD_COLLECTION}/${docId}`) };
+        }
+        return {
+          ok: false,
+          permissionDenied: false,
+          message: `bootstrap path=${ref.path} ${getErrorMessage(error)}`,
+        };
       }
+    };
+
+    let bootstrapResult = await tryBootstrap(activeDocId);
+
+    if (!bootstrapResult.ok && bootstrapResult.permissionDenied) {
+      for (const candidateDocId of docIdCandidates) {
+        if (candidateDocId === activeDocId) continue;
+        const candidateResult = await tryBootstrap(candidateDocId);
+        if (candidateResult.ok) {
+          options.onStatusChange?.('connecting', `fallback sync channel=${candidateDocId}`);
+          bootstrapResult = candidateResult;
+          break;
+        }
+        bootstrapResult = candidateResult;
+      }
+    }
+
+    if (!bootstrapResult.ok) {
+      ready = false;
+      if (bootstrapResult.permissionDenied) {
+        permissionDenied = true;
+      }
+      options.onStatusChange?.('error', bootstrapResult.message || `bootstrap failed path=${legacyRef.path}`);
     }
 
     const pullLegacy = async (channel: 'legacy:init' | 'legacy:poll') => {

@@ -100,6 +100,9 @@ service cloud.firestore {
     match /control-sync/{docId} {
       allow read, write: if request.auth != null;
     }
+    match /control-sync/{docId}/payloadChunks/{chunkId} {
+      allow read, write: if request.auth != null;
+    }
   }
 }
 ```
