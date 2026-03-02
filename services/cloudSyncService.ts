@@ -356,28 +356,31 @@ export const startCloudSync = async (options: StartCloudSyncOptions): Promise<Cl
     let activeDocId = docIdCandidates[0];
     const app = appApi.getApps().length ? appApi.getApp() : appApi.initializeApp(getFirebaseConfig());
     const auth = authApi.getAuth(app);
-    try {
-      await authApi.signInAnonymously(auth);
-      options.onStatusChange?.(
-        'connecting',
-        `auth uid=${auth.currentUser?.uid || 'none'} anon=${auth.currentUser?.isAnonymous ? 'yes' : 'no'}`
-      );
-    } catch (error) {
-      const authError = error as Partial<AuthError>;
-      if (authError?.code === 'auth/configuration-not-found') {
-        options.onStatusChange?.(
-          'disabled',
-          'Firebase Authentication Anonymous sign-in is not enabled for this project.'
-        );
-        return {
-          isEnabled: false,
-          isReady: () => false,
-          publish: async () => false,
-          stop: () => undefined,
-        };
+    if (!auth.currentUser) {
+      try {
+        await authApi.signInAnonymously(auth);
+      } catch (error) {
+        const authError = error as Partial<AuthError>;
+        if (authError?.code === 'auth/configuration-not-found') {
+          options.onStatusChange?.(
+            'disabled',
+            'Authentication is required for cloud sync. Enable Email/Password or Google sign-in and authenticate.'
+          );
+          return {
+            isEnabled: false,
+            isReady: () => false,
+            publish: async () => false,
+            stop: () => undefined,
+          };
+        }
+        throw error;
       }
-      throw error;
     }
+
+    options.onStatusChange?.(
+      'connecting',
+      `auth uid=${auth.currentUser?.uid || 'none'} anon=${auth.currentUser?.isAnonymous ? 'yes' : 'no'}`
+    );
 
     const firestore = firestoreApi.getFirestore(app);
     let legacyRef = firestoreApi.doc(firestore, CLOUD_COLLECTION, activeDocId);

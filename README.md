@@ -88,8 +88,32 @@ Optional variables (with defaults):
 Firebase setup expectations:
 
 - Enable **Authentication -> Anonymous**
+- Enable **Authentication -> Sign-in method -> Email/Password**
 - Enable **Firestore Database**
 - Allow authenticated reads/writes for the sync doc path
+
+### 3) Operator sign-in (recommended for production)
+
+The app now supports Firebase Authentication login for all routes.
+
+When to add Firebase Auth:
+
+1. Before first production deploy that should be private.
+2. Before giving access to operators on multiple devices.
+3. Before enabling Finance/Vault for non-local users.
+
+Firebase checklist:
+
+- Go to **Firebase Console -> Authentication -> Sign-in method**.
+- Enable **Email/Password**.
+- Create operator users in **Authentication -> Users**.
+- (Optional but recommended) Assign custom claims for core access (`admin`/`ops` or `coreAccess: true`) using Admin SDK.
+
+Core access behavior in app:
+
+- All app routes require sign-in.
+- Core-only sections (e.g. Settings, CRM Yield/Vault) require core role/claim.
+- Roles accepted for core access: `admin` or `ops`, or claim `coreAccess: true`.
 
 Example Firestore rule for default collection:
 

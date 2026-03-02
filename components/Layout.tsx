@@ -7,11 +7,13 @@ import {
   Clock, CheckCircle, AlertCircle, Phone, MessageCircle, ExternalLink
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
+import { useAuth } from '../context/AuthContext';
 import { format, differenceInMinutes, parseISO } from 'date-fns';
 import { buildWhatsAppLink, normalizePhoneForWhatsApp } from '../services/whatsapp';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { theme, toggleTheme, alerts, trips, drivers, snoozeAlert, resolveAlert } = useStore();
+  const { user, hasCoreAccess, signOut } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [showWatch, setShowWatch] = useState(false);
@@ -357,10 +359,24 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
           {isIntelligenceMode ? (
             <div className="flex items-center space-x-4">
+               {user?.email && (
+                 <div className="hidden lg:flex items-center space-x-2 text-[9px] font-black px-3 py-1 rounded-full border border-slate-200 dark:border-brand-800 text-slate-500 dark:text-slate-300 bg-slate-50 dark:bg-brand-900/50 uppercase tracking-widest">
+                   <span>{user.email}</span>
+                 </div>
+               )}
                <div className={`hidden sm:flex items-center space-x-2 text-[10px] font-black px-3 py-1 rounded-full border transition-all animate-pulse ${theme === 'dark' ? 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20' : 'text-brand-900 bg-brand-50 border-brand-100'}`}>
                  <div className={`w-1.5 h-1.5 rounded-full ${theme === 'dark' ? 'bg-emerald-500' : 'bg-brand-900'}`} />
                  <span>LIVE TELEMETRY</span>
                </div>
+               <button
+                 onClick={() => {
+                   void signOut();
+                   navigate('/login');
+                 }}
+                 className="h-8 px-2 rounded-lg border border-slate-200 dark:border-brand-800 bg-white dark:bg-brand-900 text-[8px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300"
+               >
+                 Sign Out
+               </button>
                <button 
                  onClick={toggleTheme}
                  className="p-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-brand-800 text-slate-400 dark:text-gold-400 transition-colors"
@@ -370,6 +386,15 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             </div>
           ) : (
             <>
+              <button
+                onClick={() => {
+                  void signOut();
+                  navigate('/login');
+                }}
+                className="h-7 px-2 rounded-lg border border-brand-700 bg-brand-800/60 text-[8px] font-black uppercase tracking-widest text-gold-300"
+              >
+                Sign Out
+              </button>
               <button 
                 onClick={toggleTheme}
                 className="p-1.5 rounded-full hover:bg-brand-800 text-gold-400 transition-colors focus:outline-none ring-1 ring-brand-700/50"
@@ -519,12 +544,14 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 <Users size={20} />
                 <span className="font-bold hidden lg:inline">Fleet</span>
               </NavLink>
-              <div className="mt-auto pt-4 border-t border-slate-200 dark:border-brand-800">
-                  <NavLink to="/settings" className={sidebarLinkClass}>
-                    <SettingsIcon size={20} />
-                    <span className="font-bold hidden lg:inline">Config</span>
-                  </NavLink>
-              </div>
+              {hasCoreAccess && (
+                <div className="mt-auto pt-4 border-t border-slate-200 dark:border-brand-800">
+                    <NavLink to="/settings" className={sidebarLinkClass}>
+                      <SettingsIcon size={20} />
+                      <span className="font-bold hidden lg:inline">Config</span>
+                    </NavLink>
+                </div>
+              )}
           </aside>
         )}
 
@@ -553,10 +580,12 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <Users size={18} className="mb-1" />
             <span className="app-bottom-label">Fleet</span>
           </NavLink>
-          <NavLink to="/settings" className={({ isActive }) => `${linkClass({ isActive })} app-bottom-link`}>
-            <SettingsIcon size={18} className="mb-1" />
-            <span className="app-bottom-label">Config</span>
-          </NavLink>
+          {hasCoreAccess && (
+            <NavLink to="/settings" className={({ isActive }) => `${linkClass({ isActive })} app-bottom-link`}>
+              <SettingsIcon size={18} className="mb-1" />
+              <span className="app-bottom-label">Config</span>
+            </NavLink>
+          )}
         </nav>
       )}
     </div>

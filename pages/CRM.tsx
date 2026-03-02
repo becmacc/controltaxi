@@ -2,6 +2,7 @@
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useStore } from '../context/StoreContext';
+import { useAuth } from '../context/AuthContext';
 import { Trip, TripStatus, Driver, Customer, CustomerEntityType, CustomerGender, CustomerLocation, CustomerMarketSegment, CustomerProfileEvent, DriverFuelLogEntry, DriverCostResponsibility, DriverVehicleOwnership, Settings, CreditLedgerEntry, ReceiptRecord, CreditPartyType, CreditCycle, TripPaymentMode, TripSettlementStatus } from '../types';
 import { 
   User, Users, Phone, MapPin, Search, Calendar, Star, DollarSign, 
@@ -269,6 +270,7 @@ const getLoyaltyTierTone = (tier?: 'VIP' | 'VVIP' | 'REGULAR' | 'NEW') => {
 
 export const CRMPage: React.FC = () => {
   const { trips, deletedTrips, drivers, customers, creditLedger, receipts, alerts, settings, editDriver, addDriver, addCustomers, removeCustomerByPhone, addCreditLedgerEntry, settleCreditLedgerEntry, removeDriver, refreshData, hardResetCloudSync } = useStore();
+  const { hasCoreAccess } = useAuth();
   const location = useLocation();
   const [activeView, setActiveView] = useState<ViewMode>('CUSTOMERS');
   const [metricsWindow, setMetricsWindow] = useState<'TODAY' | '7D' | '30D' | 'ALL'>('ALL');
@@ -277,6 +279,8 @@ export const CRMPage: React.FC = () => {
   const [mobilePaneMode, setMobilePaneMode] = useState<'FEED' | 'CORE'>('FEED');
   const [customerSort] = useState<CustomerSort>('SPEND');
   const [isProcessing, setIsProcessing] = useState(true);
+  const [crmLoadProgress, setCrmLoadProgress] = useState(12);
+  const [crmLoadReady, setCrmLoadReady] = useState(false);
   const [vaultStatusMessage, setVaultStatusMessage] = useState('');
   const [vaultClearArmed, setVaultClearArmed] = useState(false);
   const [vaultBusyAction, setVaultBusyAction] = useState<'EXPORT' | 'IMPORT' | 'CLEAR' | null>(null);
@@ -290,6 +294,9 @@ export const CRMPage: React.FC = () => {
   const [showSearchSuggestions, setShowSearchSuggestions] = useState(false);
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const contactsImportRef = useRef<HTMLInputElement | null>(null);
+  const crmLoadIntervalRef = useRef<number | null>(null);
+  const crmLoadFinalizeRef = useRef<number | null>(null);
+  const crmLoadDoneRef = useRef<number | null>(null);
 
   const now = new Date();
   const showOverviewMode = !selectedItem && (activeView === 'FINANCE' || activeView === 'VAULT');
@@ -323,12 +330,12 @@ export const CRMPage: React.FC = () => {
     const tab = String(params.get('tab') || '').toLowerCase();
 
     if (tab === 'vault') {
-      setActiveView('VAULT');
+      setActiveView(hasCoreAccess ? 'VAULT' : 'CUSTOMERS');
       return;
     }
 
     if (tab === 'finance') {
-      setActiveView('FINANCE');
+      setActiveView(hasCoreAccess ? 'FINANCE' : 'CUSTOMERS');
       return;
     }
 
@@ -340,7 +347,15 @@ export const CRMPage: React.FC = () => {
     if (tab === 'customers') {
       setActiveView('CUSTOMERS');
     }
-  }, [location.search]);
+  }, [location.search, hasCoreAccess]);
+
+  useEffect(() => {
+    if (hasCoreAccess) return;
+    if (activeView === 'FINANCE' || activeView === 'VAULT') {
+      setActiveView('CUSTOMERS');
+      setSelectedItem(null);
+    }
+  }, [activeView, hasCoreAccess]);
 
   const jumpToSavedPlaces = (phone: string) => {
     const targetId = savedPlacesSectionId(phone);
@@ -450,11 +465,38 @@ export const CRMPage: React.FC = () => {
       return estimateFuelUsdFromDistance(windowDistanceKm);
     };
 
+  const clearCrmLoadTimers = useCallback(() => {
+    if (crmLoadIntervalRef.current !== null) {
+      clearInterval(crmLoadIntervalRef.current);
+      crmLoadIntervalRef.current = null;
+    }
+    if (crmLoadFinalizeRef.current !== null) {
+      clearTimeout(crmLoadFinalizeRef.current);
+      crmLoadFinalizeRef.current = null;
+    }
+    if (crmLoadDoneRef.current !== null) {
+      clearTimeout(crmLoadDoneRef.current);
+      crmLoadDoneRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
+    clearCrmLoadTimers();
     setIsProcessing(true);
-    const timer = setTimeout(() => setIsProcessing(false), 800);
-    return () => clearTimeout(timer);
-  }, [activeView]);
+    setCrmLoadReady(false);
+    setCrmLoadProgress(12);
+
+    crmLoadIntervalRef.current = window.setInterval(() => {
+      setCrmLoadProgress(prev => {
+        const next = prev + (prev < 45 ? 8 : prev < 75 ? 5 : 2);
+        return Math.min(92, next);
+      });
+    }, 80);
+
+    return () => {
+      clearCrmLoadTimers();
+    };
+  }, [activeView, clearCrmLoadTimers]);
 
   useEffect(() => {
     setShowSearchSuggestions(false);
@@ -478,6 +520,51 @@ export const CRMPage: React.FC = () => {
       refreshData();
     }
   }, [activeView, refreshData]);
+
+  const crmDataReadyKey = useMemo(() => {
+    if (activeView === 'CUSTOMERS') {
+      return `customers:${trips.length}:${customers.length}:${alerts.length}`;
+    }
+    if (activeView === 'FLEET') {
+      return `fleet:${drivers.length}:${trips.length}:${creditLedger.length}`;
+    }
+    if (activeView === 'FINANCE') {
+      return `finance:${drivers.length}:${trips.length}:${creditLedger.length}:${receipts.length}`;
+    }
+    return `vault:${trips.length}:${drivers.length}:${customers.length}:${syncChannel}:${vaultSyncStatus}`;
+  }, [activeView, trips.length, customers.length, alerts.length, drivers.length, creditLedger.length, receipts.length, syncChannel, vaultSyncStatus]);
+
+  useEffect(() => {
+    if (!isProcessing) return;
+    const frame = window.requestAnimationFrame(() => {
+      setCrmLoadReady(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [crmDataReadyKey, isProcessing]);
+
+  useEffect(() => {
+    if (!isProcessing || !crmLoadReady) return;
+
+    clearCrmLoadTimers();
+    setCrmLoadProgress(prev => Math.max(prev, 96));
+
+    crmLoadFinalizeRef.current = window.setTimeout(() => {
+      setCrmLoadProgress(100);
+      crmLoadDoneRef.current = window.setTimeout(() => {
+        setIsProcessing(false);
+      }, 130);
+    }, 100);
+
+    return () => {
+      clearCrmLoadTimers();
+    };
+  }, [isProcessing, crmLoadReady, clearCrmLoadTimers]);
+
+  useEffect(() => {
+    return () => {
+      clearCrmLoadTimers();
+    };
+  }, [clearCrmLoadTimers]);
 
   const customerProfiles = useMemo((): EnhancedCustomerProfile[] => {
     const profiles: Record<string, any> = {};
@@ -1946,7 +2033,9 @@ export const CRMPage: React.FC = () => {
              { id: 'FLEET', label: 'Fleet', icon: Gauge },
              { id: 'FINANCE', label: 'Yield', icon: DollarSign },
              { id: 'VAULT', label: 'Vault', icon: Database }
-           ].map(tab => (
+           ]
+            .filter(tab => hasCoreAccess || (tab.id !== 'FINANCE' && tab.id !== 'VAULT'))
+            .map(tab => (
              <button key={tab.id} onClick={() => { setActiveView(tab.id as ViewMode); setSelectedItem(null); }} className={`crm-tab-button flex items-center space-x-2.5 h-10 md:h-14 border-b-2 transition-all flex-shrink-0 ${activeView === tab.id ? 'border-brand-900 dark:border-emerald-500 text-brand-900 dark:text-emerald-500' : 'border-transparent text-slate-400 dark:text-slate-50'}`}><tab.icon size={14} /><span className="text-[10px] font-black uppercase tracking-widest">{tab.label}</span></button>
            ))}
         </div>
@@ -2440,6 +2529,10 @@ export const CRMPage: React.FC = () => {
              <div className="max-w-4xl mx-auto flex flex-col items-center justify-center h-full opacity-40">
                 <Loader2 className="w-8 h-8 animate-spin mb-4" />
                 <p className="text-[10px] font-black uppercase tracking-[0.4em]">Deriving Intel...</p>
+               <div className="mt-3 w-48 h-1.5 rounded-full bg-slate-200 dark:bg-brand-800 overflow-hidden">
+                <div className="h-full bg-brand-900 dark:bg-emerald-500 transition-all duration-150" style={{ width: `${Math.max(0, Math.min(100, crmLoadProgress))}%` }} />
+               </div>
+               <p className="mt-2 text-[8px] font-black uppercase tracking-[0.25em]">{Math.round(crmLoadProgress)}%</p>
              </div>
           ) : (
             <div className="max-w-4xl mx-auto space-y-6 md:space-y-12 animate-in fade-in slide-in-from-right-8 duration-500">

@@ -15,7 +15,7 @@ import {
 } from '../constants';
 import { 
   Sparkles, Globe, LocateFixed, Focus, Timer,
-  Activity, Zap, Sun, Moon, Sunrise, Sunset, Copy, Check, MessageCircle, Briefcase, Receipt, Wallet, AlertTriangle, CheckCircle, AlertOctagon, FileText, Download
+  Activity, Zap, Sun, Moon, Sunrise, Sunset, Copy, Check, MessageCircle, Briefcase, Receipt, Wallet, AlertTriangle, CheckCircle, AlertOctagon, FileText, Download, ChevronUp, ChevronDown
 } from 'lucide-react';
 import { format, isToday, parseISO, startOfDay, addHours, addMinutes, isSameHour, addDays } from 'date-fns';
 import { Button } from '../components/ui/Button';
@@ -1469,6 +1469,7 @@ export const GMBriefPage: React.FC = () => {
   const [hoveredGmPanel, setHoveredGmPanel] = useState<GmPanel | null>(null);
   const [lastInteractedGmPanel, setLastInteractedGmPanel] = useState<GmPanel | null>(null);
   const [fullscreenGmPanel, setFullscreenGmPanel] = useState<GmPanel | null>(null);
+  const [isWorkflowDockExpanded, setIsWorkflowDockExpanded] = useState(false);
   const hoveredGmPanelRef = useRef<GmPanel | null>(null);
   const fullscreenGmPanelRef = useRef<GmPanel | null>(null);
   const triggerJumpAttention = (element: HTMLElement | null) => {
@@ -2328,7 +2329,7 @@ export const GMBriefPage: React.FC = () => {
   );
 
   return (
-    <div className="app-page-shell gmb-shell p-4 md:p-8 w-full space-y-8 animate-fade-in pb-24 lg:pb-8">
+    <div className="app-page-shell gmb-shell p-4 md:p-8 w-full space-y-8 animate-fade-in pb-28 lg:pb-28">
       <div className={`flex flex-col md:flex-row justify-between items-start md:items-center gap-4 ${fullscreenGmPanel ? 'hidden' : ''}`}>
         <div>
           <div className="flex items-center space-x-2 mb-1">
@@ -2343,46 +2344,6 @@ export const GMBriefPage: React.FC = () => {
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="inline-flex flex-col sm:flex-row sm:items-center gap-1 rounded-2xl border border-gold-500/30 bg-brand-950/85 ring-1 ring-gold-500/15 shadow-lg shadow-brand-950/30 p-1.5 backdrop-blur-sm">
-          <div className="inline-flex items-center rounded-lg border border-gold-500/30 bg-brand-900/60 p-1 gap-1">
-            {gmBundles.map(bundle => {
-              const isActive = activeBundle === bundle.key;
-              return (
-                <button
-                  key={bundle.key}
-                  type="button"
-                  onClick={() => setActiveBundle(bundle.key)}
-                  className={`h-8 px-2.5 rounded-md border text-[8px] font-black uppercase tracking-[0.16em] inline-flex items-center transition-colors ${isActive
-                    ? 'border-gold-400/70 bg-gold-500/15 text-gold-200 shadow-sm shadow-gold-500/10'
-                    : 'border-brand-700 bg-brand-900/50 text-slate-300 hover:border-gold-500/30 hover:text-gold-200'}`}
-                >
-                  {bundle.icon}
-                  {bundle.label}
-                </button>
-              );
-            })}
-          </div>
-          <div className="inline-flex items-center gap-1 rounded-lg border border-gold-500/30 bg-brand-900/60 p-1">
-            <button
-              type="button"
-              onClick={() => moveBundle('prev')}
-              disabled={activeBundleIndex === 0}
-              className="h-8 px-2 rounded-md border border-brand-700 bg-brand-900/50 text-[8px] font-black uppercase tracking-widest text-slate-200 hover:border-gold-500/30 hover:text-gold-200 disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Previous bundle (←)"
-            >
-              ← Prev
-            </button>
-            <button
-              type="button"
-              onClick={() => moveBundle('next')}
-              disabled={activeBundleIndex >= gmBundles.length - 1}
-              className="h-8 px-2 rounded-md border border-brand-700 bg-brand-900/50 text-[8px] font-black uppercase tracking-widest text-slate-200 hover:border-gold-500/30 hover:text-gold-200 disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Next bundle (→)"
-            >
-              Next →
-            </button>
-          </div>
-          </div>
           <button
             type="button"
             onClick={handleExportOperationalPack}
@@ -2457,6 +2418,80 @@ export const GMBriefPage: React.FC = () => {
         </div>
         )}
       </div>
+
+      {!fullscreenGmPanel && (
+        <div className="fixed bottom-4 left-1/2 z-[95] w-[min(94vw,760px)] -translate-x-1/2">
+          {!isWorkflowDockExpanded ? (
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={() => setIsWorkflowDockExpanded(true)}
+                className="h-10 px-4 rounded-xl border border-gold-500/35 bg-brand-950/90 text-[8px] font-black uppercase tracking-[0.2em] text-gold-200 inline-flex items-center shadow-lg shadow-brand-950/40 backdrop-blur-sm"
+                title="Open workflow dock"
+              >
+                Workflow Dock · {gmBundles[activeBundleIndex]?.label || 'Space & Time'}
+                <ChevronUp size={13} className="ml-2" />
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-gold-500/30 bg-brand-950/90 ring-1 ring-gold-500/15 shadow-xl shadow-brand-950/40 p-2 backdrop-blur-sm space-y-2">
+              <div className="flex items-center justify-between gap-2 px-1">
+                <span className="text-[8px] font-black uppercase tracking-[0.2em] text-gold-200">Workflow Dock</span>
+                <button
+                  type="button"
+                  onClick={() => setIsWorkflowDockExpanded(false)}
+                  className="h-7 px-2 rounded-md border border-brand-700 bg-brand-900/60 text-[8px] font-black uppercase tracking-widest text-slate-200 hover:border-gold-500/30 hover:text-gold-200 inline-flex items-center"
+                  title="Minimize workflow dock"
+                >
+                  Minimize
+                  <ChevronDown size={12} className="ml-1" />
+                </button>
+              </div>
+
+              <div className="inline-flex w-full flex-col sm:flex-row sm:items-center gap-1 rounded-xl border border-gold-500/30 bg-brand-900/60 p-1">
+                <div className="inline-flex items-center rounded-lg border border-gold-500/30 bg-brand-900/60 p-1 gap-1 overflow-x-auto">
+                  {gmBundles.map(bundle => {
+                    const isActive = activeBundle === bundle.key;
+                    return (
+                      <button
+                        key={bundle.key}
+                        type="button"
+                        onClick={() => setActiveBundle(bundle.key)}
+                        className={`h-8 px-2.5 rounded-md border text-[8px] font-black uppercase tracking-[0.16em] inline-flex items-center transition-colors whitespace-nowrap ${isActive
+                          ? 'border-gold-400/70 bg-gold-500/15 text-gold-200 shadow-sm shadow-gold-500/10'
+                          : 'border-brand-700 bg-brand-900/50 text-slate-300 hover:border-gold-500/30 hover:text-gold-200'}`}
+                      >
+                        {bundle.icon}
+                        {bundle.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="inline-flex items-center gap-1 rounded-lg border border-gold-500/30 bg-brand-900/60 p-1 sm:ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => moveBundle('prev')}
+                    disabled={activeBundleIndex === 0}
+                    className="h-8 px-2 rounded-md border border-brand-700 bg-brand-900/50 text-[8px] font-black uppercase tracking-widest text-slate-200 hover:border-gold-500/30 hover:text-gold-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Previous bundle (←)"
+                  >
+                    ← Prev
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => moveBundle('next')}
+                    disabled={activeBundleIndex >= gmBundles.length - 1}
+                    className="h-8 px-2 rounded-md border border-brand-700 bg-brand-900/50 text-[8px] font-black uppercase tracking-widest text-slate-200 hover:border-gold-500/30 hover:text-gold-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Next bundle (→)"
+                  >
+                    Next →
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {fullscreenGmPanel && (
         <div className="fixed inset-0 z-[10000] bg-slate-50 dark:bg-brand-950 p-0 flex flex-col overflow-hidden">

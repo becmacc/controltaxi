@@ -13,6 +13,7 @@ import {
   getOrCreateCloudSyncClientId,
   startCloudSync,
 } from '../services/cloudSyncService';
+import { useAuth } from './AuthContext';
 
 interface StoreContextType {
   trips: Trip[];
@@ -69,6 +70,7 @@ const StoreContext = globalThis.__CONTROL_STORE_CONTEXT__ || createContext<Store
 globalThis.__CONTROL_STORE_CONTEXT__ = StoreContext;
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { status: authStatus, user: authUser } = useAuth();
   const [trips, setTrips] = useState<Trip[]>([]);
   const [deletedTrips, setDeletedTrips] = useState<DeletedTripRecord[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -166,6 +168,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [refreshData]);
 
   useEffect(() => {
+    if (authStatus !== 'authenticated' || !authUser) {
+      setCloudSyncReady(false);
+      cloudSyncSessionRef.current?.stop();
+      cloudSyncSessionRef.current = null;
+      return;
+    }
+
     let stopped = false;
 
     const initializeCloudSync = async () => {
@@ -351,7 +360,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       cloudSyncSessionRef.current?.stop();
       cloudSyncSessionRef.current = null;
     };
-  }, [refreshData]);
+  }, [authStatus, authUser, refreshData]);
 
   useEffect(() => {
     const session = cloudSyncSessionRef.current;
