@@ -113,7 +113,7 @@ Core access behavior in app:
 
 - All app routes require sign-in.
 - Core-only sections (e.g. Settings, CRM Yield/Vault) require core role/claim.
-- Roles accepted for core access: `admin` or `ops`, or claim `coreAccess: true`.
+- Core access is granted to `admin` role, or explicit claim `coreAccess: true`.
 
 Example Firestore rules (copy/paste) using `allowed_users` allowlist:
 

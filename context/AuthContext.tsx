@@ -72,13 +72,13 @@ const hasCoreFromClaims = (tokenResult: IdTokenResult | null, role: AuthRole): b
   const claims = tokenResult.claims || {};
 
   if (claims.coreAccess === true) return true;
-  if (role === 'admin' || role === 'ops') return true;
+  if (role === 'admin') return true;
 
   const roleSet = Array.isArray(claims.roles)
     ? claims.roles.map(value => String(value).trim().toLowerCase())
     : [];
 
-  return roleSet.includes('admin') || roleSet.includes('ops') || roleSet.includes('core');
+  return roleSet.includes('admin') || roleSet.includes('core');
 };
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -130,7 +130,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           : 'unknown';
 
         const nextRole = claimsRole !== 'unknown' ? claimsRole : docRole;
-        const nextHasCoreAccess = claimsCoreAccess || docRole === 'admin' || docRole === 'ops';
+        const nextHasCoreAccess = claimsCoreAccess || docRole === 'admin';
 
         setUser(nextUser);
         setIsApproved(nextIsApproved);
