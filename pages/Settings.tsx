@@ -6,7 +6,7 @@ import { Button } from '../components/ui/Button';
 import { Save, Coins, Clock, Activity, MessageSquare, Info, Phone, Fuel, ExternalLink, Maximize2, Minimize2 } from 'lucide-react';
 import { MessageTemplates } from '../types';
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { addDoc, collection, doc, getFirestore, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, doc, getFirestore, onSnapshot, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { DEFAULT_TEMPLATES, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 import {
   applyPhoneDialCode,
@@ -118,23 +118,32 @@ export const SettingsPage: React.FC = () => {
 
     const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
     const firestore = getFirestore(app);
-    const requestQuery = query(collection(firestore, 'access_requests'), orderBy('requestedAtMs', 'desc'));
+    const requestQuery = query(collection(firestore, 'access_requests'));
 
-    const unsubscribe = onSnapshot(requestQuery, snapshot => {
-      const nextRecords: AccessRequestRecord[] = snapshot.docs
-        .map(item => {
-          const data = item.data() as Partial<AccessRequestRecord>;
-          return {
-            uid: String(data.uid || item.id),
-            email: String(data.email || ''),
-            displayName: String(data.displayName || ''),
-            status: data.status === 'approved' || data.status === 'rejected' ? data.status : 'pending',
-            requestedAtMs: Number(data.requestedAtMs || 0),
-          };
-        })
-        .filter(item => item.status === 'pending');
-      setPendingAccessRequests(nextRecords);
-    });
+    const unsubscribe = onSnapshot(
+      requestQuery,
+      snapshot => {
+        const nextRecords: AccessRequestRecord[] = snapshot.docs
+          .map(item => {
+            const data = item.data() as Partial<AccessRequestRecord>;
+            return {
+              uid: String(data.uid || item.id),
+              email: String(data.email || ''),
+              displayName: String(data.displayName || ''),
+              status: data.status === 'approved' || data.status === 'rejected' ? data.status : 'pending',
+              requestedAtMs: Number(data.requestedAtMs || 0),
+            };
+          })
+          .filter(item => item.status === 'pending')
+          .sort((a, b) => b.requestedAtMs - a.requestedAtMs);
+        setPendingAccessRequests(nextRecords);
+        setAccessQueueMessage('');
+      },
+      error => {
+        const reason = error instanceof Error ? error.message : 'Cannot load access requests.';
+        setAccessQueueMessage(reason);
+      }
+    );
 
     return () => unsubscribe();
   }, [isAdmin]);

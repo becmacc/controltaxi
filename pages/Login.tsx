@@ -55,7 +55,7 @@ export const LoginPage: React.FC = () => {
             <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-brand-950 p-3 space-y-2">
               <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Access Levels</p>
               <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">OPS: access to control operations only (Brief, Calculator, Trips, Drivers).</p>
-              <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">Admin/Core: includes CRM and Settings access.</p>
+              <p className="text-[10px] font-bold text-slate-600 dark:text-slate-300">Admin/Core: full access to both Control and Core (including CRM and Settings).</p>
             </div>
 
             {error && (
