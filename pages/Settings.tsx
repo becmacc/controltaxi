@@ -1,9 +1,12 @@
 
 import React, { useState, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
+import { useAuth } from '../context/AuthContext';
 import { Button } from '../components/ui/Button';
 import { Save, Coins, Clock, Activity, MessageSquare, Info, Phone, Fuel, ExternalLink, Maximize2, Minimize2 } from 'lucide-react';
 import { MessageTemplates } from '../types';
+import { getApp, getApps, initializeApp } from 'firebase/app';
+import { collection, doc, getFirestore, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { DEFAULT_TEMPLATES, DEFAULT_OWNER_DRIVER_COMPANY_SHARE_PERCENT, DEFAULT_COMPANY_CAR_DRIVER_GAS_COMPANY_SHARE_PERCENT, DEFAULT_OTHER_DRIVER_COMPANY_SHARE_PERCENT } from '../constants';
 import {
   applyPhoneDialCode,
@@ -13,8 +16,36 @@ import {
   PHONE_COUNTRY_PRESETS,
 } from '../services/whatsapp';
 
+type AccessRequestRecord = {
+  uid: string;
+  email: string;
+  displayName: string;
+  status: 'pending' | 'approved' | 'rejected';
+  requestedAtMs: number;
+};
+
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+};
+
+const isFirebaseConfigured = Boolean(
+  firebaseConfig.apiKey &&
+  firebaseConfig.authDomain &&
+  firebaseConfig.projectId &&
+  firebaseConfig.storageBucket &&
+  firebaseConfig.messagingSenderId &&
+  firebaseConfig.appId
+);
+
 export const SettingsPage: React.FC = () => {
   const { settings, updateSettings } = useStore();
+  const { role, user } = useAuth();
+  const isAdmin = role === 'admin';
   const [exchangeRate, setExchangeRate] = useState(settings.exchangeRate.toString());
   const [hourlyWaitRate, setHourlyWaitRate] = useState(settings.hourlyWaitRate.toString());
   const [ratePerKm, setRatePerKm] = useState(settings.ratePerKm.toString());
@@ -39,6 +70,9 @@ export const SettingsPage: React.FC = () => {
   const [messageTone, setMessageTone] = useState<'SUCCESS' | 'ERROR'>('SUCCESS');
   const [isConfigFullView, setIsConfigFullView] = useState(false);
   const [isShortcutGuideCollapsed, setIsShortcutGuideCollapsed] = useState(true);
+  const [pendingAccessRequests, setPendingAccessRequests] = useState<AccessRequestRecord[]>([]);
+  const [accessQueueMessage, setAccessQueueMessage] = useState('');
+  const [accessQueueBusyUid, setAccessQueueBusyUid] = useState<string | null>(null);
 
   const globalShortcutGuide = [
     { keys: 'Q', action: 'Quote Page' },
@@ -70,6 +104,35 @@ export const SettingsPage: React.FC = () => {
     ? (resolvedOperatorCustomDialCode || operatorDialCode || DEFAULT_PHONE_DIAL_CODE)
     : operatorDialCode;
   const operatorEffectiveDialCode = operatorIntlEnabled ? selectedOperatorIntlDialCode : DEFAULT_PHONE_DIAL_CODE;
+
+  useEffect(() => {
+    if (!isAdmin || !isFirebaseConfigured) {
+      setPendingAccessRequests([]);
+      return;
+    }
+
+    const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+    const firestore = getFirestore(app);
+    const requestQuery = query(collection(firestore, 'access_requests'), orderBy('requestedAtMs', 'desc'));
+
+    const unsubscribe = onSnapshot(requestQuery, snapshot => {
+      const nextRecords: AccessRequestRecord[] = snapshot.docs
+        .map(item => {
+          const data = item.data() as Partial<AccessRequestRecord>;
+          return {
+            uid: String(data.uid || item.id),
+            email: String(data.email || ''),
+            displayName: String(data.displayName || ''),
+            status: data.status === 'approved' || data.status === 'rejected' ? data.status : 'pending',
+            requestedAtMs: Number(data.requestedAtMs || 0),
+          };
+        })
+        .filter(item => item.status === 'pending');
+      setPendingAccessRequests(nextRecords);
+    });
+
+    return () => unsubscribe();
+  }, [isAdmin]);
 
   useEffect(() => {
     setExchangeRate(settings.exchangeRate.toString());
@@ -196,6 +259,76 @@ export const SettingsPage: React.FC = () => {
     setTimeout(() => setMessage(''), 3000);
   };
 
+  const handleApproveAccessRequest = async (request: AccessRequestRecord) => {
+    if (!isAdmin || !isFirebaseConfigured || !user) return;
+
+    try {
+      setAccessQueueBusyUid(request.uid);
+      const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+      const firestore = getFirestore(app);
+
+      await setDoc(
+        doc(firestore, 'allowed_users', request.uid),
+        {
+          enabled: true,
+          role: 'ops',
+          note: request.email || request.displayName || 'Approved via Settings queue',
+          approvedByUid: user.uid,
+          approvedByEmail: user.email || '',
+          approvedAt: serverTimestamp(),
+          approvedAtMs: Date.now(),
+        },
+        { merge: true }
+      );
+
+      await updateDoc(doc(firestore, 'access_requests', request.uid), {
+        status: 'approved',
+        reviewedByUid: user.uid,
+        reviewedByEmail: user.email || '',
+        reviewedAt: serverTimestamp(),
+        reviewedAtMs: Date.now(),
+        lastUpdatedAt: serverTimestamp(),
+        lastUpdatedAtMs: Date.now(),
+      });
+
+      setAccessQueueMessage(`Approved ${request.email || request.uid}.`);
+      window.setTimeout(() => setAccessQueueMessage(''), 2500);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Approval failed.';
+      setAccessQueueMessage(reason);
+    } finally {
+      setAccessQueueBusyUid(null);
+    }
+  };
+
+  const handleRejectAccessRequest = async (request: AccessRequestRecord) => {
+    if (!isAdmin || !isFirebaseConfigured || !user) return;
+
+    try {
+      setAccessQueueBusyUid(request.uid);
+      const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+      const firestore = getFirestore(app);
+
+      await updateDoc(doc(firestore, 'access_requests', request.uid), {
+        status: 'rejected',
+        reviewedByUid: user.uid,
+        reviewedByEmail: user.email || '',
+        reviewedAt: serverTimestamp(),
+        reviewedAtMs: Date.now(),
+        lastUpdatedAt: serverTimestamp(),
+        lastUpdatedAtMs: Date.now(),
+      });
+
+      setAccessQueueMessage(`Rejected ${request.email || request.uid}.`);
+      window.setTimeout(() => setAccessQueueMessage(''), 2500);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Reject failed.';
+      setAccessQueueMessage(reason);
+    } finally {
+      setAccessQueueBusyUid(null);
+    }
+  };
+
   return (
     <div className={isConfigFullView ? 'fixed inset-0 z-[10000] bg-slate-50 dark:bg-brand-950 p-4 md:p-6 overflow-auto' : 'app-page-shell p-4 md:p-6 bg-slate-50 dark:bg-brand-950 transition-colors duration-300 min-h-full pb-20'}>
       <div className={`${isConfigFullView ? 'max-w-4xl' : 'max-w-3xl'} mx-auto`}>
@@ -210,6 +343,47 @@ export const SettingsPage: React.FC = () => {
             {isConfigFullView ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
             {isConfigFullView ? 'Exit Full View' : 'Full View'}
           </button>
+        </div>
+
+        <div className="bg-white dark:bg-brand-900 rounded-2xl shadow-xl border border-slate-200 dark:border-brand-800 p-6 md:p-8 transition-colors mb-8">
+          <h3 className="text-sm font-black text-brand-900 dark:text-gold-500 uppercase tracking-widest mb-4 border-b pb-4 dark:border-brand-800">Access Requests Queue</h3>
+          {!isAdmin ? (
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Only admin accounts can approve or reject operator requests.</p>
+          ) : pendingAccessRequests.length === 0 ? (
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">No pending requests.</p>
+          ) : (
+            <div className="space-y-3">
+              {pendingAccessRequests.map(request => (
+                <div key={request.uid} className="rounded-xl border border-slate-200 dark:border-brand-800 bg-slate-50 dark:bg-brand-950 p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-brand-900 dark:text-slate-100">{request.email || request.uid}</p>
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-300">{request.displayName || 'No display name'} · UID {request.uid}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleApproveAccessRequest(request)}
+                      disabled={accessQueueBusyUid === request.uid}
+                      className="h-8 px-3 rounded-lg border border-emerald-300 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/10 text-[8px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-300 disabled:opacity-60"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRejectAccessRequest(request)}
+                      disabled={accessQueueBusyUid === request.uid}
+                      className="h-8 px-3 rounded-lg border border-red-300 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 text-[8px] font-black uppercase tracking-widest text-red-700 dark:text-red-300 disabled:opacity-60"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {accessQueueMessage ? (
+            <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">{accessQueueMessage}</p>
+          ) : null}
         </div>
 
         <form onSubmit={handleSave} className="space-y-8">

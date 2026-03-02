@@ -121,10 +121,19 @@ Example Firestore rules (copy/paste) using `allowed_users` allowlist:
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isAuthed() {
+      return request.auth != null;
+    }
+
     function isApproved() {
-      return request.auth != null
+      return isAuthed()
         && exists(/databases/$(database)/documents/allowed_users/$(request.auth.uid))
         && get(/databases/$(database)/documents/allowed_users/$(request.auth.uid)).data.enabled == true;
+    }
+
+    function isAdmin() {
+      return isApproved()
+        && get(/databases/$(database)/documents/allowed_users/$(request.auth.uid)).data.role == 'admin';
     }
 
     match /control-sync/{docId} {
@@ -135,8 +144,26 @@ service cloud.firestore {
     }
 
     match /allowed_users/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow write: if false;
+      allow read: if isAuthed() && (request.auth.uid == uid || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /access_requests/{uid} {
+      allow create: if isAuthed()
+        && request.auth.uid == uid
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending';
+      allow read: if isAuthed() && (request.auth.uid == uid || isAdmin());
+      allow update: if isAuthed() && (
+        isAdmin()
+        || (
+          request.auth.uid == uid
+          && resource.data.status != 'approved'
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.status == 'pending'
+        )
+      );
+      allow delete: if isAdmin();
     }
 
     match /{document=**} {
@@ -164,6 +191,13 @@ service cloud.firestore {
    - non-approved UID gets blocked by rules.
 
 Tip: Keep at least one known admin UID in `allowed_users` before publishing rules.
+
+### 5) Request + approval workflow
+
+- Non-approved users can sign in and submit a request from the blocked access screen.
+- Requests are stored in `access_requests/{uid}` with status `pending`.
+- Admin users can open **Settings -> Access Requests Queue** and click **Approve** or **Reject**.
+- Approve writes/updates `allowed_users/{uid}` and marks the request as approved.
 
 ## Data model and persistence
 
