@@ -10,6 +10,7 @@ import {
   type IdTokenResult,
 } from 'firebase/auth';
 import { getApp, getApps, initializeApp } from 'firebase/app';
+import { doc, getDoc, getFirestore } from 'firebase/firestore';
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -18,6 +19,7 @@ type AuthRole = 'admin' | 'ops' | 'viewer' | 'unknown';
 interface AuthContextType {
   status: AuthStatus;
   user: User | null;
+  isApproved: boolean;
   role: AuthRole;
   hasCoreAccess: boolean;
   isAuthConfigured: boolean;
@@ -82,6 +84,7 @@ const hasCoreFromClaims = (tokenResult: IdTokenResult | null, role: AuthRole): b
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [user, setUser] = useState<User | null>(null);
+  const [isApproved, setIsApproved] = useState(false);
   const [role, setRole] = useState<AuthRole>('unknown');
   const [hasCoreAccess, setHasCoreAccess] = useState(false);
 
@@ -89,6 +92,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!isConfigured) {
       setStatus('unauthenticated');
       setUser(null);
+      setIsApproved(false);
       setRole('unknown');
       setHasCoreAccess(false);
       return;
@@ -100,6 +104,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribe = onAuthStateChanged(auth, async nextUser => {
       if (!nextUser) {
         setUser(null);
+        setIsApproved(false);
         setRole('unknown');
         setHasCoreAccess(false);
         setStatus('unauthenticated');
@@ -107,16 +112,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       try {
+        const firestore = getFirestore(app);
         const tokenResult = await nextUser.getIdTokenResult();
-        const nextRole = resolveRoleFromClaims(tokenResult);
-        const nextHasCoreAccess = hasCoreFromClaims(tokenResult, nextRole);
+        const claimsRole = resolveRoleFromClaims(tokenResult);
+        const claimsCoreAccess = hasCoreFromClaims(tokenResult, claimsRole);
+
+        const approvalRef = doc(firestore, 'allowed_users', nextUser.uid);
+        const approvalSnapshot = await getDoc(approvalRef);
+        const approvalData = approvalSnapshot.exists()
+          ? (approvalSnapshot.data() as { enabled?: unknown; role?: unknown } | undefined)
+          : undefined;
+
+        const nextIsApproved = approvalData?.enabled === true;
+        const docRoleRaw = String(approvalData?.role || '').trim().toLowerCase();
+        const docRole: AuthRole = docRoleRaw === 'admin' || docRoleRaw === 'ops' || docRoleRaw === 'viewer'
+          ? docRoleRaw
+          : 'unknown';
+
+        const nextRole = claimsRole !== 'unknown' ? claimsRole : docRole;
+        const nextHasCoreAccess = claimsCoreAccess || docRole === 'admin' || docRole === 'ops';
 
         setUser(nextUser);
+        setIsApproved(nextIsApproved);
         setRole(nextRole);
         setHasCoreAccess(nextHasCoreAccess);
         setStatus('authenticated');
       } catch {
         setUser(nextUser);
+        setIsApproved(false);
         setRole('unknown');
         setHasCoreAccess(false);
         setStatus('authenticated');
@@ -169,13 +192,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const value = useMemo<AuthContextType>(() => ({
     status,
     user,
+    isApproved,
     role,
     hasCoreAccess,
     isAuthConfigured: isConfigured,
     signIn,
     signInWithGoogle,
     signOut,
-  }), [status, user, role, hasCoreAccess]);
+  }), [status, user, isApproved, role, hasCoreAccess]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

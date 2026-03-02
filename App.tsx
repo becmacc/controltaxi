@@ -20,8 +20,27 @@ const RouteFallback: React.FC = () => (
   </div>
 );
 
+const AccessBlocked: React.FC<{ email?: string | null; onSignOut: () => void }> = ({ email, onSignOut }) => (
+  <div className="min-h-screen bg-slate-50 dark:bg-brand-950 text-slate-900 dark:text-slate-100 flex items-center justify-center p-6">
+    <div className="w-full max-w-md rounded-3xl border border-slate-200 dark:border-white/10 bg-white dark:bg-brand-900 shadow-2xl p-6 md:p-8 space-y-4">
+      <h1 className="text-lg font-black uppercase tracking-tight">Access Not Approved</h1>
+      <p className="text-[10px] font-bold text-slate-500 dark:text-slate-300">This Google account is not in the `allowed_users` list.</p>
+      {email ? (
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-300">Signed in as: {email}</p>
+      ) : null}
+      <button
+        type="button"
+        onClick={onSignOut}
+        className="w-full h-10 rounded-xl border border-slate-300 dark:border-white/15 bg-white dark:bg-brand-950 text-[10px] font-black uppercase tracking-[0.2em]"
+      >
+        Sign Out
+      </button>
+    </div>
+  </div>
+);
+
 const AuthGate: React.FC<{ requireCore?: boolean }> = ({ requireCore = false }) => {
-  const { status, hasCoreAccess } = useAuth();
+  const { status, isApproved, hasCoreAccess, user, signOut } = useAuth();
   const location = useLocation();
 
   if (status === 'loading') {
@@ -30,6 +49,10 @@ const AuthGate: React.FC<{ requireCore?: boolean }> = ({ requireCore = false }) 
 
   if (status !== 'authenticated') {
     return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  if (!isApproved) {
+    return <AccessBlocked email={user?.email} onSignOut={() => { void signOut(); }} />;
   }
 
   if (requireCore && !hasCoreAccess) {

@@ -70,7 +70,7 @@ const StoreContext = globalThis.__CONTROL_STORE_CONTEXT__ || createContext<Store
 globalThis.__CONTROL_STORE_CONTEXT__ = StoreContext;
 
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { status: authStatus, user: authUser } = useAuth();
+  const { status: authStatus, user: authUser, isApproved } = useAuth();
   const [trips, setTrips] = useState<Trip[]>([]);
   const [deletedTrips, setDeletedTrips] = useState<DeletedTripRecord[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -168,7 +168,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [refreshData]);
 
   useEffect(() => {
-    if (authStatus !== 'authenticated' || !authUser) {
+    if (authStatus !== 'authenticated' || !authUser || !isApproved) {
       setCloudSyncReady(false);
       cloudSyncSessionRef.current?.stop();
       cloudSyncSessionRef.current = null;
@@ -360,7 +360,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       cloudSyncSessionRef.current?.stop();
       cloudSyncSessionRef.current = null;
     };
-  }, [authStatus, authUser, refreshData]);
+  }, [authStatus, authUser, isApproved, refreshData]);
 
   useEffect(() => {
     const session = cloudSyncSessionRef.current;
