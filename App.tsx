@@ -242,6 +242,69 @@ const AppShell: React.FC = () => (
 );
 
 function App() {
+  useEffect(() => {
+    const resolveHorizontalScrollable = (target: EventTarget | null): HTMLElement | null => {
+      if (!(target instanceof Element)) return null;
+
+      let current: Element | null = target;
+      while (current && current !== document.body) {
+        if (current instanceof HTMLElement) {
+          const style = window.getComputedStyle(current);
+          const overflowX = style.overflowX;
+          const canOverflowX = overflowX === 'auto' || overflowX === 'scroll' || overflowX === 'overlay';
+          if (canOverflowX && current.scrollWidth > current.clientWidth + 1) {
+            return current;
+          }
+        }
+        current = current.parentElement;
+      }
+
+      return null;
+    };
+
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaX !== 0 || event.deltaY === 0) {
+        return;
+      }
+
+      const scrollable = resolveHorizontalScrollable(event.target);
+      if (!scrollable) {
+        return;
+      }
+
+      const canScrollVertically = scrollable.scrollHeight > scrollable.clientHeight + 1;
+      if (canScrollVertically && !event.shiftKey) {
+        return;
+      }
+
+      const deltaMultiplier = event.deltaMode === 1
+        ? 16
+        : event.deltaMode === 2
+          ? scrollable.clientWidth
+          : 1;
+
+      const maxScrollLeft = Math.max(0, scrollable.scrollWidth - scrollable.clientWidth);
+      if (maxScrollLeft === 0) {
+        return;
+      }
+
+      const nextScrollLeft = Math.min(
+        maxScrollLeft,
+        Math.max(0, scrollable.scrollLeft + (event.deltaY * deltaMultiplier))
+      );
+
+      if (nextScrollLeft === scrollable.scrollLeft) {
+        return;
+      }
+
+      scrollable.scrollLeft = nextScrollLeft;
+      event.preventDefault();
+    };
+
+    document.addEventListener('wheel', handleWheel, { passive: false });
+    return () => document.removeEventListener('wheel', handleWheel);
+  }, []);
+
   return (
     <AuthProvider>
       <StoreProvider>

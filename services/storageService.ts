@@ -474,6 +474,7 @@ export const getCreditLedger = (): CreditLedgerEntry[] => {
 };
 
 export const saveCreditLedger = (entries: CreditLedgerEntry[]): void => {
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.CREDIT_LEDGER, JSON.stringify(entries));
 };
 
@@ -488,6 +489,7 @@ export const getReceipts = (): ReceiptRecord[] => {
 };
 
 export const saveReceipts = (entries: ReceiptRecord[]): void => {
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.RECEIPTS, JSON.stringify(entries));
 };
 
@@ -505,6 +507,7 @@ export const getAlerts = (): MissionAlert[] => {
 export const saveAlerts = (alerts: MissionAlert[]): void => {
   // Keep only active alerts or very recent ones to keep storage clean
   const limitedAlerts = alerts.slice(-100); 
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.ALERTS, JSON.stringify(limitedAlerts));
 };
 
@@ -820,5 +823,6 @@ export const getSettings = (): Settings => {
 };
 
 export const saveSettings = (settings: Settings): void => {
+  bumpSyncEpoch();
   localStorage.setItem(LOCAL_STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
 };
